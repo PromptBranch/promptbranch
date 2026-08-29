@@ -1,0 +1,33 @@
+{
+  "name": "@promptbranch/ai",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "PromptBranch AI layer: provider registry, models.dev catalog parsing, prompt execution and cost estimation over the Vercel AI SDK. Zero Electron dependencies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./judge-average": "./src/judge-average.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "3.0.112",
+    "@ai-sdk/google": "3.0.112",
+    "@ai-sdk/openai": "3.0.100",
+    "@ai-sdk/openai-compatible": "2.0.71",
+    "ai": "6.0.265",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@promptbranch/cli",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "PromptBranch CLI for shell pipelines and AI coding agents (agents propose, humans approve).",
+  "bin": {
+    "promptbranch": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --external:better-sqlite3 --banner:js='#!/usr/bin/env node' && chmod +x dist/index.js",
+    "test": "pnpm build && vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@promptbranch/core": "workspace:*",
+    "@promptbranch/share": "workspace:*",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.2.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

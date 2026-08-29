@@ -1,0 +1,208 @@
+import { useEffect, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { AboutDialog } from "./components/AboutDialog";
+import { CommandPalette } from "./components/CommandPalette";
+import { NewPromptDialog } from "./components/dialogs";
+import { HistoryView } from "./components/HistoryView";
+import { ImportSnapshotDialog } from "./components/ImportSnapshotDialog";
+import { LeftRail } from "./components/LeftRail";
+import { MainPane, MainPaneEmpty } from "./components/MainPane";
+import { ManageModelsDialog } from "./components/ManageModelsDialog";
+import { PromptListPane } from "./components/PromptListPane";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { SharesView } from "./components/SharesView";
+import { SuggestionsView } from "./components/SuggestionsView";
+import { SyncPairRequestDialog } from "./components/SyncPairRequestDialog";
+import { UpdateDialog } from "./components/UpdateDialog";
+import { updateStateEventSchema } from "../../shared/ipc.js";
+import { useAppMutation, useManualUpdateCheck, usePromptDetail, usePromptList, useTags } from "./hooks/use-data";
+import { togglePanel } from "./lib/panels";
+import { usePref } from "./lib/prefs";
+import { useAppState } from "./state/app-state";
+
+/** 1px divider between panels; hover/drag styling lives in index.css. */
+function ResizeSeparator() {
+  return <Separator className="w-px shrink-0" />;
+}
+
+function useGlobalShortcuts() {
+  const { paletteOpen, setPaletteOpen } = useAppState();
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen(!paletteOpen);
+      } else if (mod && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        document.getElementById("prompt-search-input")?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [paletteOpen, setPaletteOpen]);
+}
+
+export default function App() {
+  const { view, selectedPromptId, selectPrompt, newPromptOpen, setNewPromptOpen, setView, aboutOpen, setAboutOpen, openSettings, manageModelsOpen, setManageModelsOpen, setImportUrl, openUpdateDialog } =
+    useAppState();
+  const { data: prompt } = usePromptDetail(selectedPromptId);
+  const { data: allTags } = useTags();
+  const { data: list } = usePromptList();
+  const [editorFontSize] = usePref("editor-font-size");
+  useGlobalShortcuts();
+
+  // "About PromptBranch" from the macOS app menu / Help menu opens the
+  // branded in-app dialog; "Settings…" (⌘,) opens the Settings dialog.
+  useEffect(() => window.promptBuilder.app.onOpenAbout(() => setAboutOpen(true)), [setAboutOpen]);
+  useEffect(() => window.promptBuilder.app.onOpenSettings(() => openSettings()), [openSettings]);
+
+  // promptbranch://import?url=… deep links (portal "Open in PromptBranch").
+  useEffect(() => window.promptBuilder.share.onOpenImport((url) => setImportUrl(url)), [setImportUrl]);
+
+  // A background update check found a newer release — offer it (payload
+  // validated here, like sync status pushes; manual checks open the dialog
+  // from Settings instead).
+  useEffect(
+    () =>
+      window.promptBuilder.updates.onStateChanged((raw) => {
+        const parsed = updateStateEventSchema.safeParse(raw);
+        if (!parsed.success || parsed.data.phase !== "available") return;
+        openUpdateDialog({
+          currentVersion: parsed.data.currentVersion,
+          version: parsed.data.version,
+          releaseNotes: parsed.data.releaseNotes,
+          releaseUrl: parsed.data.releaseUrl,
+        });
+      }),
+    [openUpdateDialog],
+  );
+
+  // "Check for Updates…" in the app menu runs the shared manual check.
+  const checkUpdates = useManualUpdateCheck();
+  useEffect(
+    () => window.promptBuilder.updates.onCheckRequested(() => checkUpdates.mutate(undefined)),
+    [checkUpdates.mutate],
+  );
+
+  // Editor font size pref → CSS var consumed by .cm-host in index.css.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--cm-font-size", `${editorFontSize}px`);
+  }, [editorFontSize]);
+
+  // Resizable/collapsible layout: rail | list | main. Layouts (including
+  // collapsed state) persist in localStorage via useDefaultLayout.
+  const rootLayout = useDefaultLayout({ id: "promptbuilder-root", storage: localStorage });
+  const columnLayout = useDefaultLayout({ id: "promptbuilder-columns", storage: localStorage });
+  const railRef = usePanelRef();
+  const listRef = usePanelRef();
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [listCollapsed, setListCollapsed] = useState(false);
+
+  // Auto-select the first prompt so the main pane is never needlessly empty.
+  const isFullPageView = view.kind === "history" || view.kind === "suggestions" || view.kind === "shares";
+  useEffect(() => {
+    if (isFullPageView || selectedPromptId !== null) return;
+    const first = list?.[0];
+    if (first) selectPrompt(first.id);
+  }, [isFullPageView, selectedPromptId, list, selectPrompt]);
+
+  const createPrompt = useAppMutation(
+    (input: { title: string; description: string; content: string; tagIds: string[] }) =>
+      window.promptBuilder.prompts.create({
+        title: input.title,
+        content: input.content,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.tagIds.length > 0 ? { tagIds: input.tagIds } : {}),
+      }),
+    {
+      onSuccess: (created) => {
+        if (view.kind === "trash") setView({ kind: "library" });
+        selectPrompt(created.id);
+      },
+      toast: (created) => `Created “${created.title}”`,
+    },
+  );
+
+  return (
+    <>
+      <Group
+        orientation="horizontal"
+        className="h-full bg-app text-ink"
+        defaultLayout={rootLayout.defaultLayout}
+        onLayoutChanged={rootLayout.onLayoutChanged}
+      >
+        <Panel
+          id="rail"
+          collapsible
+          collapsedSize={48}
+          minSize={180}
+          maxSize={320}
+          defaultSize={224}
+          groupResizeBehavior="preserve-pixel-size"
+          panelRef={railRef}
+          onResize={(size) => setRailCollapsed(size.inPixels <= 49)}
+          className="min-h-0"
+        >
+          <LeftRail
+            collapsed={railCollapsed}
+            onToggleCollapse={() => togglePanel(railRef.current, setRailCollapsed)}
+          />
+        </Panel>
+        <ResizeSeparator />
+        <Panel id="content" minSize={480} className="min-h-0 min-w-0">
+          {view.kind === "history" ? (
+            <HistoryView />
+          ) : view.kind === "suggestions" ? (
+            <SuggestionsView />
+          ) : view.kind === "shares" ? (
+            <SharesView />
+          ) : (
+            <Group
+              orientation="horizontal"
+              className="h-full"
+              defaultLayout={columnLayout.defaultLayout}
+              onLayoutChanged={columnLayout.onLayoutChanged}
+            >
+              <Panel
+                id="list"
+                collapsible
+                collapsedSize={36}
+                minSize={280}
+                maxSize={520}
+                defaultSize={340}
+                groupResizeBehavior="preserve-pixel-size"
+                panelRef={listRef}
+                onResize={(size) => setListCollapsed(size.inPixels <= 37)}
+                className="min-h-0"
+              >
+                <PromptListPane
+                  collapsed={listCollapsed}
+                  onToggleCollapse={() => togglePanel(listRef.current, setListCollapsed)}
+                />
+              </Panel>
+              <ResizeSeparator />
+              <Panel id="main" minSize={320} className="min-h-0 min-w-0">
+                {selectedPromptId && prompt ? <MainPane prompt={prompt} /> : <MainPaneEmpty />}
+              </Panel>
+            </Group>
+          )}
+        </Panel>
+      </Group>
+
+      <CommandPalette />
+      <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      <ImportSnapshotDialog />
+      <SyncPairRequestDialog />
+      <UpdateDialog />
+      <SettingsDialog />
+      <ManageModelsDialog open={manageModelsOpen} onOpenChange={setManageModelsOpen} />
+      <NewPromptDialog
+        open={newPromptOpen}
+        onOpenChange={setNewPromptOpen}
+        allTags={allTags ?? []}
+        onCreate={(input) => createPrompt.mutate(input)}
+      />
+    </>
+  );
+}

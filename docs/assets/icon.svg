@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B0E14"/>
+      <stop offset="1" stop-color="#151B26"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#60A5FA"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect width="1024" height="1024" rx="230"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+  </g>
+  <!-- hairline rim so the tile reads on both GitHub themes -->
+  <rect x="4" y="4" width="1016" height="1016" rx="226" fill="none" stroke="#39465C" stroke-opacity="0.85" stroke-width="7"/>
+  <path d="M368 282 662 512 368 742" fill="none" stroke="url(#accent)" stroke-width="118" stroke-linecap="butt" stroke-linejoin="miter"/>
+  <rect x="664" y="700" width="196" height="84" rx="42" fill="#E6EAF2"/>
+</svg>

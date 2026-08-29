@@ -1,0 +1,201 @@
+{
+  "name": "@promptbranch/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
+  "author": "PromptBranch",
+  "homepage": "https://promptbranch.app",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "icons": "node scripts/build-icons.mjs && node scripts/generate-menu-icons.mjs",
+    "postinstall": "node scripts/patch-electron-name.mjs || true",
+    "dist": "electron-vite build && electron-builder",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
+  },
+  "build": {
+    "appId": "com.promptbranch.app",
+    "productName": "PromptBranch",
+    "artifactName": "PromptBranch-${version}-${arch}.${ext}",
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "../../THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSE",
+        "to": "LICENSE.electron.txt"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSES.chromium.html",
+        "to": "LICENSES.chromium.html"
+      },
+      {
+        "from": "build/menu-icons",
+        "to": "menu-icons"
+      }
+    ],
+    "npmRebuild": false,
+    "protocols": [
+      {
+        "name": "PromptBranch snapshot link",
+        "schemes": [
+          "promptbranch"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "PromptBranch",
+      "repo": "promptbranch"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "PromptBranch discovers and syncs with your other devices over the local network. Nothing ever leaves your machines.",
+        "NSBonjourServices": [
+          "_promptbranch._tcp"
+        ]
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "PromptBranch ${version}",
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "PromptBranch-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "build/icon-512.png",
+      "category": "Utility;Development;",
+      "executableName": "promptbranch",
+      "maintainer": "PromptBranch <promptbranch@users.noreply.local>",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "PromptBranch-${version}-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
+    "@promptbranch/ai": "workspace:*",
+    "@promptbranch/core": "workspace:*",
+    "@promptbranch/share": "workspace:*",
+    "@radix-ui/react-alert-dialog": "^1.1.23",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-popover": "^1.1.23",
+    "@radix-ui/react-scroll-area": "^1.2.18",
+    "@radix-ui/react-tabs": "^1.1.21",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "@tanstack/react-query": "^5.102.0",
+    "@uiw/react-codemirror": "^4.25.11",
+    "better-sqlite3": "13.0.3",
+    "bonjour-service": "^1.4.4",
+    "codemirror": "^6.0.2",
+    "diff": "^9.0.0",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^1.33.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.12.3",
+    "remark-gfm": "^4.0.1",
+    "selfsigned": "^5.5.0",
+    "shiki": "^4.4.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.4.1",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "5.0.0",
+    "jsdom": "^30.0.1",
+    "png-to-ico": "^3.0.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.11"
+  }
+}

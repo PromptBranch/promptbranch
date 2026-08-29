@@ -1,0 +1,8 @@
+# Keeps the commit-SHA pins in .github/workflows/* current, so actions never
+# float on mutable version tags.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

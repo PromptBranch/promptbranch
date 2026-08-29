@@ -1,0 +1,51 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Publishing authenticates with the NPM_TOKEN secret; the workflow token only
+# needs read access to check the tag out.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish Packages (@promptbranch/*)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm -r build
+
+      - name: Sync LICENSE + third-party notices into packages
+        run: node scripts/sync-package-licenses.mjs
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          pnpm --filter @promptbranch/share publish --access public --no-git-checks
+          pnpm --filter @promptbranch/core publish --access public --no-git-checks
+          pnpm --filter @promptbranch/ai publish --access public --no-git-checks
+          pnpm --filter @promptbranch/mcp publish --access public --no-git-checks
+          pnpm --filter @promptbranch/cli publish --access public --no-git-checks

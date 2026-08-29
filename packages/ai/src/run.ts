@@ -115,7 +115,7 @@ export interface StreamPromptRequest extends RunPromptRequest {
 }
 
 /**
- * Streaming counterpart of runPrompt: consumes the AI SDK fullStream,
+ * Streaming counterpart of runPrompt: consumes the AI SDK event stream,
  * reports accumulated text via onDelta, and resolves with the same result
  * shape. Mid-stream error parts and aborts normalize like runPrompt errors.
  */
@@ -126,15 +126,15 @@ export async function streamPrompt(request: StreamPromptRequest): Promise<RunPro
     const result = streamText({
       model: request.model,
       prompt: request.prompt,
-      // fullStream below surfaces the same error to our normalized boundary.
+      // The event stream below surfaces the same error to our normalized boundary.
       // Avoid the SDK default handler dumping the raw provider error first.
       onError: () => undefined,
       ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
       ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
       ...(request.signal !== undefined ? { abortSignal: request.signal } : {}),
     });
-    // fullStream (not textStream) so mid-stream provider errors surface.
-    for await (const part of result.fullStream) {
+    // The event stream (not textStream) keeps mid-stream provider errors visible.
+    for await (const part of result.stream) {
       if (part.type === "text-delta") {
         text += part.text;
         request.onDelta?.(text);
@@ -146,7 +146,7 @@ export async function streamPrompt(request: StreamPromptRequest): Promise<RunPro
     if (request.signal?.aborted) {
       throw new PromptRunError({ message: "Request aborted (timeout or cancellation)", code: "aborted" });
     }
-    const usage = await result.totalUsage;
+    const usage = await result.usage;
     return {
       text,
       usage: {

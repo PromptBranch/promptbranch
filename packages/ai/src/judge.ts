@@ -1,10 +1,16 @@
 /**
  * LLM-as-judge: a model scores a run's output against the prompt that
  * produced it. The verdict is strict JSON validated against judgeVerdictSchema
- * — structured output via the AI SDK's generateObject, with one
+ * — structured output via the AI SDK's generateText + Output.object, with one
  * parse-and-validate retry when the model answers with malformed JSON.
  */
-import { generateObject, NoObjectGeneratedError, type LanguageModel } from "ai";
+import {
+  generateText,
+  NoObjectGeneratedError,
+  NoOutputGeneratedError,
+  Output,
+  type LanguageModel,
+} from "ai";
 import { z } from "zod";
 import { stripWrappingFences } from "./assist.js";
 import { normalizeError, PromptRunError, runPrompt } from "./run.js";
@@ -74,24 +80,27 @@ export function parseJudgeVerdict(text: string): JudgeVerdict {
 }
 
 /**
- * Judges one run output. Primary path: generateObject (the SDK validates the
- * parsed object against the zod schema). When the model's reply cannot be
- * parsed/validated (NoObjectGeneratedError), retry once with a plain text
+ * Judges one run output. Primary path: generateText + Output.object (the SDK
+ * validates the parsed object against the zod schema). When the model's reply
+ * cannot produce a parsed/validated output, retry once with a plain text
  * generation and manual extraction. Everything else (HTTP, auth, abort)
  * throws immediately, normalized like runPrompt errors.
  */
 export async function runJudge(request: JudgeRequest): Promise<JudgeVerdict> {
   const prompt = buildJudgePrompt(request);
   try {
-    const result = await generateObject({
+    const result = await generateText({
       model: request.model,
-      schema: judgeVerdictSchema,
+      output: Output.object({ schema: judgeVerdictSchema }),
       prompt,
       ...(request.signal !== undefined ? { abortSignal: request.signal } : {}),
     });
-    return result.object;
+    return result.output;
   } catch (error) {
-    if (!NoObjectGeneratedError.isInstance(error)) {
+    if (
+      !NoObjectGeneratedError.isInstance(error) &&
+      !NoOutputGeneratedError.isInstance(error)
+    ) {
       throw new PromptRunError(normalizeError(error));
     }
   }

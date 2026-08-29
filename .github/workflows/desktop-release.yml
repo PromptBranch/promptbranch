@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-desktop:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     environment: release
     strategy:
@@ -20,10 +20,28 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
+            arch: arm64
+            args: --mac --arm64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+            args: --mac --x64
           - os: windows-latest
             platform: win
+            arch: x64
+            args: --win --x64
+          - os: windows-11-arm
+            platform: win
+            arch: arm64
+            args: --win --arm64
           - os: ubuntu-latest
             platform: linux
+            arch: x64
+            args: --linux --x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            args: --linux --arm64
 
     steps:
       - name: Checkout repository
@@ -54,7 +72,7 @@ jobs:
       - name: Generate Desktop App Icons
         run: pnpm --filter @promptbranch/desktop icons
 
-      - name: Build, sign, and publish macOS artifacts
+      - name: Build and sign macOS artifacts
         if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,18 +81,25 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: pnpm --filter @promptbranch/desktop dist --mac --publish always
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
 
-      - name: Build, sign, and publish Windows artifacts
+      - name: Build and sign Windows artifacts
         if: runner.os == 'Windows'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: pnpm --filter @promptbranch/desktop dist --win --publish always
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
 
-      - name: Build and publish Linux artifacts
+      - name: Build Linux artifacts
         if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter @promptbranch/desktop dist --linux --publish always
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: promptbranch-${{ matrix.platform }}-${{ matrix.arch }}
+          path: apps/desktop/dist/
+          if-no-files-found: error

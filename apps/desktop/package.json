@@ -14,7 +14,8 @@
     "icons": "node scripts/build-icons.mjs && node scripts/generate-menu-icons.mjs",
     "postinstall": "node scripts/patch-electron-name.mjs || true",
     "dist": "electron-vite build && electron-builder",
-    "test": "vitest run",
+    "test": "vitest run && pnpm test:release-architecture",
+    "test:release-architecture": "node --test scripts/test/verify-release-architecture.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
   },
   "build": {

@@ -21,7 +21,7 @@
     "@ai-sdk/anthropic": "3.0.112",
     "@ai-sdk/google": "3.0.112",
     "@ai-sdk/openai": "3.0.100",
-    "@ai-sdk/openai-compatible": "2.0.71",
+    "@ai-sdk/openai-compatible": "3.0.37",
     "ai": "6.0.265",
     "zod": "4.4.3"
   },

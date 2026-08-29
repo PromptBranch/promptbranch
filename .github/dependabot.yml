@@ -6,3 +6,24 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # The pnpm workspace: the npm ecosystem covers pnpm too, and workspaces need
+  # one manifest directory per entry — the directories globs collapse that to
+  # a single block (root + apps/* + packages/*). Every update also regenerates
+  # the shared root pnpm-lock.yaml, which CI's --frozen-lockfile install will
+  # reject loudly if Dependabot ever leaves it stale. Minor and patch bumps
+  # are grouped into one weekly PR; majors stay as individual PRs so a
+  # breaking electron/better-sqlite3 bump (ABI-sensitive pair) fails alone
+  # instead of poisoning the group.
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/apps/*"
+      - "/packages/*"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

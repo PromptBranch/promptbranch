@@ -6,6 +6,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": "^22 || ^24 || >=26"
+  },
   "description": "PromptBranch sharing contract: snapshot schemas, id/token generation, secret scanner and portal HTTP client. Zero Electron/DOM dependencies.",
   "exports": {
     ".": "./src/index.ts"
@@ -17,7 +20,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "nanoid": "5.1.16",
+    "nanoid": "6.0.1",
     "zod": "4.4.3"
   },
   "devDependencies": {

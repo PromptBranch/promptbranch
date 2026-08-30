@@ -26,11 +26,11 @@ const layouts = {
     native: "win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-x64.node",
   },
   "linux-arm64": {
-    executable: "linux-arm64-unpacked/promptbranch",
+    executable: "linux-arm64-unpacked/promptbranch-bin",
     native: "linux-arm64-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-arm64.node",
   },
   "linux-x64": {
-    executable: "linux-unpacked/promptbranch",
+    executable: "linux-unpacked/promptbranch-bin",
     native: "linux-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-x64.node",
   },
 };

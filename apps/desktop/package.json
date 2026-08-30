@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/desktop",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
@@ -21,7 +21,6 @@
   "build": {
     "appId": "com.promptbranch.app",
     "productName": "PromptBranch",
-    "artifactName": "PromptBranch-${version}-${arch}.${ext}",
     "files": [
       "out/**",
       "package.json"
@@ -66,7 +65,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
-      "artifactName": "PromptBranch-${version}-macos-${arch}.${ext}",
+      "artifactName": "promptbranch_${version}_macos_${arch}.${ext}",
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
@@ -100,7 +99,7 @@
           "target": "nsis"
         }
       ],
-      "artifactName": "PromptBranch-${version}-windows-${arch}.${ext}"
+      "artifactName": "promptbranch_${version}_windows_${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -120,7 +119,7 @@
           "target": "deb"
         }
       ],
-      "artifactName": "PromptBranch-${version}-linux-${arch}.${ext}"
+      "artifactName": "promptbranch_${version}_linux_${arch}.${ext}"
     }
   },
   "dependencies": {

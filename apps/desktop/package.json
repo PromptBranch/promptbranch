@@ -13,9 +13,9 @@
     "preview": "electron-vite preview",
     "icons": "node scripts/build-icons.mjs && node scripts/generate-menu-icons.mjs",
     "postinstall": "node scripts/patch-electron-name.mjs || true",
-    "dist": "electron-vite build && electron-builder",
+    "dist": "electron-vite build && node scripts/package-desktop.mjs",
     "test": "vitest run && pnpm test:release-assets",
-    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/linux-launcher.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
+    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/linux-launcher.mjs scripts/test/package-desktop.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
   },
   "build": {

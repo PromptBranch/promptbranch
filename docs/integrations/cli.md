@@ -2,10 +2,6 @@
 
 The **`promptbranch` CLI** (`@promptbranch/cli`) exposes the agent-safe library workflow plus human sharing commands to shell scripts and terminal workflows.
 
-> [!NOTE]
-> No public CLI package has been published yet. The npm commands on this page
-> become usable when `@promptbranch/cli` is released.
-
 Run a command without installing anything globally:
 
 ```bash

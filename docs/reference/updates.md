@@ -1,10 +1,9 @@
 # Updates
 
-PromptBranch production builds can keep themselves up to date from the
-project's public release feed. The app downloads the right build for your
-operating system and installs it in-app — no manual re-download. No public
-release feed has been published yet, so update checks cannot find a release in
-this pre-release version.
+PromptBranch production builds check the project's public release feed for
+updates. Windows installers and Linux AppImages can download supported updates
+in-app. The unsigned v0.1 macOS build cannot install updates automatically;
+download newer macOS releases manually until signed builds are available.
 
 ## How it works
 
@@ -39,6 +38,6 @@ release notes. Choose:
 
 | Platform | Updates via |
 | --- | --- |
-| macOS | The update archive published with the macOS release |
+| macOS | Manual download for unsigned v0.1 builds; in-app updates require a future signed release |
 | Windows | The NSIS installer |
 | Linux | The AppImage build — `.deb` installs can't update themselves and link to the releases page instead |

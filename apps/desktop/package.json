@@ -15,7 +15,7 @@
     "postinstall": "node scripts/patch-electron-name.mjs || true",
     "dist": "electron-vite build && electron-builder",
     "test": "vitest run && pnpm test:release-assets",
-    "test:release-assets": "node --test scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
+    "test:release-assets": "node --test scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs scripts/test/verify-desktop-release-workflow.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
   },
   "build": {

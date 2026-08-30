@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 # Pull-request code executes in this job (postinstall scripts, tests, builds),
 # so the workflow token stays read-only and checkout credentials are not left
@@ -13,6 +13,21 @@ permissions:
   contents: read
 
 jobs:
+  promotion-policy:
+    name: Promotion Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require dev before main
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
+        run: |
+          echo "Pull requests into main must come from dev."
+          echo "Merge this branch into dev first, then open a dev-to-main pull request."
+          exit 1
+
+      - name: Confirm promotion path
+        if: github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref == 'dev'
+        run: echo "Promotion path is valid."
+
   test:
     name: Typecheck, Test & Build
     runs-on: macos-latest

@@ -150,8 +150,12 @@ bundles target Node 22.
 
 Quality gates and CI (`.github/workflows/`):
 
-- `ci.yml`: license check, typecheck, test and build on push/PR to `main`
-  (macos-latest, Node 22, `pnpm install --frozen-lockfile`).
+- Branch promotion is always `feature/release branch -> dev -> main`, using a
+  pull request for each step. Never open a pull request to `main` from any
+  branch other than `dev`.
+- `ci.yml`: promotion-policy enforcement plus license check, typecheck, test
+  and build on pushes and pull requests to `dev` and `main` (macos-latest,
+  Node 22, `pnpm install --frozen-lockfile`).
 - `publish-npm.yml`: publishes `@promptbranch/*` packages to npm on `v*`
   tags; runs `scripts/sync-package-licenses.mjs` before publishing.
 - `desktop-release.yml`: multi-platform matrix (mac/win/linux) building
@@ -339,8 +343,10 @@ when touching it:
   when credentials are present; unsigned builds trigger Gatekeeper warnings.
   Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
   Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
-- Icons are **generated, not committed art**: run the `icons` script before
-  `dist` if `build/icon*` files are missing (CI does). It also generates the
+- Icons are generated assets committed for cross-platform packaging: run the
+  `icons` script on macOS before `dist` if `build/icon*` files are missing or
+  the source icon changes. CI verifies the committed assets without invoking
+  macOS-only `sips`/`iconutil`. The script also generates the
   monochrome template icons for the native app-menu items
   (`build/menu-icons/`, shipped via `extraResources`, loaded by
   `src/main/menu-icons.ts` — macOS renders them in the app-menu dropdown;

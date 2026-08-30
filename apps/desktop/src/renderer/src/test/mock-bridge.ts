@@ -15,8 +15,6 @@ import type {
   PromptBuilderApi,
   SyncPairRequestEvent,
   SyncStatusDto,
-  UpdateStateEvent,
-  UpdateStatusDto,
 } from "../../../shared/ipc.js";
 
 type Mocked<T> = T extends (...args: infer A) => infer R
@@ -33,10 +31,6 @@ export type MockBridge = Mocked<PromptBuilderApi> & {
   emitSyncState(status: SyncStatusDto): void;
   /** Delivers a sync:pair-request event to subscribed listeners. */
   emitSyncPairRequest(event: SyncPairRequestEvent): void;
-  /** Delivers an update:state-changed event to subscribed listeners. */
-  emitUpdateState(event: UpdateStateEvent): void;
-  /** Delivers the app-menu "Check for Updates…" request to listeners. */
-  emitCheckRequested(): void;
 };
 
 const notStubbed = () => Promise.reject(new Error("bridge method not stubbed in this test"));
@@ -50,10 +44,6 @@ export function createMockBridge(): MockBridge {
   // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
   const syncStateListeners = new Set<(status: SyncStatusDto) => void>();
   const syncPairListeners = new Set<(event: SyncPairRequestEvent) => void>();
-  // update push listeners, driven by emitUpdateState.
-  const updateStateListeners = new Set<(event: UpdateStateEvent) => void>();
-  // app-menu "Check for Updates…" listeners, driven by emitCheckRequested.
-  const checkRequestedListeners = new Set<() => void>();
 
   const disabledSyncStatus: SyncStatusDto = {
     enabled: false,
@@ -66,14 +56,6 @@ export function createMockBridge(): MockBridge {
     nearby: [],
     pendingDirty: 0,
     lastSyncedAt: null,
-  };
-  const defaultUpdateStatus: UpdateStatusDto = {
-    supported: true,
-    unsupportedReason: null,
-    autoCheckEnabled: true,
-    currentVersion: "0.0.0-test",
-    lastCheckAt: null,
-    skippedVersion: null,
   };
   // Typed as the real API first so every default implementation is checked
   // against the real signatures, then widened to the mock view for tests.
@@ -273,26 +255,6 @@ export function createMockBridge(): MockBridge {
         };
       }),
     },
-    updates: {
-      getStatus: vi.fn(async () => defaultUpdateStatus),
-      setAutoCheck: vi.fn(async (enabled: boolean) => ({ ...defaultUpdateStatus, autoCheckEnabled: enabled })),
-      check: vi.fn(async () => ({ status: "up-to-date" as const, currentVersion: "0.0.0-test" })),
-      download: vi.fn(async () => {}),
-      install: vi.fn(),
-      skipVersion: vi.fn(async () => {}),
-      onStateChanged: vi.fn((callback: (event: UpdateStateEvent) => void) => {
-        updateStateListeners.add(callback);
-        return () => {
-          updateStateListeners.delete(callback);
-        };
-      }),
-      onCheckRequested: vi.fn((callback: () => void) => {
-        checkRequestedListeners.add(callback);
-        return () => {
-          checkRequestedListeners.delete(callback);
-        };
-      }),
-    },
   };
   return Object.assign(api as unknown as MockBridge, {
     emitRunProgress: (event: AiRunProgressEvent) => {
@@ -306,12 +268,6 @@ export function createMockBridge(): MockBridge {
     },
     emitSyncPairRequest: (event: SyncPairRequestEvent) => {
       for (const listener of [...syncPairListeners]) listener(event);
-    },
-    emitUpdateState: (event: UpdateStateEvent) => {
-      for (const listener of [...updateStateListeners]) listener(event);
-    },
-    emitCheckRequested: () => {
-      for (const listener of [...checkRequestedListeners]) listener();
     },
   });
 }

@@ -150,17 +150,16 @@ bundles target Node 22.
 
 Quality gates and CI (`.github/workflows/`):
 
-- Branch promotion is always `feature/release branch -> dev -> main`, using a
-  pull request for each step. Never open a pull request to `main` from any
-  branch other than `dev`.
-- `ci.yml`: promotion-policy enforcement plus license check, typecheck, test
-  and build on pushes and pull requests to `dev` and `main` (macos-latest,
-  Node 22, `pnpm install --frozen-lockfile`).
-- `publish-npm.yml`: publishes `@promptbranch/*` packages to npm on `v*`
-  tags; runs `scripts/sync-package-licenses.mjs` before publishing.
-- `desktop-release.yml`: multi-platform matrix (mac/win/linux) building
-  unsigned `.dmg`, `.zip`, `.exe`, `.AppImage`, `.deb` release assets from
-  `v*` tags and publishing them to GitHub Releases.
+- The branch path is `feature branch -> dev -> main`. Feature work targets
+  `dev`; maintainers may commit small changes directly to `dev`. Only `dev`
+  may open a pull request into `main`.
+- `ci.yml` is the only GitHub Actions workflow. Its single `CI` job runs the
+  promotion guard, license check, typecheck, tests and build on pushes to
+  `dev` and pull requests targeting `dev` or `main` (macos-latest, Node 22,
+  `pnpm install --frozen-lockfile`).
+- GitHub Actions never creates branches, publishes npm packages, builds
+  installers, creates tags, or creates GitHub Releases. Releases are manual;
+  follow `docs-internal/RELEASING.md`.
 
 ## Commit message convention
 
@@ -321,11 +320,11 @@ when touching it:
   256-bit random (`packages/share/src/ids.ts`), shown to the publisher once,
   stored locally for revocation, hashed server-side, and never travel in
   export files. Sharing is unlisted-only — keep it that way.
-- Never commit `.env` files or notarization credentials. macOS release jobs
-  fail closed unless a `Developer ID Application` certificate and Apple
-  notarization credentials are available from protected CI secrets. The
-  workflow verifies the complete bundle signature, Gatekeeper assessment and
-  stapled notarization tickets before staging a macOS installer.
+- Never commit `.env` files or notarization credentials. The manual release
+  process may use a local `Developer ID Application` certificate and Apple
+  notarization credentials, but they must stay outside the repository. Signed
+  artifacts must pass the bundle signature, Gatekeeper and stapled-ticket
+  verifier before publication.
 - The desktop `postinstall` script (`scripts/patch-electron-name.mjs`)
   patches the dev Electron bundle's Info.plist to say "PromptBranch",
   breaking the dev binary's code signature — expected, dev-only, never
@@ -340,15 +339,17 @@ when touching it:
   electron-vite then electron-builder (config inline in
   `apps/desktop/package.json` → `build`), writing to `apps/desktop/dist/`.
   All targets build from macOS; default is the host platform.
-- macOS: signed and notarized dmg + zip (arm64 + x64); a missing credential or
-  failed distribution assessment blocks the whole release.
+- macOS: dmg + zip (arm64 + x64). Signing/notarization is optional for the
+  current manual process; release notes must state the signing status, and
+  signed builds must pass `verify-macos-distribution.mjs`.
   Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
   Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
-- Matrix jobs build and validate without publishing. They copy an exact
-  installer allowlist into `apps/desktop/release-artifacts/`; a single
-  dependent job assembles the draft GitHub Release. Release filenames always
-  include the target OS and architecture. `.yml` updater metadata and
-  `.blockmap` files are never uploaded as user-facing release assets.
+- Maintainers build each target manually from the exact production commit,
+  verify the packaged architecture, and use
+  `collect-release-installers.mjs` to stage only the exact installer
+  allowlist. Release filenames always include the target OS and architecture.
+  `.yml` metadata and `.blockmap` files are never uploaded as user-facing
+  release assets.
 - Icons are generated assets committed for cross-platform packaging: run the
   `icons` script on macOS before `dist` if `build/icon*` files are missing or
   the source icon changes. CI verifies the committed assets without invoking
@@ -368,24 +369,12 @@ when touching it:
   electron-vite; the CLI/MCP esbuild bundles inline them
   (`better-sqlite3` kept external — Node cannot resolve core's
   `.js`-suffixed TS imports directly without compilation).
-- In-app auto-update code remains wired through **electron-updater against
-  GitHub Releases** (spec:
-  `docs-internal/specs/2026-08-28-auto-update-design.md`).
-  `apps/desktop/src/main/updater.ts` (`DesktopUpdater`) owns policy —
-  background checks 15s after launch and every 6h, skipped-version handling,
-  the `updates.auto_check` / `updates.skipped_version` /
-  `updates.last_check_at` device-local settings keys — while
-  `src/main/updater-github.ts` adapts the electron-updater singleton. The
-  `publish` block pinned in `apps/desktop/package.json` embeds the trusted
-  repository configuration. The v0.1 release line intentionally omits
-  `latest*.yml` and `.blockmap` assets, so desktop updates are manual on every
-  platform. Restoring automatic updates requires a separate architecture-aware
-  feed design and target-backed update testing; never expose a last-writer-wins
-  matrix feed, point the updater at an untrusted source, or disable signature
-  verification.
-- The app is offline-first *except* for model-catalog refreshes (models.dev),
-  model runs, and update checks; a failed catalog refresh keeps serving the
-  stale cache.
+- Desktop updates are manual on every platform. The app opens the public
+  GitHub Releases page but has no updater feed, background update service, or
+  `electron-updater` dependency. Restoring automatic updates requires a
+  separate architecture-aware design and target-backed update testing.
+- The app is offline-first *except* for model-catalog refreshes (models.dev)
+  and model runs; a failed catalog refresh keeps serving the stale cache.
 - The portal deployment infrastructure (Docker Compose standalone stack,
   hardened VPS deployment behind Nginx Proxy Manager, host-hardening
   scripts) lives in the companion `promptbranch-portal` repository.
@@ -394,7 +383,7 @@ when touching it:
   dependency tree (`pnpm notices` / `scripts/generate-notices.mjs`) and must
   be regenerated after dependency changes; it ships via the desktop
   `extraResources` and, for npm packages, via
-  `scripts/sync-package-licenses.mjs` (CI runs it before publish; the
-  per-package copies are gitignored). `pnpm license-check`
+  `scripts/sync-package-licenses.mjs` (run manually before npm publication;
+  the per-package copies are gitignored). `pnpm license-check`
   (`scripts/check-licenses.mjs`, also a CI step) fails the build on unknown
   or copyleft production licenses.

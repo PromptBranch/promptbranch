@@ -17,8 +17,9 @@ PromptBranch provides separate native builds for Apple Silicon (M1/M2/M3/M4) and
 - **Intel (x64)**: `PromptBranch-<version>-macos-x64.dmg`
 - **Portable Zip**: `PromptBranch-<version>-macos-arm64.zip` / `PromptBranch-<version>-macos-x64.zip`
 
-macOS installers are Developer ID signed and notarized. PromptBranch does not
-publish a macOS installer unless both checks pass in the release pipeline.
+The GitHub release notes state whether a macOS build is signed and notarized.
+Unsigned preview builds may trigger Gatekeeper; use only releases published by
+the official PromptBranch repository and verify the listed checksum.
 
 > [!NOTE]
 > **Local Network Permission Prompt**: On macOS, the first time you enable Multi-Device Sync, macOS may display a system dialog asking for **Local Network** access. Select **Allow** so local discovery and peer-to-peer sync can reach your other devices.

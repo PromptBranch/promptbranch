@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import type { SortKey, UpdateAvailableInfo } from "../../../shared/ipc.js";
+import type { SortKey } from "../../../shared/ipc.js";
 
 export type ViewKind = "library" | "history" | "starred" | "shares" | "trash" | "collection" | "suggestions";
 
@@ -50,14 +50,6 @@ interface AppStateValue {
   /** The "Manage models" dialog, opened from the model picker footer or Settings. */
   manageModelsOpen: boolean;
   setManageModelsOpen: (open: boolean) => void;
-  /** Latest release a check found; non-null shows the left-rail update badge. */
-  updateAvailable: UpdateAvailableInfo | null;
-  setUpdateAvailable: (info: UpdateAvailableInfo | null) => void;
-  /** Whether the update dialog is open ("Later" closes it; the badge stays). */
-  updateDialogOpen: boolean;
-  setUpdateDialogOpen: (open: boolean) => void;
-  /** Records the release and opens the update dialog. */
-  openUpdateDialog: (info: UpdateAvailableInfo) => void;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -76,8 +68,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [importUrl, setImportUrl] = useState<string | null>(null);
   const [manageModelsOpen, setManageModelsOpen] = useState(false);
-  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailableInfo | null>(null);
-  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
 
   const selectPrompt = useCallback((id: string | null) => {
     setSelectedPromptId(id);
@@ -87,11 +77,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const openSettings = useCallback((section: SettingsSection = "appearance") => {
     setSettingsSection(section);
     setSettingsOpen(true);
-  }, []);
-
-  const openUpdateDialog = useCallback((info: UpdateAvailableInfo) => {
-    setUpdateAvailable(info);
-    setUpdateDialogOpen(true);
   }, []);
 
   const value = useMemo<AppStateValue>(
@@ -122,13 +107,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setImportUrl,
       manageModelsOpen,
       setManageModelsOpen,
-      updateAvailable,
-      setUpdateAvailable,
-      updateDialogOpen,
-      setUpdateDialogOpen,
-      openUpdateDialog,
     }),
-    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen, updateAvailable, updateDialogOpen, openUpdateDialog],
+    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

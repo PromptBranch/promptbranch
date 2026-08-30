@@ -237,69 +237,6 @@ export const syncStatusDtoSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Updates (GitHub Releases via electron-updater)
-// ---------------------------------------------------------------------------
-
-export const updateSetAutoCheckSchema = z.object({ enabled: z.boolean() });
-
-/** `version: null` clears the skip (offer the release again). */
-export const updateSkipVersionSchema = z.object({ version: z.string().trim().max(32).nullable() });
-
-/** Why in-app updates cannot run in this build. */
-export const updateUnsupportedReasonSchema = z.enum(["dev-build", "linux-package"]);
-export type UpdateUnsupportedReason = z.infer<typeof updateUnsupportedReasonSchema>;
-
-/** A release offered to the user: current vs. next version + notes. */
-export const updateAvailableInfoSchema = z.object({
-  currentVersion: z.string(),
-  version: z.string(),
-  /** GitHub release body (markdown) — rendered, never executed. */
-  releaseNotes: z.string().nullable(),
-  releaseUrl: z.string(),
-});
-export type UpdateAvailableInfo = z.infer<typeof updateAvailableInfoSchema>;
-
-export const updateCheckResultDtoSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("up-to-date"), currentVersion: z.string() }),
-  updateAvailableInfoSchema.extend({ status: z.literal("available") }),
-  z.object({
-    status: z.literal("unsupported"),
-    reason: updateUnsupportedReasonSchema,
-  }),
-  z.object({ status: z.literal("error"), message: z.string() }),
-]);
-export type UpdateCheckResultDto = z.infer<typeof updateCheckResultDtoSchema>;
-
-export const updateStatusDtoSchema = z.object({
-  /** False in dev builds and non-AppImage Linux installs — checks stay no-ops. */
-  supported: z.boolean(),
-  unsupportedReason: updateUnsupportedReasonSchema.nullable(),
-  autoCheckEnabled: z.boolean(),
-  currentVersion: z.string(),
-  /** ISO timestamp of the last completed check (success or failure), or null. */
-  lastCheckAt: z.string().nullable(),
-  skippedVersion: z.string().nullable(),
-});
-export type UpdateStatusDto = z.infer<typeof updateStatusDtoSchema>;
-
-export const updateProgressSchema = z.object({
-  percent: z.number(),
-  transferred: z.number(),
-  total: z.number(),
-  bytesPerSecond: z.number(),
-});
-export type UpdateProgress = z.infer<typeof updateProgressSchema>;
-
-/** Main → renderer push: an auto-check hit, download progress, or its outcome. */
-export const updateStateEventSchema = z.discriminatedUnion("phase", [
-  updateAvailableInfoSchema.extend({ phase: z.literal("available") }),
-  z.object({ phase: z.literal("downloading"), progress: updateProgressSchema }),
-  z.object({ phase: z.literal("downloaded"), version: z.string() }),
-  z.object({ phase: z.literal("error"), message: z.string() }),
-]);
-export type UpdateStateEvent = z.infer<typeof updateStateEventSchema>;
-
-// ---------------------------------------------------------------------------
 // AI providers, catalog, runs and assist
 // ---------------------------------------------------------------------------
 
@@ -1029,23 +966,6 @@ export interface PromptBuilderApi {
     onStateChanged(callback: (status: SyncStatusDto) => void): () => void;
     /** Main → renderer: a device is asking to pair; answer via respondPairing. */
     onPairRequest(callback: (event: SyncPairRequestEvent) => void): () => void;
-  };
-  updates: {
-    getStatus(): Promise<UpdateStatusDto>;
-    /** Persists the preference and reschedules background checks. */
-    setAutoCheck(enabled: boolean): Promise<UpdateStatusDto>;
-    /** Manual check; ignores the skipped version. */
-    check(): Promise<UpdateCheckResultDto>;
-    /** Downloads the update; progress arrives via onStateChanged events. */
-    download(): Promise<void>;
-    /** Restarts into the downloaded update immediately. */
-    install(): void;
-    /** Remember "don't offer this version again" (null clears it). */
-    skipVersion(version: string | null): Promise<void>;
-    /** Main → renderer events; parse with updateStateEventSchema. */
-    onStateChanged(callback: (event: UpdateStateEvent) => void): () => void;
-    /** The app-menu "Check for Updates…" action; run a manual check. */
-    onCheckRequested(callback: () => void): () => void;
   };
   ai: {
     providers: {

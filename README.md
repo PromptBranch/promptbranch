@@ -49,9 +49,9 @@ and AI agents go through a propose-and-approve flow so humans stay in charge.
 
 ## Installation
 
-Installers for macOS (`.dmg`), Windows (`.exe`) and Linux (`.AppImage`,
-`.deb`) will be distributed through the public release channel. No public
-desktop release or download page has been published yet.
+Download installers for macOS (`.dmg`), Windows (`.exe`) and Linux
+(`.AppImage`, `.deb`) from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
 
 Step-by-step guides for every platform — plus CLI and MCP server setup —
 live in [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
@@ -88,9 +88,9 @@ rail, with a pending-count badge; approve optionally sets it as current,
 reject keeps it permanently inactive).
 
 Onboarding is copy-paste: open Settings → *Agent integration* for the resolved
-DB path and a ready-to-paste MCP client config. Once the npm package is
-published, it will also include an optional skill file that teaches coding
-agents the fetch → report → suggest workflow.
+DB path and a ready-to-paste MCP client config. The npm package also includes
+an optional skill file that teaches coding agents the fetch → report → suggest
+workflow.
 
 ### MCP server
 

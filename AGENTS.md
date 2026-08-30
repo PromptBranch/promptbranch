@@ -159,7 +159,7 @@ Quality gates and CI (`.github/workflows/`):
 - `publish-npm.yml`: publishes `@promptbranch/*` packages to npm on `v*`
   tags; runs `scripts/sync-package-licenses.mjs` before publishing.
 - `desktop-release.yml`: multi-platform matrix (mac/win/linux) building
-  signed `.dmg`, `.zip`, `.exe`, `.AppImage`, `.deb` release assets from
+  unsigned `.dmg`, `.zip`, `.exe`, `.AppImage`, `.deb` release assets from
   `v*` tags and publishing them to GitHub Releases.
 
 ## Commit message convention
@@ -321,10 +321,11 @@ when touching it:
   256-bit random (`packages/share/src/ids.ts`), shown to the publisher once,
   stored locally for revocation, hashed server-side, and never travel in
   export files. Sharing is unlisted-only — keep it that way.
-- Never commit `.env` files or notarization credentials. macOS signing uses
-  the login Keychain's `Developer ID Application` cert (auto-discovered; do
-  not pin the identity name); notarization credentials come from
-  `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` env vars.
+- Never commit `.env` files or notarization credentials. The v0.1 release
+  workflow explicitly disables signing identity auto-discovery and does not
+  consume signing secrets. If signing is enabled in a later release, macOS
+  signing uses a `Developer ID Application` certificate and notarization
+  credentials must stay in protected CI secrets.
 - The desktop `postinstall` script (`scripts/patch-electron-name.mjs`)
   patches the dev Electron bundle's Info.plist to say "PromptBranch",
   breaking the dev binary's code signature — expected, dev-only, never
@@ -339,8 +340,9 @@ when touching it:
   electron-vite then electron-builder (config inline in
   `apps/desktop/package.json` → `build`), writing to `apps/desktop/dist/`.
   All targets build from macOS; default is the host platform.
-- macOS: dmg + zip (arm64 + x64), **signed (hardened runtime) and notarized**
-  when credentials are present; unsigned builds trigger Gatekeeper warnings.
+- macOS: dmg + zip (arm64 + x64). The v0.1 workflow publishes unsigned,
+  unnotarized builds, so Gatekeeper warns on first launch and in-app macOS
+  updates are unsupported until signing is enabled.
   Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
   Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
 - Icons are generated assets committed for cross-platform packaging: run the

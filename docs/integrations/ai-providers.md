@@ -72,7 +72,9 @@ sequenceDiagram
   Note over DB,Renderer: Plaintext key is NEVER stored in SQLite<br/>and NEVER sent back to Renderer
 ```
 
-- **`safeStorage`**: API keys are encrypted at rest using your operating system's native cryptographic keychain (macOS Keychain, Windows DPAPI, or Linux Secret Service).
+- **`safeStorage`**: In the 0.1.0 desktop app, API keys are encrypted at rest
+  with macOS Keychain. Planned Windows and Linux desktop builds use Windows
+  DPAPI and Linux Secret Service respectively.
 - **Renderer Isolation**: The renderer necessarily holds a key while you type it, then sends it once to the main process. Stored keys are never returned to or decrypted in the renderer.
 - **Export & Sync Safety**: Library JSON exports can include provider metadata and model declarations, but the `api_key_enc` field is cleared. Multi-device sync also redacts that field, so keys must be configured separately on each device.
 

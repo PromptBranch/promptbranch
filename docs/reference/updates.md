@@ -1,28 +1,32 @@
 # Updates
 
-PromptBranch v0.1 uses manual desktop updates. Release pages contain only
-user-installable files, so updater metadata and differential-update block maps
-are intentionally not published. Download newer versions from the project's
-public GitHub Releases page.
+PromptBranch v0.1 uses manual desktop updates. The app does not check GitHub
+for a newer version or compare versions for you. It never checks for updates
+in the background, and it never downloads, installs, or applies an update.
 
-## How it works
+## Check for an update manually
 
-- Open [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
-- Choose the installer whose filename names your operating system and CPU
+- Open **About PromptBranch** and note the installed `Version` shown there.
+- Open **Settings → Updates** and select **Open GitHub Releases**. You can also
+  select **View Releases** in About, choose **GitHub Releases…** from the app
+  menu, or open
+  [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases)
+  directly.
+- Manually compare the installed version with the latest public release.
+- If the public release is newer, choose the macOS installer for your CPU
   architecture.
 - Quit PromptBranch, install the new version, and reopen it. Your library stays
-  in the same platform-specific application-data directory.
+  in the same application-data directory.
 
 ## Installing an update
 
-Download the same package type you originally installed. AppImage users should
-replace the old AppImage and restore its executable bit if needed. Debian users
-can install the new `.deb` over the existing package.
+Download the same package type you originally installed: DMG or ZIP. Choose
+the arm64 build for Apple Silicon or the x64 build for an Intel Mac.
 
 ## Platform notes
 
-| Platform | Updates via |
+| Platform | Desktop availability |
 | --- | --- |
-| macOS | DMG or ZIP, installed manually; check the release notes for signing status |
-| Windows | NSIS installer, installed manually |
-| Linux | AppImage or `.deb`, installed manually |
+| macOS | DMG or ZIP for arm64 and x64, installed manually |
+| Windows | Planned; no desktop build is available in 0.1.0 |
+| Linux | Planned; no desktop build is available in 0.1.0 |

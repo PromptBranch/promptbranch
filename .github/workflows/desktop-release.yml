@@ -69,11 +69,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate Desktop App Icons
-        run: pnpm --filter @promptbranch/desktop icons
+      - name: Verify Desktop App Icons
+        run: node apps/desktop/scripts/verify-desktop-icons.mjs
 
-      - name: Build and sign macOS artifacts
-        if: runner.os == 'macOS'
+      - name: Build unsigned macOS verification artifacts
+        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
+
+      - name: Build, sign, and publish macOS artifacts
+        if: runner.os == 'macOS' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -81,21 +87,31 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
+
+      - name: Build unsigned Windows verification artifacts
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
 
-      - name: Build and sign Windows artifacts
-        if: runner.os == 'Windows'
+      - name: Build, sign, and publish Windows artifacts
+        if: runner.os == 'Windows' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
+
+      - name: Build Linux verification artifacts
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
         run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
 
-      - name: Build Linux artifacts
-        if: runner.os == 'Linux'
+      - name: Build and publish Linux artifacts
+        if: runner.os == 'Linux' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
 
       - name: Verify packaged architecture
         run: >-

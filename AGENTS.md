@@ -343,8 +343,10 @@ when touching it:
   when credentials are present; unsigned builds trigger Gatekeeper warnings.
   Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
   Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
-- Icons are **generated, not committed art**: run the `icons` script before
-  `dist` if `build/icon*` files are missing (CI does). It also generates the
+- Icons are generated assets committed for cross-platform packaging: run the
+  `icons` script on macOS before `dist` if `build/icon*` files are missing or
+  the source icon changes. CI verifies the committed assets without invoking
+  macOS-only `sips`/`iconutil`. The script also generates the
   monochrome template icons for the native app-menu items
   (`build/menu-icons/`, shipped via `extraResources`, loaded by
   `src/main/menu-icons.ts` — macOS renders them in the app-menu dropdown;

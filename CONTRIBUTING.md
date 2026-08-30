@@ -31,6 +31,8 @@ feature branch → dev → main
 4. Merge the feature branch into `dev` after CI passes.
 5. When `dev` is stable and release-ready, open a `dev` → `main` pull request.
    Pull requests into `main` from any other branch are rejected by CI.
+6. After the promotion merges, fast-forward `dev` to the new `main` commit so
+   the next development cycle starts from identical history.
 
 Use squash merges for focused feature branches when a compact history is
 useful. Use a normal merge for `dev` → `main` so production promotions remain

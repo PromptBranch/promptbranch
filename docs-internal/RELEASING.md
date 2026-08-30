@@ -18,7 +18,9 @@ Actions, and the only repository workflow is CI.
    ```
 
 3. Merge `dev` into `main` through a pull request and wait for `CI` to pass.
-4. Check out the resulting `main` commit. Build and publish only that commit.
+4. Fast-forward `dev` to the resulting `main` commit and push it. This keeps
+   the branches aligned after GitHub creates the promotion merge commit.
+5. Check out the resulting `main` commit. Build and publish only that commit.
 
 ## 2. Build desktop installers
 

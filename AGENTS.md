@@ -152,7 +152,8 @@ Quality gates and CI (`.github/workflows/`):
 
 - The branch path is `feature branch -> dev -> main`. Feature work targets
   `dev`; maintainers may commit small changes directly to `dev`. Only `dev`
-  may open a pull request into `main`.
+  may open a pull request into `main`. After that promotion merges,
+  fast-forward `dev` to the new `main` commit so their histories stay aligned.
 - `ci.yml` is the only GitHub Actions workflow. Its single `CI` job runs the
   promotion guard, license check, typecheck, tests and build on pushes to
   `dev` and pull requests targeting `dev` or `main` (macos-latest, Node 22,

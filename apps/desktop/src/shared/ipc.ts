@@ -760,6 +760,55 @@ export interface AiJudgeResult {
   failures: Array<{ runId: string; modelId: string; error: string }>;
 }
 
+// ---------------------------------------------------------------------------
+// Desktop updates
+// ---------------------------------------------------------------------------
+
+export const updateCheckStatusSchema = z.enum([
+  "not-checked",
+  "checking",
+  "up-to-date",
+  "update-available",
+  "no-compatible-download",
+  "newer-build",
+  "error",
+]);
+export type UpdateCheckStatus = z.infer<typeof updateCheckStatusSchema>;
+
+export const updateCheckSourceSchema = z.enum(["manual", "automatic"]);
+export type UpdateCheckSource = z.infer<typeof updateCheckSourceSchema>;
+
+export const updateAssetDtoSchema = z.object({
+  name: z.string().min(1).max(300),
+  label: z.string().min(1).max(100),
+  kind: z.enum(["dmg", "exe", "appimage", "deb"]),
+  sizeBytes: z.number().int().nonnegative(),
+  recommended: z.boolean(),
+});
+export type UpdateAssetDto = z.infer<typeof updateAssetDtoSchema>;
+
+export const updateStateDtoSchema = z.object({
+  status: updateCheckStatusSchema,
+  currentVersion: z.string().min(1).max(100),
+  latestVersion: z.string().min(1).max(100).nullable(),
+  platform: z.string().min(1).max(50),
+  architecture: z.string().min(1).max(50),
+  automaticChecksEnabled: z.boolean(),
+  lastCheckedAt: z.string().datetime().nullable(),
+  checkSource: updateCheckSourceSchema.nullable(),
+  releaseName: z.string().min(1).max(300).nullable(),
+  releaseNotes: z.string().max(4_000).nullable(),
+  publishedAt: z.string().datetime().nullable(),
+  assets: z.array(updateAssetDtoSchema).max(4),
+  errorMessage: z.string().min(1).max(1_000).nullable(),
+});
+export type UpdateStateDto = z.infer<typeof updateStateDtoSchema>;
+
+export const updateSetAutomaticChecksSchema = z.object({ enabled: z.boolean() });
+export const updateOpenDownloadSchema = z.object({
+  assetName: z.string().trim().min(1).max(300),
+});
+
 export interface AppInfo {
   version: string;
   dbPath: string;
@@ -1007,6 +1056,21 @@ export interface PromptBuilderApi {
     judge(input: AiJudgeInput): Promise<AiJudgeResult>;
     /** Stored run groups of a prompt, newest first (compare view). */
     runGroups(promptId: string): Promise<RunGroupDto[]>;
+  };
+  updates: {
+    /** Last known update state, restored from the device-local cache. */
+    getState(): Promise<UpdateStateDto>;
+    /** Runs a user-requested latest-stable-release check. */
+    check(): Promise<UpdateStateDto>;
+    setAutomaticChecks(enabled: boolean): Promise<UpdateStateDto>;
+    /** Opens one exact, validated installer asset in the system browser. */
+    openDownload(assetName: string): Promise<void>;
+    /** Opens the validated cached release page in the system browser. */
+    openReleaseNotes(): Promise<void>;
+    /** Main -> renderer state events from manual and automatic checks. */
+    onStateChanged(callback: (state: UpdateStateDto) => void): () => void;
+    /** Subscribe to the application menu's "Check for Updates…" action. */
+    onOpen(callback: () => void): () => void;
   };
   app: {
     info(): Promise<AppInfo>;

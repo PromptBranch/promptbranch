@@ -168,6 +168,7 @@
     "react-resizable-panels": "^4.12.3",
     "remark-gfm": "^4.0.1",
     "selfsigned": "^5.5.0",
+    "semver": "7.8.5",
     "shiki": "^4.4.3",
     "zod": "4.4.3"
   },
@@ -181,6 +182,7 @@
     "@types/node": "26.3.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
+    "@types/semver": "7.8.0",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "43.4.1",
     "electron-builder": "^26.0.12",

@@ -15,6 +15,7 @@ import type {
   PromptBuilderApi,
   SyncPairRequestEvent,
   SyncStatusDto,
+  UpdateStateDto,
 } from "../../../shared/ipc.js";
 
 type Mocked<T> = T extends (...args: infer A) => infer R
@@ -31,6 +32,10 @@ export type MockBridge = Mocked<PromptBuilderApi> & {
   emitSyncState(status: SyncStatusDto): void;
   /** Delivers a sync:pair-request event to subscribed listeners. */
   emitSyncPairRequest(event: SyncPairRequestEvent): void;
+  /** Delivers an updates:state-changed event to subscribed listeners. */
+  emitUpdateState(state: UpdateStateDto): void;
+  /** Delivers the application menu's Check for Updates action. */
+  emitOpenUpdates(): void;
 };
 
 const notStubbed = () => Promise.reject(new Error("bridge method not stubbed in this test"));
@@ -44,6 +49,8 @@ export function createMockBridge(): MockBridge {
   // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
   const syncStateListeners = new Set<(status: SyncStatusDto) => void>();
   const syncPairListeners = new Set<(event: SyncPairRequestEvent) => void>();
+  const updateStateListeners = new Set<(state: UpdateStateDto) => void>();
+  const openUpdatesListeners = new Set<() => void>();
 
   const disabledSyncStatus: SyncStatusDto = {
     enabled: false,
@@ -56,6 +63,21 @@ export function createMockBridge(): MockBridge {
     nearby: [],
     pendingDirty: 0,
     lastSyncedAt: null,
+  };
+  const initialUpdateState: UpdateStateDto = {
+    status: "not-checked",
+    currentVersion: "0.0.0-test",
+    latestVersion: null,
+    platform: "macOS",
+    architecture: "arm64",
+    automaticChecksEnabled: true,
+    lastCheckedAt: null,
+    checkSource: null,
+    releaseName: null,
+    releaseNotes: null,
+    publishedAt: null,
+    assets: [],
+    errorMessage: null,
   };
   // Typed as the real API first so every default implementation is checked
   // against the real signatures, then widened to the mock view for tests.
@@ -190,6 +212,28 @@ export function createMockBridge(): MockBridge {
       judge: vi.fn(notStubbed),
       runGroups: vi.fn(async () => []),
     },
+    updates: {
+      getState: vi.fn(async () => initialUpdateState),
+      check: vi.fn(async () => initialUpdateState),
+      setAutomaticChecks: vi.fn(async (enabled) => ({
+        ...initialUpdateState,
+        automaticChecksEnabled: enabled,
+      })),
+      openDownload: vi.fn(async () => {}),
+      openReleaseNotes: vi.fn(async () => {}),
+      onStateChanged: vi.fn((callback: (state: UpdateStateDto) => void) => {
+        updateStateListeners.add(callback);
+        return () => {
+          updateStateListeners.delete(callback);
+        };
+      }),
+      onOpen: vi.fn((callback: () => void) => {
+        openUpdatesListeners.add(callback);
+        return () => {
+          openUpdatesListeners.delete(callback);
+        };
+      }),
+    },
     app: {
       info: vi.fn(async () => ({
         version: "0.0.0-test",
@@ -268,6 +312,12 @@ export function createMockBridge(): MockBridge {
     },
     emitSyncPairRequest: (event: SyncPairRequestEvent) => {
       for (const listener of [...syncPairListeners]) listener(event);
+    },
+    emitUpdateState: (state: UpdateStateDto) => {
+      for (const listener of [...updateStateListeners]) listener(state);
+    },
+    emitOpenUpdates: () => {
+      for (const listener of [...openUpdatesListeners]) listener();
     },
   });
 }

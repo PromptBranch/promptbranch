@@ -1,33 +1,52 @@
 # Updates
 
-PromptBranch v0.1 uses manual desktop updates. The app does not check GitHub
-for a newer version or compare versions for you. It never checks for updates
-in the background, and it never downloads, installs, or applies an update.
+PromptBranch can check for a newer stable desktop release and select the
+installer that matches your operating system and CPU architecture. Downloading
+and installing the update remains under your control.
 
-## Check for an update manually
+## Check for an update
 
-- Open **About PromptBranch** and note the installed `Version` shown there.
-- Open **Settings → Updates** and select **Open GitHub Releases**. You can also
-  select **View Releases** in About, choose **GitHub Releases…** from the app
-  menu, or open
-  [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases)
-  directly.
-- Manually compare the installed version with the latest public release.
-- If the public release is newer, choose the installer for your operating
-  system and CPU architecture.
-- Quit PromptBranch, install the new version, and reopen it. Your library stays
-  in the same application-data directory.
+Choose **Check for Updates…** from the PromptBranch application menu, or open
+**Settings → Updates** and select **Check for Updates**.
 
-## Installing an update
+PromptBranch compares the installed version with the latest stable release. The
+Updates page then shows one of these results:
 
-Download the same package type you originally installed. macOS uses DMG,
-Windows uses EXE, and Linux provides AppImage and DEB packages. Choose arm64 or
-x64 to match your device.
+- **Up to date** — the installed version is the latest stable release.
+- **Update available** — a newer version and a matching installer are available.
+- **No compatible installer** — a newer release exists, but its installer for
+  this device has not been published yet.
+- **Couldn’t check for updates** — the check failed; select **Try Again** when
+  your connection is available.
 
-## Platform notes
+The page also shows the current version, latest known version, detected
+platform and architecture, last checked time, and release notes when a newer
+version is available.
 
-| Platform | Desktop availability |
+## Automatic checks
+
+**Automatically check for updates** is enabled by default. PromptBranch checks
+quietly after launch and no more than once per day. It shows a notification only
+when a matching update is available; routine successes and failures do not
+interrupt your work.
+
+Turn the setting off at any time in **Settings → Updates**. Manual checks remain
+available while automatic checks are disabled.
+
+## Download and install
+
+When an update is available, select **Download Update**. PromptBranch opens the
+exact matching installer in your system browser; it does not download, run, or
+install anything in the background. Install the new version using your normal
+platform steps. Your local library remains in the same application-data
+directory.
+
+| Platform | Matching downloads |
 | --- | --- |
-| macOS | DMG for arm64 and x64, installed manually |
-| Windows | EXE for arm64 and x64, installed manually |
-| Linux | AppImage or DEB for arm64 and x64, installed manually |
+| macOS | DMG for arm64 or x64 |
+| Windows | EXE for arm64 or x64 |
+| Linux | AppImage and/or DEB for arm64 or x64 |
+
+On Linux, PromptBranch recommends the AppImage when the running app was opened
+from an AppImage. It never substitutes an installer for another operating
+system or architecture.

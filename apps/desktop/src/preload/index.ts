@@ -152,6 +152,28 @@ const api: PromptBuilderApi = {
     judge: (input) => invoke(IPC_CHANNELS.aiJudge, input),
     runGroups: (promptId) => invoke(IPC_CHANNELS.runGroupList, promptId),
   },
+  updates: {
+    getState: () => invoke(IPC_CHANNELS.updateGetState),
+    check: () => invoke(IPC_CHANNELS.updateCheck),
+    setAutomaticChecks: (enabled) =>
+      invoke(IPC_CHANNELS.updateSetAutomaticChecks, { enabled }),
+    openDownload: (assetName) =>
+      invoke(IPC_CHANNELS.updateOpenDownload, { assetName }),
+    openReleaseNotes: () => invoke(IPC_CHANNELS.updateOpenReleaseNotes),
+    onStateChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        // Main validates before sending; the renderer validates again before use.
+        callback(payload as Parameters<typeof callback>[0]);
+      };
+      ipcRenderer.on(IPC_CHANNELS.updateStateChanged, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.updateStateChanged, listener);
+    },
+    onOpen: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.openUpdates, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.openUpdates, listener);
+    },
+  },
   app: {
     info: () => invoke(IPC_CHANNELS.appInfo),
     onOpenAbout: (callback) => {

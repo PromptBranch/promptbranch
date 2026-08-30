@@ -94,8 +94,8 @@ workflow.
 
 ### MCP server
 
-The following configuration becomes usable when `@promptbranch/mcp` is
-published to npm; no public package is available yet:
+`@promptbranch/mcp` is available from npm. Point any stdio-capable MCP client
+at it with this configuration:
 
 ```json
 {
@@ -116,11 +116,10 @@ your human to open the Suggestions view to review it.
 
 ### CLI
 
-The CLI provides the same surface for shell pipelines. Once
-`@promptbranch/cli` is published to npm, run it without a global install as
-`npx -y @promptbranch/cli`, or install the package globally to use the shorter
-`promptbranch` command. All commands accept `--json` for machine-readable
-output:
+The CLI provides the same surface for shell pipelines. Run the public package
+without a global install as `npx -y @promptbranch/cli`, or install it globally
+to use the shorter `promptbranch` command. All commands accept `--json` for
+machine-readable output:
 
 ```sh
 promptbranch list --tag security

@@ -11,24 +11,22 @@ Download installers for macOS, Windows, and Linux from
 
 ### macOS
 
-PromptBranch provides native universal builds for Apple Silicon (M1/M2/M3/M4) and Intel Macs:
+PromptBranch provides separate native builds for Apple Silicon (M1/M2/M3/M4) and Intel Macs:
 
-- **Apple Silicon (ARM64)**: `PromptBranch-<version>-arm64.dmg`
-- **Intel (x64)**: `PromptBranch-<version>-x64.dmg`
-- **Portable Zip**: `PromptBranch-<version>-arm64.zip` / `PromptBranch-<version>-x64.zip`
+- **Apple Silicon (ARM64)**: `PromptBranch-<version>-macos-arm64.dmg`
+- **Intel (x64)**: `PromptBranch-<version>-macos-x64.dmg`
+- **Portable Zip**: `PromptBranch-<version>-macos-arm64.zip` / `PromptBranch-<version>-macos-x64.zip`
 
-> [!WARNING]
-> The v0.1 macOS builds are unsigned and not notarized. On first launch,
-> Control-click PromptBranch in Finder, choose **Open**, then confirm **Open**.
-> In-app updates on macOS remain unavailable until a future signed release.
+macOS installers are Developer ID signed and notarized. PromptBranch does not
+publish a macOS installer unless both checks pass in the release pipeline.
 
 > [!NOTE]
 > **Local Network Permission Prompt**: On macOS, the first time you enable Multi-Device Sync, macOS may display a system dialog asking for **Local Network** access. Select **Allow** so local discovery and peer-to-peer sync can reach your other devices.
 
 ### Windows
 
-- **Installer (Intel/AMD 64-bit)**: `PromptBranch-Setup-<version>-x64.exe`
-- **Installer (ARM64)**: `PromptBranch-Setup-<version>-arm64.exe`
+- **Installer (Intel/AMD 64-bit)**: `PromptBranch-<version>-windows-x64.exe`
+- **Installer (ARM64)**: `PromptBranch-<version>-windows-arm64.exe`
 
 The Windows installer uses NSIS in **per-user mode** (`%LOCALAPPDATA%\Programs\PromptBranch`). It does not require administrator privileges to install or update.
 
@@ -37,8 +35,8 @@ The Windows installer uses NSIS in **per-user mode** (`%LOCALAPPDATA%\Programs\P
 
 ### Linux
 
-- **AppImage**: `PromptBranch-<version>-x64.AppImage` / `PromptBranch-<version>-arm64.AppImage`
-- **Debian / Ubuntu**: `PromptBranch-<version>-x64.deb` / `PromptBranch-<version>-arm64.deb`
+- **AppImage**: `PromptBranch-<version>-linux-x64.AppImage` / `PromptBranch-<version>-linux-arm64.AppImage`
+- **Debian / Ubuntu**: `PromptBranch-<version>-linux-x64.deb` / `PromptBranch-<version>-linux-arm64.deb`
 
 #### AppImage Prerequisites
 AppImage binaries on modern Linux distributions (such as Ubuntu 24.04+, Debian 12+, Fedora 40+) require FUSE 2 or 3:

@@ -21,7 +21,7 @@ function parseArgs(argv) {
 
 function expectedInstallerNames(platform, arch, version) {
   const platformConfig = {
-    mac: { os: "macos", extensions: ["dmg", "zip"] },
+    mac: { os: "macos", extensions: ["dmg"] },
     win: { os: "windows", extensions: ["exe"] },
     linux: { os: "linux", extensions: ["AppImage", "deb"] },
   }[platform];

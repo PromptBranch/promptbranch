@@ -51,18 +51,18 @@ propose-and-approve flow so humans stay in charge.
 
 ## Installation
 
-PromptBranch desktop 0.1.0 is currently available only for macOS, with native
-builds for Apple Silicon (arm64) and Intel (x64). Download one of these four
-files from [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
+PromptBranch desktop 0.1.0 is available for macOS, Windows, and Linux on arm64
+and x64. Download the installer for your operating system and CPU from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
 - `promptbranch_0.1.0_macos_arm64.dmg`
-- `promptbranch_0.1.0_macos_arm64.zip`
 - `promptbranch_0.1.0_macos_x64.dmg`
-- `promptbranch_0.1.0_macos_x64.zip`
+- `promptbranch_0.1.0_windows_arm64.exe`
+- `promptbranch_0.1.0_windows_x64.exe`
+- `promptbranch_0.1.0_linux_arm64.AppImage` or `.deb`
+- `promptbranch_0.1.0_linux_x64.AppImage` or `.deb`
 
-Windows and Linux desktop builds are planned, but no installers for those
-platforms are available in 0.1.0. The CLI and MCP server remain
-cross-platform; setup instructions live in
+The CLI and MCP server are also cross-platform; setup instructions live in
 [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
 
 ## Where your data lives

@@ -44,12 +44,10 @@ test.afterEach(async () => {
 });
 
 test("copies only clearly named macOS installers", async () => {
-  const expected = [
-    "promptbranch_0.1.0_macos_arm64.dmg",
-    "promptbranch_0.1.0_macos_arm64.zip",
-  ];
+  const expected = ["promptbranch_0.1.0_macos_arm64.dmg"];
   const { dist, out } = await fixture([
     ...expected,
+    "promptbranch_0.1.0_macos_arm64.zip",
     "latest-mac.yml",
     "promptbranch_0.1.0_macos_arm64.dmg.blockmap",
     "promptbranch_0.1.0_windows_arm64.exe",
@@ -87,7 +85,7 @@ test("maps every platform and architecture to explicit installer names", async (
 });
 
 test("fails closed when an expected installer is missing", async () => {
-  const { dist, out } = await fixture(["promptbranch_0.1.0_macos_x64.dmg"]);
+  const { dist, out } = await fixture(["promptbranch_0.1.0_macos_x64.zip"]);
 
   const result = collect({ platform: "mac", arch: "x64", version: "0.1.0", dist, out });
 
@@ -102,6 +100,13 @@ test("electron-builder uses explicit lowercase platform and architecture names",
   assert.equal(manifest.build.mac.artifactName, "promptbranch_${version}_macos_${arch}.${ext}");
   assert.equal(manifest.build.win.artifactName, "promptbranch_${version}_windows_${arch}.${ext}");
   assert.equal(manifest.build.linux.artifactName, "promptbranch_${version}_linux_${arch}.${ext}");
+});
+
+test("macOS packaging produces only DMG installers", async () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+  assert.deepEqual(manifest.build.mac.target, [{ target: "dmg" }]);
 });
 
 test("Linux installers force the X11 backend for reliable VM launches", async () => {

@@ -339,10 +339,11 @@ when touching it:
   electron-vite then electron-builder (config inline in
   `apps/desktop/package.json` → `build`), writing to `apps/desktop/dist/`.
   All targets build from macOS; default is the host platform.
-- For 0.1.0, release exactly four macOS artifacts: dmg + zip for arm64 + x64.
+- For 0.1.0, release exactly two macOS artifacts: DMG for arm64 and x64.
   Every artifact must be signed with Developer ID, notarized, stapled, and pass
-  `verify-macos-distribution.mjs` before publication. Windows and Linux desktop
-  installers are not part of 0.1.0; CLI and MCP setup remains cross-platform.
+  `verify-macos-distribution.mjs` before publication. Windows and Linux use
+  their own clearly named architecture-specific installers; CLI and MCP setup
+  remains cross-platform.
 - Maintainers build each macOS target manually from the exact production
   commit, verify the packaged architecture, and use
   `collect-release-installers.mjs` to stage only the exact installer

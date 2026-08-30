@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -45,17 +45,17 @@ test.afterEach(async () => {
 
 test("copies only clearly named macOS installers", async () => {
   const expected = [
-    "PromptBranch-0.1.1-macos-arm64.dmg",
-    "PromptBranch-0.1.1-macos-arm64.zip",
+    "promptbranch_0.1.0_macos_arm64.dmg",
+    "promptbranch_0.1.0_macos_arm64.zip",
   ];
   const { dist, out } = await fixture([
     ...expected,
     "latest-mac.yml",
-    "PromptBranch-0.1.1-macos-arm64.dmg.blockmap",
-    "PromptBranch-0.1.1-windows-arm64.exe",
+    "promptbranch_0.1.0_macos_arm64.dmg.blockmap",
+    "promptbranch_0.1.0_windows_arm64.exe",
   ]);
 
-  const result = collect({ platform: "mac", arch: "arm64", version: "0.1.1", dist, out });
+  const result = collect({ platform: "mac", arch: "arm64", version: "0.1.0", dist, out });
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual((await readdir(out)).sort(), expected.sort());
@@ -66,31 +66,40 @@ test("maps every platform and architecture to explicit installer names", async (
     {
       platform: "win",
       arch: "x64",
-      expected: ["PromptBranch-0.1.1-windows-x64.exe"],
+      expected: ["promptbranch_0.1.0_windows_x64.exe"],
     },
     {
       platform: "linux",
       arch: "arm64",
       expected: [
-        "PromptBranch-0.1.1-linux-arm64.AppImage",
-        "PromptBranch-0.1.1-linux-arm64.deb",
+        "promptbranch_0.1.0_linux_arm64.AppImage",
+        "promptbranch_0.1.0_linux_arm64.deb",
       ],
     },
   ];
 
   for (const entry of cases) {
     const { dist, out } = await fixture(entry.expected);
-    const result = collect({ ...entry, version: "0.1.1", dist, out });
+    const result = collect({ ...entry, version: "0.1.0", dist, out });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual((await readdir(out)).sort(), entry.expected.sort());
   }
 });
 
 test("fails closed when an expected installer is missing", async () => {
-  const { dist, out } = await fixture(["PromptBranch-0.1.1-macos-x64.dmg"]);
+  const { dist, out } = await fixture(["promptbranch_0.1.0_macos_x64.dmg"]);
 
-  const result = collect({ platform: "mac", arch: "x64", version: "0.1.1", dist, out });
+  const result = collect({ platform: "mac", arch: "x64", version: "0.1.0", dist, out });
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /missing expected installer/i);
+});
+
+test("electron-builder uses explicit lowercase platform and architecture names", async () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.build.artifactName, undefined);
+  assert.equal(manifest.build.mac.artifactName, "promptbranch_${version}_macos_${arch}.${ext}");
+  assert.equal(manifest.build.win.artifactName, "promptbranch_${version}_windows_${arch}.${ext}");
+  assert.equal(manifest.build.linux.artifactName, "promptbranch_${version}_linux_${arch}.${ext}");
 });

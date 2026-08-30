@@ -63,9 +63,8 @@ The system is split into two repositories:
    - `deploy/portal` — Production Docker Compose, Nginx Proxy Manager, and host-hardening policies
    - `packages/share` — Local workspace mirror of the sharing contract
 
-Git remotes: `origin` has dual push URLs (internal Gitea
-`http://git.exploit.co.il/...` and GitHub `git@github.com:PromptBranch/promptbranch.git`)
-to keep both synchronized; `github` points at GitHub only.
+Git remotes: `origin` is the sole configured remote and fetches/pushes
+`git@github.com:PromptBranch/promptbranch.git`.
 
 Package responsibilities:
 
@@ -340,13 +339,12 @@ when touching it:
   electron-vite then electron-builder (config inline in
   `apps/desktop/package.json` → `build`), writing to `apps/desktop/dist/`.
   All targets build from macOS; default is the host platform.
-- macOS: dmg + zip (arm64 + x64). Signing/notarization is optional for the
-  current manual process; release notes must state the signing status, and
-  signed builds must pass `verify-macos-distribution.mjs`.
-  Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
-  Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
-- Maintainers build each target manually from the exact production commit,
-  verify the packaged architecture, and use
+- For 0.1.0, release exactly four macOS artifacts: dmg + zip for arm64 + x64.
+  Every artifact must be signed with Developer ID, notarized, stapled, and pass
+  `verify-macos-distribution.mjs` before publication. Windows and Linux desktop
+  installers are not part of 0.1.0; CLI and MCP setup remains cross-platform.
+- Maintainers build each macOS target manually from the exact production
+  commit, verify the packaged architecture, and use
   `collect-release-installers.mjs` to stage only the exact installer
   allowlist. Release filenames always include the target OS and architecture.
   `.yml` metadata and `.blockmap` files are never uploaded as user-facing

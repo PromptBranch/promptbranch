@@ -30,7 +30,7 @@ function expectedInstallerNames(platform, arch, version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`invalid release version: ${version}`);
 
   return platformConfig.extensions.map(
-    (extension) => `PromptBranch-${version}-${platformConfig.os}-${arch}.${extension}`,
+    (extension) => `promptbranch_${version}_${platformConfig.os}_${arch}.${extension}`,
   );
 }
 

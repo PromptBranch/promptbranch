@@ -12,11 +12,12 @@
 
 ---
 
-PromptBranch is a cross-platform (macOS-first), local-first desktop app for
-managing, versioning and evolving AI prompts — part prompt library, part
-version-control system. The library is a single SQLite file on your own disk;
-the desktop UI, the CLI and the MCP server all work against the same store,
-and AI agents go through a propose-and-approve flow so humans stay in charge.
+PromptBranch is a local-first prompt library and version-control system for
+managing and evolving AI prompts. The 0.1.0 desktop app is available for
+macOS, while the CLI and MCP server make the library cross-platform. The
+library is a single SQLite file on your own disk; the desktop UI, CLI and MCP
+server all work against the same store, and AI agents go through a
+propose-and-approve flow so humans stay in charge.
 
 ## Features
 
@@ -41,20 +42,28 @@ and AI agents go through a propose-and-approve flow so humans stay in charge.
   `promptbranch://import` deep links, revocable delete tokens and a Shares
   view in the app.
 - 🔄 **Multi-device sync** — peer-to-peer over the local network, no server and
-  no account. Pair devices with a short code (Signal-style verification
-  against the device certificate), then changes flow between your computers
-  automatically whenever they can reach each other. Offline-first: every
-  change is durable locally the moment it's written, and sync is pure
-  catch-up when devices meet.
+  no account. In 0.1.0, pair macOS desktop devices with a short code
+  (Signal-style verification against the device certificate), then changes
+  flow automatically whenever they can reach each other. The sync architecture
+  is designed to support future desktop platforms. Offline-first: every change
+  is durable locally the moment it's written, and sync is pure catch-up when
+  devices meet.
 
 ## Installation
 
-Download installers for macOS (`.dmg`), Windows (`.exe`) and Linux
-(`.AppImage`, `.deb`) from
-[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
+PromptBranch desktop 0.1.0 is currently available only for macOS, with native
+builds for Apple Silicon (arm64) and Intel (x64). Download one of these four
+files from [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
-Step-by-step guides for every platform — plus CLI and MCP server setup —
-live in [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
+- `promptbranch_0.1.0_macos_arm64.dmg`
+- `promptbranch_0.1.0_macos_arm64.zip`
+- `promptbranch_0.1.0_macos_x64.dmg`
+- `promptbranch_0.1.0_macos_x64.zip`
+
+Windows and Linux desktop builds are planned, but no installers for those
+platforms are available in 0.1.0. The CLI and MCP server remain
+cross-platform; setup instructions live in
+[`docs/getting-started/installation.md`](docs/getting-started/installation.md).
 
 ## Where your data lives
 

@@ -23,7 +23,7 @@ const platformLayouts = {
     format: "ELF",
     nativePrefix: "linux",
     unpackedDirectory: { x64: "linux-unpacked", arm64: "linux-arm64-unpacked" },
-    executable: "promptbranch",
+    executable: "promptbranch-bin",
     resources: "resources",
   },
 };

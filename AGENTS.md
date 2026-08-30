@@ -63,9 +63,8 @@ The system is split into two repositories:
    - `deploy/portal` — Production Docker Compose, Nginx Proxy Manager, and host-hardening policies
    - `packages/share` — Local workspace mirror of the sharing contract
 
-Git remotes: `origin` has dual push URLs (internal Gitea
-`http://git.exploit.co.il/...` and GitHub `git@github.com:PromptBranch/promptbranch.git`)
-to keep both synchronized; `github` points at GitHub only.
+Git remotes: `origin` is the sole configured remote and fetches/pushes
+`git@github.com:PromptBranch/promptbranch.git`.
 
 Package responsibilities:
 

@@ -6,9 +6,8 @@ PromptBranch can be used as a full desktop application with a visual UI, as a st
 
 ## Desktop Application
 
-Installers will be distributed through the public release channel for macOS,
-Windows, and Linux. No public desktop release or download page has been
-published yet.
+Download installers for macOS, Windows, and Linux from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
 
 ### macOS
 
@@ -17,6 +16,11 @@ PromptBranch provides native universal builds for Apple Silicon (M1/M2/M3/M4) an
 - **Apple Silicon (ARM64)**: `PromptBranch-<version>-arm64.dmg`
 - **Intel (x64)**: `PromptBranch-<version>-x64.dmg`
 - **Portable Zip**: `PromptBranch-<version>-arm64.zip` / `PromptBranch-<version>-x64.zip`
+
+> [!WARNING]
+> The v0.1 macOS builds are unsigned and not notarized. On first launch,
+> Control-click PromptBranch in Finder, choose **Open**, then confirm **Open**.
+> In-app updates on macOS remain unavailable until a future signed release.
 
 > [!NOTE]
 > **Local Network Permission Prompt**: On macOS, the first time you enable Multi-Device Sync, macOS may display a system dialog asking for **Local Network** access. Select **Allow** so local discovery and peer-to-peer sync can reach your other devices.
@@ -55,8 +59,7 @@ chmod +x PromptBranch-*.AppImage
 
 ## Command-Line Interface (CLI)
 
-No public CLI package has been published yet. Once `@promptbranch/cli` is
-available on npm, run it directly without a global installation:
+Run `@promptbranch/cli` directly from npm without a global installation:
 
 ```bash
 npx -y @promptbranch/cli db-path
@@ -79,8 +82,7 @@ promptbranch db-path
 
 PromptBranch provides a stdio MCP server that enables AI assistants (such as Claude Desktop, Cursor, Windsurf, or Cline) to read prompts, log run metrics, and suggest variations.
 
-No public MCP package has been published yet. The configuration below becomes
-usable when `@promptbranch/mcp` is available on npm.
+Run the MCP server from npm with `npx -y @promptbranch/mcp`.
 
 ### Claude Desktop Configuration
 

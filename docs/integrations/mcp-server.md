@@ -2,10 +2,6 @@
 
 PromptBranch publishes a **Model Context Protocol (MCP)** stdio server (`@promptbranch/mcp`). It allows AI coding assistants—such as **Claude Desktop**, **Cursor**, **Windsurf**, and custom agent frameworks—to interact with your local prompt library.
 
-> [!NOTE]
-> No public MCP package has been published yet. The npm configuration on this
-> page becomes usable when `@promptbranch/mcp` is released.
-
 ---
 
 ## Configuration

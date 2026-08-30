@@ -1,9 +1,9 @@
 /**
  * Copies the root LICENSE and THIRD_PARTY_NOTICES.md into every npm-published
  * package so tarballs carry them (npm auto-includes LICENSE; the notices file
- * is whitelisted in each package's "files"). Run before publishing — CI does
- * this in .github/workflows/publish-npm.yml. The copies are gitignored; the
- * root files are the source of truth.
+ * is whitelisted in each package's "files"). Run this manually before npm
+ * publication. The copies are gitignored; the root files are the source of
+ * truth.
  */
 import fs from "node:fs";
 import path from "node:path";

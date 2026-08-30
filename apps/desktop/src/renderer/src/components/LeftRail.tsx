@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   BookOpen,
   Clock,
-  CloudDownload,
   Folder,
   HardDrive,
   Inbox,
@@ -95,7 +94,7 @@ export function LeftRail({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, setView, selectPrompt, openSettings, updateAvailable, openUpdateDialog } = useAppState();
+  const { view, setView, selectPrompt, openSettings } = useAppState();
   const { data: tags } = useTags();
   const { data: collections } = useCollections();
   const { data: appInfo } = useAppInfo();
@@ -280,18 +279,6 @@ export function LeftRail({
           <span className="ml-auto shrink-0 text-[11px] tabular-nums text-ink-faint">
             v{appInfo?.version ?? "…"}
           </span>
-          {updateAvailable && (
-            <button
-              type="button"
-              onClick={() => openUpdateDialog(updateAvailable)}
-              className="relative rounded p-1 text-accent transition-colors hover:bg-hover"
-              aria-label={`Update available — v${updateAvailable.version}`}
-              title={`Update available — v${updateAvailable.version}`}
-            >
-              <CloudDownload size={13} />
-              <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
-            </button>
-          )}
           <button
             type="button"
             onClick={() => openSettings()}

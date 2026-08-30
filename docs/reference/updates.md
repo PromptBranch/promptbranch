@@ -23,6 +23,6 @@ can install the new `.deb` over the existing package.
 
 | Platform | Updates via |
 | --- | --- |
-| macOS | Signed and notarized DMG or ZIP, installed manually |
+| macOS | DMG or ZIP, installed manually; check the release notes for signing status |
 | Windows | NSIS installer, installed manually |
 | Linux | AppImage or `.deb`, installed manually |

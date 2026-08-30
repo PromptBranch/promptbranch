@@ -33,7 +33,6 @@ export const qk = {
   shares: ["shares"] as const,
   portalBaseUrl: ["portal-base-url"] as const,
   syncStatus: ["sync-status"] as const,
-  updateStatus: ["update-status"] as const,
 };
 
 export function usePromptList() {
@@ -182,44 +181,6 @@ export function useSyncStatus() {
 
 export function useActivity() {
   return useQuery({ queryKey: qk.activity, queryFn: () => api().library.recentActivity(80) });
-}
-
-/** Updater status snapshot (supported, auto-check setting, versions). */
-export function useUpdateStatus() {
-  return useQuery({ queryKey: qk.updateStatus, queryFn: () => api().updates.getStatus() });
-}
-
-/**
- * Shared "Check for Updates" trigger for surfaces outside Settings (app menu,
- * About dialog): toasts the outcome — an available release instead opens the
- * update dialog. The Settings section keeps its richer inline feedback.
- */
-export function useManualUpdateCheck() {
-  const { openUpdateDialog } = useAppState();
-  const { toast } = useToast();
-  return useAppMutation(() => api().updates.check(), {
-    quiet: true,
-    invalidateKeys: [qk.updateStatus],
-    onSuccess: (result) => {
-      if (result.status === "available") {
-        openUpdateDialog({
-          currentVersion: result.currentVersion,
-          version: result.version,
-          releaseNotes: result.releaseNotes,
-          releaseUrl: result.releaseUrl,
-        });
-      } else if (result.status === "up-to-date") {
-        toast(`You're up to date — v${result.currentVersion} is the latest release`);
-      } else if (result.status === "error") {
-        toast(`Update check failed — ${result.message}`, "error");
-      } else if (result.reason === "linux-package") {
-        toast("This install can't update itself — see Settings → Updates");
-      } else {
-        toast("Updates are unavailable in development builds");
-      }
-    },
-    onError: (err) => toast(`Update check failed — ${err.message}`, "error"),
-  });
 }
 
 export function useRatingAverages(targetId: string | null) {

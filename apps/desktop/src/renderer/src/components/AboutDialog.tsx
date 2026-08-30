@@ -1,12 +1,13 @@
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, CloudDownload, ExternalLink, Loader2 } from "lucide-react";
+import { Copy, ExternalLink } from "lucide-react";
 import iconUrl from "../assets/icon.png";
-import { useManualUpdateCheck, useAppInfo, useUpdateStatus } from "../hooks/use-data";
+import { useAppInfo } from "../hooks/use-data";
 import { useToast } from "../lib/toast";
 import { LicensesDialog } from "./LicensesDialog";
 
 const WEBSITE_URL = "https://promptbranch.app/";
+const RELEASES_URL = "https://github.com/PromptBranch/promptbranch/releases";
 
 /** Branded About dialog; opened from the app menu, Help menu, or the settings popover. */
 export function AboutDialog({
@@ -17,14 +18,18 @@ export function AboutDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { data: appInfo } = useAppInfo();
-  const { data: updateStatus } = useUpdateStatus();
-  const checkUpdates = useManualUpdateCheck();
   const { toast } = useToast();
   const [licensesOpen, setLicensesOpen] = useState(false);
 
   const openWebsite = () => {
     void window.promptBuilder.app.openExternal(WEBSITE_URL).catch(() => {
       toast("Could not open link");
+    });
+  };
+
+  const openReleases = () => {
+    void window.promptBuilder.app.openExternal(RELEASES_URL).catch(() => {
+      toast("Could not open releases page");
     });
   };
 
@@ -71,17 +76,14 @@ export function AboutDialog({
               https://promptbranch.app/
               <ExternalLink size={12} aria-hidden />
             </button>
-            {updateStatus?.supported && (
-              <button
-                type="button"
-                onClick={() => checkUpdates.mutate(undefined)}
-                disabled={checkUpdates.isPending}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {checkUpdates.isPending ? <Loader2 size={12} className="animate-spin" /> : <CloudDownload size={12} />}
-                Check for Updates…
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={openReleases}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+            >
+              View Releases
+              <ExternalLink size={12} aria-hidden />
+            </button>
             <p className="mt-2 text-[11px] text-ink-faint">© 2026 PromptBranch</p>
           </div>
 

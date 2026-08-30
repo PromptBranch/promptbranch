@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
   pull_request:
     branches: [main, dev]
 
@@ -13,9 +13,9 @@ permissions:
   contents: read
 
 jobs:
-  promotion-policy:
-    name: Promotion Policy
-    runs-on: ubuntu-latest
+  ci:
+    name: CI
+    runs-on: macos-latest
     steps:
       - name: Require dev before main
         if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
@@ -24,14 +24,6 @@ jobs:
           echo "Merge this branch into dev first, then open a dev-to-main pull request."
           exit 1
 
-      - name: Confirm promotion path
-        if: github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref == 'dev'
-        run: echo "Promotion path is valid."
-
-  test:
-    name: Typecheck, Test & Build
-    runs-on: macos-latest
-    steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

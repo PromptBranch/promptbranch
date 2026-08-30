@@ -94,12 +94,4 @@ export const IPC_CHANNELS = {
   syncNow: "sync:now",
   syncStateChanged: "sync:state-changed",
   syncPairRequest: "sync:pair-request",
-  updateGetStatus: "update:get-status",
-  updateSetAutoCheck: "update:set-auto-check",
-  updateCheck: "update:check",
-  updateDownload: "update:download",
-  updateInstall: "update:install",
-  updateSkipVersion: "update:skip-version",
-  updateStateChanged: "update:state-changed",
-  updateCheckRequested: "update:check-requested",
 } as const;

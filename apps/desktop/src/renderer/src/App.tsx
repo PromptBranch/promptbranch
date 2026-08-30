@@ -13,9 +13,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { SharesView } from "./components/SharesView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { SyncPairRequestDialog } from "./components/SyncPairRequestDialog";
-import { UpdateDialog } from "./components/UpdateDialog";
-import { updateStateEventSchema } from "../../shared/ipc.js";
-import { useAppMutation, useManualUpdateCheck, usePromptDetail, usePromptList, useTags } from "./hooks/use-data";
+import { useAppMutation, usePromptDetail, usePromptList, useTags } from "./hooks/use-data";
 import { togglePanel } from "./lib/panels";
 import { usePref } from "./lib/prefs";
 import { useAppState } from "./state/app-state";
@@ -44,7 +42,7 @@ function useGlobalShortcuts() {
 }
 
 export default function App() {
-  const { view, selectedPromptId, selectPrompt, newPromptOpen, setNewPromptOpen, setView, aboutOpen, setAboutOpen, openSettings, manageModelsOpen, setManageModelsOpen, setImportUrl, openUpdateDialog } =
+  const { view, selectedPromptId, selectPrompt, newPromptOpen, setNewPromptOpen, setView, aboutOpen, setAboutOpen, openSettings, manageModelsOpen, setManageModelsOpen, setImportUrl } =
     useAppState();
   const { data: prompt } = usePromptDetail(selectedPromptId);
   const { data: allTags } = useTags();
@@ -59,31 +57,6 @@ export default function App() {
 
   // promptbranch://import?url=… deep links (portal "Open in PromptBranch").
   useEffect(() => window.promptBuilder.share.onOpenImport((url) => setImportUrl(url)), [setImportUrl]);
-
-  // A background update check found a newer release — offer it (payload
-  // validated here, like sync status pushes; manual checks open the dialog
-  // from Settings instead).
-  useEffect(
-    () =>
-      window.promptBuilder.updates.onStateChanged((raw) => {
-        const parsed = updateStateEventSchema.safeParse(raw);
-        if (!parsed.success || parsed.data.phase !== "available") return;
-        openUpdateDialog({
-          currentVersion: parsed.data.currentVersion,
-          version: parsed.data.version,
-          releaseNotes: parsed.data.releaseNotes,
-          releaseUrl: parsed.data.releaseUrl,
-        });
-      }),
-    [openUpdateDialog],
-  );
-
-  // "Check for Updates…" in the app menu runs the shared manual check.
-  const checkUpdates = useManualUpdateCheck();
-  useEffect(
-    () => window.promptBuilder.updates.onCheckRequested(() => checkUpdates.mutate(undefined)),
-    [checkUpdates.mutate],
-  );
 
   // Editor font size pref → CSS var consumed by .cm-host in index.css.
   useEffect(() => {
@@ -194,7 +167,6 @@ export default function App() {
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
       <ImportSnapshotDialog />
       <SyncPairRequestDialog />
-      <UpdateDialog />
       <SettingsDialog />
       <ManageModelsDialog open={manageModelsOpen} onOpenChange={setManageModelsOpen} />
       <NewPromptDialog

@@ -6,6 +6,7 @@ out/
 .DS_Store
 *.tsbuildinfo
 coverage/
+docs-internal/
 *.db
 *.db-wal
 *.db-shm

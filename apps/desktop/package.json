@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
@@ -15,7 +15,7 @@
     "postinstall": "node scripts/patch-electron-name.mjs || true",
     "dist": "electron-vite build && electron-builder",
     "test": "vitest run && pnpm test:release-assets",
-    "test:release-assets": "node --test scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs scripts/test/verify-desktop-release-workflow.mjs",
+    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs scripts/test/verify-desktop-release-workflow.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
   },
   "build": {
@@ -71,6 +71,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
+      "artifactName": "PromptBranch-${version}-macos-${arch}.${ext}",
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
@@ -104,7 +105,7 @@
           "target": "nsis"
         }
       ],
-      "artifactName": "PromptBranch-Setup-${version}-${arch}.${ext}"
+      "artifactName": "PromptBranch-${version}-windows-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -124,7 +125,7 @@
           "target": "deb"
         }
       ],
-      "artifactName": "PromptBranch-${version}-${arch}.${ext}"
+      "artifactName": "PromptBranch-${version}-linux-${arch}.${ext}"
     }
   },
   "dependencies": {

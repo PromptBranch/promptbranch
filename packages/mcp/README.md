@@ -11,8 +11,7 @@ the desktop app's database.
 
 ## Install
 
-> No public MCP package has been published yet. The npm configuration below
-> becomes usable when `@promptbranch/mcp` is released.
+The MCP server is published as the public `@promptbranch/mcp` npm package.
 
 Point your MCP client at it:
 

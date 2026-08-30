@@ -12,8 +12,7 @@ database.
 
 ## Quick start
 
-> No public CLI package has been published yet. These commands become usable
-> when `@promptbranch/cli` is released.
+The CLI is published as the public `@promptbranch/cli` npm package.
 
 ```sh
 npx -y @promptbranch/cli list --tag security
@@ -21,8 +20,8 @@ npx -y @promptbranch/cli get "security-audit" --json
 npx -y @promptbranch/cli db-path
 ```
 
-Install the package globally after release to use the shorter `promptbranch`
-command. Every command supports `--json` for machine-readable output;
+Install the package globally to use the shorter `promptbranch` command. Every
+command supports `--json` for machine-readable output;
 `db-path --json` returns `{ "path": "/absolute/path/to/library.db" }` without
 creating or migrating the database.
 

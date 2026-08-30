@@ -321,11 +321,11 @@ when touching it:
   256-bit random (`packages/share/src/ids.ts`), shown to the publisher once,
   stored locally for revocation, hashed server-side, and never travel in
   export files. Sharing is unlisted-only — keep it that way.
-- Never commit `.env` files or notarization credentials. The v0.1 release
-  workflow explicitly disables signing identity auto-discovery and does not
-  consume signing secrets. If signing is enabled in a later release, macOS
-  signing uses a `Developer ID Application` certificate and notarization
-  credentials must stay in protected CI secrets.
+- Never commit `.env` files or notarization credentials. macOS release jobs
+  fail closed unless a `Developer ID Application` certificate and Apple
+  notarization credentials are available from protected CI secrets. The
+  workflow verifies the complete bundle signature, Gatekeeper assessment and
+  stapled notarization tickets before staging a macOS installer.
 - The desktop `postinstall` script (`scripts/patch-electron-name.mjs`)
   patches the dev Electron bundle's Info.plist to say "PromptBranch",
   breaking the dev binary's code signature — expected, dev-only, never
@@ -340,11 +340,15 @@ when touching it:
   electron-vite then electron-builder (config inline in
   `apps/desktop/package.json` → `build`), writing to `apps/desktop/dist/`.
   All targets build from macOS; default is the host platform.
-- macOS: dmg + zip (arm64 + x64). The v0.1 workflow publishes unsigned,
-  unnotarized builds, so Gatekeeper warns on first launch and in-app macOS
-  updates are unsupported until signing is enabled.
+- macOS: signed and notarized dmg + zip (arm64 + x64); a missing credential or
+  failed distribution assessment blocks the whole release.
   Windows: NSIS per-user installers, x64 + arm64 (unsigned, SmartScreen warns).
   Linux: AppImage (needs FUSE) + deb, x64 + arm64 (unsigned).
+- Matrix jobs build and validate without publishing. They copy an exact
+  installer allowlist into `apps/desktop/release-artifacts/`; a single
+  dependent job assembles the draft GitHub Release. Release filenames always
+  include the target OS and architecture. `.yml` updater metadata and
+  `.blockmap` files are never uploaded as user-facing release assets.
 - Icons are generated assets committed for cross-platform packaging: run the
   `icons` script on macOS before `dist` if `build/icon*` files are missing or
   the source icon changes. CI verifies the committed assets without invoking
@@ -364,21 +368,21 @@ when touching it:
   electron-vite; the CLI/MCP esbuild bundles inline them
   (`better-sqlite3` kept external — Node cannot resolve core's
   `.js`-suffixed TS imports directly without compilation).
-- In-app auto-update is wired up via **electron-updater against GitHub
-  Releases** (spec: `docs-internal/specs/2026-08-28-auto-update-design.md`).
+- In-app auto-update code remains wired through **electron-updater against
+  GitHub Releases** (spec:
+  `docs-internal/specs/2026-08-28-auto-update-design.md`).
   `apps/desktop/src/main/updater.ts` (`DesktopUpdater`) owns policy —
   background checks 15s after launch and every 6h, skipped-version handling,
   the `updates.auto_check` / `updates.skipped_version` /
   `updates.last_check_at` device-local settings keys — while
   `src/main/updater-github.ts` adapts the electron-updater singleton. The
-  `publish` block pinned in `apps/desktop/package.json` is what makes
-  electron-builder embed `app-update.yml` and upload the `latest*.yml` feeds
-  the updater consumes; keep it in sync with the real release repo.
-  **Prerequisite:** GitHub releases must be publicly downloadable — a private
-  repo cannot serve anonymous update checks. macOS updates require the signed
-  CI builds; Linux updates work for the AppImage only (deb installs report
-  unsupported). Never point the updater at an untrusted feed or disable
-  signature verification.
+  `publish` block pinned in `apps/desktop/package.json` embeds the trusted
+  repository configuration. The v0.1 release line intentionally omits
+  `latest*.yml` and `.blockmap` assets, so desktop updates are manual on every
+  platform. Restoring automatic updates requires a separate architecture-aware
+  feed design and target-backed update testing; never expose a last-writer-wins
+  matrix feed, point the updater at an untrusted source, or disable signature
+  verification.
 - The app is offline-first *except* for model-catalog refreshes (models.dev),
   model runs, and update checks; a failed catalog refresh keeps serving the
   stale cache.

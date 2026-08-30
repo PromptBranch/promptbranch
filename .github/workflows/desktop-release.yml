@@ -69,44 +69,55 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Ensure Electron runtime is complete
+        run: node apps/desktop/node_modules/electron/install.js
+
       - name: Verify Desktop App Icons
         run: node apps/desktop/scripts/verify-desktop-icons.mjs
 
-      - name: Build unsigned macOS verification artifacts
-        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch'
+      - name: Read desktop version
+        id: package
+        shell: bash
+        run: node -p "'version=' + require('./apps/desktop/package.json').version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate macOS release credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required macOS release secret: ${name}"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Build signed and notarized macOS artifacts
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
+
+      - name: Build unsigned Windows artifacts
+        if: runner.os == 'Windows'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
 
-      - name: Build and publish unsigned macOS artifacts
-        if: runner.os == 'macOS' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
-
-      - name: Build unsigned Windows verification artifacts
-        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch'
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Build Linux artifacts
+        if: runner.os == 'Linux'
         run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
-
-      - name: Build and publish unsigned Windows artifacts
-        if: runner.os == 'Windows' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
-
-      - name: Build Linux verification artifacts
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
-        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish never
-
-      - name: Build and publish Linux artifacts
-        if: runner.os == 'Linux' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter @promptbranch/desktop dist ${{ matrix.args }} --publish always
 
       - name: Verify packaged architecture
         run: >-
@@ -115,9 +126,61 @@ jobs:
           --arch ${{ matrix.arch }}
           --dist apps/desktop/dist
 
-      - name: Upload build artifacts
+      - name: Verify macOS signing and notarization
+        if: runner.os == 'macOS'
+        run: node apps/desktop/scripts/verify-macos-distribution.mjs --dist apps/desktop/dist
+
+      - name: Stage user-installable artifacts
+        run: >-
+          node apps/desktop/scripts/collect-release-installers.mjs
+          --platform ${{ matrix.platform }}
+          --arch ${{ matrix.arch }}
+          --version ${{ steps.package.outputs.version }}
+          --dist apps/desktop/dist
+          --out apps/desktop/release-artifacts
+
+      - name: Upload staged installers
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: promptbranch-${{ matrix.platform }}-${{ matrix.arch }}
-          path: apps/desktop/dist/
+          path: apps/desktop/release-artifacts/
           if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Assemble draft GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Download verified installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: promptbranch-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Reject updater metadata and incomplete release sets
+        shell: bash
+        run: |
+          if find release-artifacts -type f \( -name '*.yml' -o -name '*.blockmap' \) | grep -q .; then
+            echo "::error::Updater metadata must not be published as a user-facing release asset"
+            exit 1
+          fi
+          count=$(find release-artifacts -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [[ "$count" != "10" ]]; then
+            echo "::error::Expected 10 installers, found $count"
+            find release-artifacts -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "PromptBranch ${GITHUB_REF_NAME#v}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber

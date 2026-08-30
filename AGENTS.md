@@ -150,8 +150,12 @@ bundles target Node 22.
 
 Quality gates and CI (`.github/workflows/`):
 
-- `ci.yml`: license check, typecheck, test and build on push/PR to `main`
-  (macos-latest, Node 22, `pnpm install --frozen-lockfile`).
+- Branch promotion is always `feature/release branch -> dev -> main`, using a
+  pull request for each step. Never open a pull request to `main` from any
+  branch other than `dev`.
+- `ci.yml`: promotion-policy enforcement plus license check, typecheck, test
+  and build on pushes and pull requests to `dev` and `main` (macos-latest,
+  Node 22, `pnpm install --frozen-lockfile`).
 - `publish-npm.yml`: publishes `@promptbranch/*` packages to npm on `v*`
   tags; runs `scripts/sync-package-licenses.mjs` before publishing.
 - `desktop-release.yml`: multi-platform matrix (mac/win/linux) building

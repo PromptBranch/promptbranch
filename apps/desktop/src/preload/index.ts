@@ -120,26 +120,6 @@ const api: PromptBuilderApi = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairRequest, listener);
     },
   },
-  updates: {
-    getStatus: () => invoke(IPC_CHANNELS.updateGetStatus),
-    setAutoCheck: (enabled) => invoke(IPC_CHANNELS.updateSetAutoCheck, { enabled }),
-    check: () => invoke(IPC_CHANNELS.updateCheck),
-    download: () => invoke(IPC_CHANNELS.updateDownload),
-    install: () => invoke(IPC_CHANNELS.updateInstall),
-    skipVersion: (version) => invoke(IPC_CHANNELS.updateSkipVersion, { version }),
-    onStateChanged: (callback) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
-        callback(payload as Parameters<typeof callback>[0]);
-      };
-      ipcRenderer.on(IPC_CHANNELS.updateStateChanged, listener);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.updateStateChanged, listener);
-    },
-    onCheckRequested: (callback) => {
-      const listener = () => callback();
-      ipcRenderer.on(IPC_CHANNELS.updateCheckRequested, listener);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.updateCheckRequested, listener);
-    },
-  },
   ai: {
     providers: {
       create: (input) => invoke(IPC_CHANNELS.aiProviderCreate, input),

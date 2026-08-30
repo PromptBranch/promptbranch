@@ -49,8 +49,6 @@ import {
   syncRespondPairingSchema,
   syncSetDeviceNameSchema,
   syncSetEnabledSchema,
-  updateSetAutoCheckSchema,
-  updateSkipVersionSchema,
   suggestionApproveSchema,
   suggestionRejectSchema,
   tagCreateSchema,
@@ -115,8 +113,8 @@ import {
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { DesktopSync } from "./sync/service.js";
-import { DesktopUpdater } from "./updater.js";
-import { createGithubUpdaterFeed, githubReleaseUrl } from "./updater-github.js";
+
+const RELEASES_URL = "https://github.com/PromptBranch/promptbranch/releases";
 
 /**
  * API keys are encrypted with the OS keychain before storage. When the
@@ -185,7 +183,6 @@ let db: Database | null = null;
 let library: PromptLibrary | null = null;
 let backupsDir: string | null = null;
 let desktopSync: DesktopSync | null = null;
-let desktopUpdater: DesktopUpdater | null = null;
 
 function getDb(): Database {
   if (!db) throw new Error("Database not initialized");
@@ -200,11 +197,6 @@ function getLibrary(): PromptLibrary {
 function getDesktopSync(): DesktopSync {
   if (!desktopSync) throw new Error("Sync service not initialized");
   return desktopSync;
-}
-
-function getDesktopUpdater(): DesktopUpdater {
-  if (!desktopUpdater) throw new Error("Updater service not initialized");
-  return desktopUpdater;
 }
 
 const idParam = z.string().trim().min(1).max(200);
@@ -690,30 +682,6 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.syncNow, () => sync.now());
 
-  // -------------------------------------------------------------- updates
-  const updater = getDesktopUpdater();
-
-  ipcMain.handle(IPC_CHANNELS.updateGetStatus, () => updater.getStatus());
-
-  ipcMain.handle(IPC_CHANNELS.updateSetAutoCheck, (_e, payload: unknown) => {
-    const { enabled } = updateSetAutoCheckSchema.parse(payload);
-    return updater.setAutoCheck(enabled);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.updateCheck, () => updater.checkForUpdates("manual"));
-
-  ipcMain.handle(IPC_CHANNELS.updateDownload, () => updater.downloadUpdate());
-
-  // Quits straight into the installer — the invoke never resolves.
-  ipcMain.handle(IPC_CHANNELS.updateInstall, () => {
-    updater.installUpdate();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.updateSkipVersion, (_e, payload: unknown) => {
-    const { version } = updateSkipVersionSchema.parse(payload);
-    return updater.skipVersion(version);
-  });
-
   // --------------------------------------------------------------- library
   ipcMain.handle(IPC_CHANNELS.libraryStats, (): LibraryStats => {
     const count = (sql: string): number => (getDb().prepare(sql).get() as { c: number }).c;
@@ -842,10 +810,10 @@ function installAppMenu(): void {
     ...(menuIcons.about ? { icon: menuIcons.about } : {}),
     click: () => mainWindow?.webContents.send(IPC_CHANNELS.openAbout),
   };
-  const checkUpdatesItem: MenuItemConstructorOptions = {
-    label: "Check for Updates…",
+  const releasesItem: MenuItemConstructorOptions = {
+    label: "GitHub Releases…",
     ...(menuIcons.checkUpdates ? { icon: menuIcons.checkUpdates } : {}),
-    click: () => mainWindow?.webContents.send(IPC_CHANNELS.updateCheckRequested),
+    click: () => void shell.openExternal(RELEASES_URL),
   };
   const settingsItem: MenuItemConstructorOptions = {
     label: "Settings…",
@@ -855,7 +823,7 @@ function installAppMenu(): void {
   };
   const helpMenu: MenuItemConstructorOptions = {
     label: "Help",
-    submenu: [aboutItem, checkUpdatesItem, settingsItem],
+    submenu: [aboutItem, releasesItem, settingsItem],
   };
 
   // Win/Linux: the menu bar is auto-hidden (Alt reveals it); a slim Help
@@ -871,7 +839,7 @@ function installAppMenu(): void {
       label: "PromptBranch",
       submenu: [
         aboutItem,
-        checkUpdatesItem,
+        releasesItem,
         { type: "separator" },
         settingsItem,
         { type: "separator" },
@@ -1111,26 +1079,10 @@ if (!gotSingleInstanceLock) {
     log: (message) => console.log(`[sync] ${message}`),
   });
 
-  // In-app updates from GitHub Releases (electron-updater). Constructed before
-  // handler registration — the update IPC block dereferences it. Background
-  // checks only run in supported builds with the setting enabled.
-  desktopUpdater = new DesktopUpdater({
-    settings: library,
-    feed: createGithubUpdaterFeed(),
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    appImageEnv: !!process.env["APPIMAGE"],
-    appVersion: __APP_VERSION__,
-    releaseUrlFor: githubReleaseUrl,
-    sendEvent: (event) => mainWindow?.webContents.send(IPC_CHANNELS.updateStateChanged, event),
-    log: (message) => console.log(`[update] ${message}`),
-  });
-
   registerIpcHandlers();
   console.log(`[main] IPC handlers registered: ${Object.values(IPC_CHANNELS).length} channels`);
 
   void desktopSync.ensureStarted();
-  desktopUpdater.ensureStarted();
   // Background drain: refines writes from this app but also from the CLI and
   // MCP server, which share the database file.
   const syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
@@ -1162,6 +1114,5 @@ app.on("before-quit", () => {
   // status reads before the database closes, then close after the listener
   // is down.
   desktopSync?.dispose();
-  desktopUpdater?.dispose();
   void desktopSync?.stop().catch(() => undefined).then(() => db?.close());
 });

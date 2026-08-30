@@ -128,4 +128,4 @@ flowchart TD
 PromptBranch runs on standard, embedded **SQLite 3** using `better-sqlite3`:
 - **Write-Ahead Logging (WAL)**: Allows multiple processes (Desktop app, background CLI scripts, MCP daemon) to read and write concurrently without locking conflicts.
 - **`busy_timeout = 3000`**: SQLite automatically waits up to 3 seconds for active write transactions to finish.
-- **Local by default**: Library browsing, editing, search, and versioning stay on your machine. Model runs, catalog refreshes, sharing, update checks, and enabled peer sync use their respective network connections.
+- **Local by default**: Library browsing, editing, search, and versioning stay on your machine. Model runs, catalog refreshes, sharing, and enabled peer sync use their respective network connections.

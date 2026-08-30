@@ -1,37 +1,64 @@
 # Contributing to PromptBranch
 
-Thank you for helping improve PromptBranch. Keep changes focused, include tests
-for behavioral changes, and run the relevant quality gates before opening a
-pull request.
+PromptBranch uses a deliberately small branch model:
 
-## Pull Requests
+```text
+feature branch → dev → main
+```
 
-- Open pull requests against `main` from a focused branch.
+- `dev` is the integration branch. Completed feature branches merge here, and
+  maintainers may commit small, low-risk changes here directly.
+- `main` is production. It contains only code promoted from `dev` after the
+  complete quality gate passes.
+- Releases are prepared manually from `main`; creating a tag does not run a
+  publishing workflow.
+
+## Making a change
+
+1. Start a focused branch from the latest `dev` for feature or substantial
+   work. Small maintainer changes may be committed directly to `dev`.
+2. Add or update tests for behavioral changes.
+3. Run the relevant package tests while working, then run the complete gate:
+
+   ```sh
+   pnpm install --frozen-lockfile
+   pnpm license-check
+   pnpm typecheck
+   pnpm test
+   pnpm build
+   ```
+
+4. Merge the feature branch into `dev` after CI passes.
+5. When `dev` is stable and release-ready, open a `dev` → `main` pull request.
+   Pull requests into `main` from any other branch are rejected by CI.
+
+Use squash merges for focused feature branches when a compact history is
+useful. Use a normal merge for `dev` → `main` so production promotions remain
+easy to identify.
+
+## Pull requests
+
+- Target `dev` for feature work; target `main` only from `dev`.
 - Explain the user-visible behavior and the verification performed.
 - Keep security reports private by following `.github/SECURITY.md`.
-- Do not commit API keys, signing material, user prompt libraries, or other
+- Never commit API keys, signing material, user prompt libraries, or other
   private data.
 
-## Required Repository Protections
+## CI and releases
 
-The GitHub protections for `main` are expected to:
+The single `.github/workflows/ci.yml` workflow validates pushes to `dev` and
+pull requests targeting `dev` or `main`. It does not publish packages, create
+branches, create releases, or upload installers.
 
-- Require pull requests and at least one approving review for normal contributors.
-- Require review from Code Owners and dismiss stale approvals.
-- Require the `Typecheck, Test & Build` status check and resolved conversations.
-- Apply required status checks to administrators, block force pushes, and block
-  branch deletion.
+The expected GitHub rules are intentionally small:
 
-While the organization has only one maintainer, `NightRang3r` has an auditable
-pull-request-only bypass for the review requirement. It does not allow direct
-pushes to `main` or bypass the required CI status check. Remove this exception
-after an independent maintainer is available to review owner-authored changes.
+- `dev`: block deletion and force pushes; direct maintainer commits are
+  allowed.
+- `main`: block deletion and force pushes; require a pull request from `dev`
+  and the `CI` status check. An approval is not required while the project has
+  one maintainer.
+- `v*` tags: block updates and deletion so published release identities stay
+  immutable.
 
-Release tags matching `v*` should be protected from modification or deletion,
-and creation should be restricted to release maintainers. Desktop publishing
-should use a protected `release` environment with required reviewer approval
-and deployment restricted to protected release tags.
-
-Repository settings remain the enforcement source of truth. Maintainers should
-compare the live rulesets and release environment with these expectations after
-material workflow or governance changes.
+Desktop installers, npm packages, tags, and GitHub Releases are created only
+when a maintainer deliberately follows [docs-internal/RELEASING.md](docs-internal/RELEASING.md).

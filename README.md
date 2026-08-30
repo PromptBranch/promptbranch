@@ -159,8 +159,8 @@ works. OpenAI-compatible endpoints have no catalog, so their model ids are
 declared inline on the provider's settings row.
 
 The model catalog comes from [models.dev](https://models.dev) and is cached
-locally. Browsing and editing stay offline; catalog refreshes, model runs,
-sharing, and update checks use the network. A failed catalog refresh keeps
+locally. Browsing and editing stay offline; catalog refreshes, model runs, and
+sharing use the network. A failed catalog refresh keeps
 serving the stale cache.
 
 Each Run executes the prompt (after `{{variable}}` substitution) against up to

@@ -28,28 +28,13 @@ describe("AboutDialog", () => {
     expect(bridge.app.licensesText).toHaveBeenCalled();
   });
 
-  it("runs a manual update check from the About dialog", async () => {
+  it("opens GitHub Releases for manual updates", async () => {
     const bridge = installMockBridge();
     renderApp(<AboutDialog open onOpenChange={vi.fn()} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Check for Updates…" }));
-    expect(bridge.updates.check).toHaveBeenCalledTimes(1);
-  });
-
-  it("hides the check button when this build can't self-update", async () => {
-    const bridge = installMockBridge();
-    bridge.updates.getStatus.mockResolvedValue({
-      supported: false,
-      unsupportedReason: "dev-build",
-      autoCheckEnabled: true,
-      currentVersion: "0.0.0-test",
-      lastCheckAt: null,
-      skippedVersion: null,
-    });
-    renderApp(<AboutDialog open onOpenChange={vi.fn()} />);
-
-    expect(await screen.findByRole("heading", { name: "PromptBranch" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Check for Updates…" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "View Releases" }));
+    expect(bridge.app.openExternal).toHaveBeenCalledWith(
+      "https://github.com/PromptBranch/promptbranch/releases",
+    );
   });
 });
-

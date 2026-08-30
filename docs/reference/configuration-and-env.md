@@ -30,6 +30,11 @@ If set in your shell environment, PromptBranch displays a **"Use environment key
 
 ## Default Filesystem Paths by OS
 
+Database paths apply to the cross-platform CLI and MCP server on every listed
+operating system. In 0.1.0, the desktop app and local sync identity are used
+only on macOS; the Windows and Linux sync paths are reserved for planned
+desktop builds.
+
 | Operating System | Default Database Path | Local Sync Identity & Keys |
 | :--- | :--- | :--- |
 | **macOS** | `~/Library/Application Support/PromptBranch/library.db` | `~/Library/Application Support/PromptBranch/sync/` |

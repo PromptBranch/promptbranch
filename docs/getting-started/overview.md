@@ -1,11 +1,16 @@
 # Overview & Philosophy
 
-**PromptBranch** is a cross-platform, local-first prompt library and version-control system for AI prompts. It bridges the gap between ad-hoc prompt testing and disciplined software engineering: treating prompts as first-class versioned code artifacts that evolve, branch, and improve with empirical evidence.
+**PromptBranch** is a local-first prompt library and version-control system for
+AI prompts. The 0.1.0 desktop app is available for macOS, while the CLI and MCP
+server provide cross-platform access. PromptBranch bridges the gap between
+ad-hoc prompt testing and disciplined software engineering: treating prompts
+as first-class versioned code artifacts that evolve, branch, and improve with
+empirical evidence.
 
 ```mermaid
 graph TD
   subgraph Clients["Clients & Tools"]
-    Desktop["Desktop UI"]
+    Desktop["Desktop UI (macOS in 0.1.0)"]
     CLI["CLI Utility"]
     MCP["MCP Server (Claude / Cursor / Windsurf)"]
   end
@@ -55,7 +60,10 @@ AI coding agents (via CLI or MCP in Claude Desktop, Cursor, or Windsurf) can rea
 - Pending suggestions are invisible to search and listings, and cannot become current until a human reviews and approves them in the **Suggestions** view.
 
 ### 5. Serverless Peer-to-Peer Sync
-Sync your library across your macOS, Windows, and Linux machines over your local network:
+In 0.1.0, the desktop sync UI is available only on macOS, so peer-to-peer sync
+runs between Macs. The sync architecture is designed for future macOS,
+Windows, and Linux desktop peers:
+
 - **No central server**: Devices discover each other via mDNS.
 - **Cryptographic Trust**: Paired using an 8-character Signal-style code verified against self-signed TLS certificate fingerprints.
 - **Deterministic Merge Engine**: Hybrid Logical Clocks (HLC) and Last-Writer-Wins (LWW) resolve conflicts automatically.

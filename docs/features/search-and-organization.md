@@ -6,7 +6,9 @@ PromptBranch provides an embedded **SQLite FTS5 full-text search engine** and fl
 
 ## Instant Full-Text Search (FTS5)
 
-Press <kbd>⌘K</kbd> (macOS) or <kbd>Ctrl+K</kbd> (Windows/Linux) from anywhere in the application to open the **Command Palette & Search Modal**.
+In the 0.1.0 macOS desktop app, press <kbd>⌘K</kbd> from anywhere in the
+application to open the **Command Palette & Search Modal**. Planned Windows and
+Linux desktop builds use <kbd>Ctrl+K</kbd>.
 
 ### How the Search Engine Works
 
@@ -24,7 +26,9 @@ PromptBranch maintains an embedded **SQLite FTS5** full-text search index with t
 > [!NOTE]
 > Search indexing is maintained atomically within SQLite database transactions. There are zero external search daemons, local web servers, or cloud dependencies.
 
-The smaller search field above the prompt list is intentionally narrower: it filters the current list by title, description, and tag name. Use <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> when you need full-text matches from version content or notes.
+The smaller search field above the prompt list is intentionally narrower: it
+filters the current list by title, description, and tag name. In 0.1.0, use
+<kbd>⌘K</kbd> when you need full-text matches from version content or notes.
 
 ---
 

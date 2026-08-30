@@ -12,11 +12,12 @@
 
 ---
 
-PromptBranch is a cross-platform (macOS-first), local-first desktop app for
-managing, versioning and evolving AI prompts — part prompt library, part
-version-control system. The library is a single SQLite file on your own disk;
-the desktop UI, the CLI and the MCP server all work against the same store,
-and AI agents go through a propose-and-approve flow so humans stay in charge.
+PromptBranch is a local-first prompt library and version-control system for
+managing and evolving AI prompts. The 0.1.0 desktop app is available for
+macOS, while the CLI and MCP server make the library cross-platform. The
+library is a single SQLite file on your own disk; the desktop UI, CLI and MCP
+server all work against the same store, and AI agents go through a
+propose-and-approve flow so humans stay in charge.
 
 ## Features
 
@@ -41,11 +42,12 @@ and AI agents go through a propose-and-approve flow so humans stay in charge.
   `promptbranch://import` deep links, revocable delete tokens and a Shares
   view in the app.
 - 🔄 **Multi-device sync** — peer-to-peer over the local network, no server and
-  no account. Pair devices with a short code (Signal-style verification
-  against the device certificate), then changes flow between your computers
-  automatically whenever they can reach each other. Offline-first: every
-  change is durable locally the moment it's written, and sync is pure
-  catch-up when devices meet.
+  no account. In 0.1.0, pair macOS desktop devices with a short code
+  (Signal-style verification against the device certificate), then changes
+  flow automatically whenever they can reach each other. The sync architecture
+  is designed to support future desktop platforms. Offline-first: every change
+  is durable locally the moment it's written, and sync is pure catch-up when
+  devices meet.
 
 ## Installation
 

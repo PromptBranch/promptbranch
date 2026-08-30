@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible problem in PromptBranch.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve PromptBranch. Do not include API keys,
+        private prompt content, access tokens, or other sensitive information.
+
+        Security vulnerabilities must be reported privately through the link
+        shown on the issue chooser, not through this public form.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reliable sequence that reproduces the problem.
+      placeholder: |
+        1. Open …
+        2. Select …
+        3. Observe …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PromptBranch version
+      description: Use the version shown in the app or the relevant commit SHA.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional evidence
+      description: Add sanitized logs or screenshots that help explain the problem.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I removed credentials, private prompts, tokens, and personal data.
+          required: true

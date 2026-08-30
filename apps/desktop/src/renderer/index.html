@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP: the inline theme bootstrap below is allowlisted by its sha256
+         hash instead of 'unsafe-inline'. IMPORTANT: any change to that
+         script changes its bytes — recompute the hash with
+         `node scripts/csp-theme-hash.mjs` and update script-src here. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'sha256-iHjYYR4iG1VKjNA2RAIiZU0HnuuFodHcFTw3m/l4GJU='; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; img-src 'self' data:"
+    />
+    <title>PromptBranch</title>
+    <!-- Set data-theme before first paint so a stored light preference never
+         flashes dark. Keep the key/resolution in sync with lib/theme.ts. -->
+    <script>
+      (function () {
+        var mode = "system";
+        try {
+          var stored = localStorage.getItem("promptbuilder:theme");
+          if (stored === "dark" || stored === "light" || stored === "system") mode = stored;
+        } catch (e) {}
+        var dark = mode === "system" ? window.matchMedia("(prefers-color-scheme: dark)").matches : mode === "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

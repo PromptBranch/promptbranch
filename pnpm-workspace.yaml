@@ -1,0 +1,17 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  sharp: false
+minimumReleaseAgeExclude:
+  - '@ai-sdk/anthropic@3.0.112'
+  - '@ai-sdk/gateway@3.0.180'
+  - '@ai-sdk/google@3.0.112'
+  - '@ai-sdk/openai-compatible@2.0.71'
+  - '@ai-sdk/openai@3.0.100'
+  - '@ai-sdk/provider-utils@4.0.47'
+  - ai@6.0.265

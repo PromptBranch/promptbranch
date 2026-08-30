@@ -111,6 +111,7 @@ import {
   type ShareServiceDeps,
 } from "./share.js";
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
+import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { DesktopSync } from "./sync/service.js";
 
@@ -136,6 +137,11 @@ const keyCipher: KeyCipher = {
 // Injected by electron-vite at build time (see electron.vite.config.ts) so the
 // footer always shows the app version, never Electron's.
 declare const __APP_VERSION__: string;
+
+// Electron's native Wayland path can load the renderer without ever presenting
+// a window on virtual GPUs. X11/Xwayland is the reliable Linux default, while
+// an explicit --ozone-platform choice remains available to users.
+configureLinuxDisplayBackend(process.platform, app.commandLine);
 
 // Dev runs launch the bare `electron` binary, so the app name (macOS menu
 // bar, Dock tooltip, window title fallback) defaults to "Electron" unless it

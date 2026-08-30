@@ -1,0 +1,19 @@
+{
+  "name": "promptbranch",
+  "version": "0.1.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "notices": "node scripts/generate-notices.mjs",
+    "license-check": "node scripts/check-licenses.mjs",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --filter @promptbranch/desktop dev"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

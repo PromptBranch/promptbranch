@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [main, dev]
+
+# Pull-request code executes in this job (postinstall scripts, tests, builds),
+# so the workflow token stays read-only and checkout credentials are not left
+# in the git config for later steps — i.e. PR-supplied code — to reuse.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    runs-on: macos-latest
+    steps:
+      - name: Require dev before main
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref != 'dev'
+        run: |
+          echo "Pull requests into main must come from dev."
+          echo "Merge this branch into dev first, then open a dev-to-main pull request."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: License check
+        run: node scripts/check-licenses.mjs
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

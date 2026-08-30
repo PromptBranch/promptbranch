@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+/* Theme palettes. Dark is the :root default (and historical look); light
+   overrides every variable under [data-theme="light"]. The `data-theme`
+   attribute is set on <html> before first paint by an inline script in
+   index.html, and kept in sync by lib/theme.ts (dark | light | system). */
+:root {
+  color-scheme: dark;
+  --pb-app: #0b0e14;
+  --pb-panel: #0f131c;
+  --pb-raised: #151b26;
+  --pb-hover: rgba(255, 255, 255, 0.04);
+  --pb-line: rgba(255, 255, 255, 0.06);
+  --pb-line-strong: rgba(255, 255, 255, 0.12);
+  --pb-ink: #e6eaf2;
+  --pb-ink-dim: #98a2b3;
+  --pb-ink-faint: #5d6779;
+  --pb-accent: #3b82f6;
+  --pb-accent-strong: #2563eb;
+  --pb-accent-soft: rgba(59, 130, 246, 0.14);
+  --pb-star: #f5a623;
+  --pb-success: #34d399;
+  --pb-danger: #f87171;
+  --pb-danger-strong: #dc2626;
+  --pb-danger-soft: rgba(239, 68, 68, 0.1);
+  --pb-diff-add-bg: rgba(16, 185, 129, 0.1);
+  --pb-diff-add-text: #a7f3d0;
+  --pb-diff-add-gutter: rgba(16, 185, 129, 0.7);
+  --pb-diff-del-bg: rgba(239, 68, 68, 0.1);
+  --pb-diff-del-text: #fecaca;
+  --pb-diff-del-gutter: rgba(248, 113, 113, 0.7);
+  --pb-selection: rgba(59, 130, 246, 0.28);
+  --pb-cm-active-line: rgba(255, 255, 255, 0.03);
+  --pb-scrollbar: rgba(255, 255, 255, 0.1);
+  --pb-scrollbar-hover: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --pb-app: #f7f7f5;
+  --pb-panel: #ffffff;
+  --pb-raised: #f0efec;
+  --pb-hover: rgba(0, 0, 0, 0.04);
+  --pb-line: rgba(28, 25, 23, 0.09);
+  --pb-line-strong: rgba(28, 25, 23, 0.16);
+  --pb-ink: #23272e;
+  --pb-ink-dim: #57606c;
+  --pb-ink-faint: #959ca7;
+  --pb-accent: #2563eb;
+  --pb-accent-strong: #1d4ed8;
+  --pb-accent-soft: rgba(37, 99, 235, 0.1);
+  --pb-star: #d97706;
+  --pb-success: #059669;
+  --pb-danger: #dc2626;
+  --pb-danger-strong: #b91c1c;
+  --pb-danger-soft: rgba(220, 38, 38, 0.07);
+  --pb-diff-add-bg: rgba(5, 150, 105, 0.1);
+  --pb-diff-add-text: #166534;
+  --pb-diff-add-gutter: rgba(5, 150, 105, 0.6);
+  --pb-diff-del-bg: rgba(220, 38, 38, 0.07);
+  --pb-diff-del-text: #991b1b;
+  --pb-diff-del-gutter: rgba(220, 38, 38, 0.55);
+  --pb-selection: rgba(37, 99, 235, 0.2);
+  --pb-cm-active-line: rgba(0, 0, 0, 0.035);
+  --pb-scrollbar: rgba(0, 0, 0, 0.14);
+  --pb-scrollbar-hover: rgba(0, 0, 0, 0.26);
+}
+
+@theme inline {
+  --color-app: var(--pb-app);
+  --color-panel: var(--pb-panel);
+  --color-raised: var(--pb-raised);
+  --color-hover: var(--pb-hover);
+  --color-line: var(--pb-line);
+  --color-line-strong: var(--pb-line-strong);
+  --color-ink: var(--pb-ink);
+  --color-ink-dim: var(--pb-ink-dim);
+  --color-ink-faint: var(--pb-ink-faint);
+  --color-accent: var(--pb-accent);
+  --color-accent-strong: var(--pb-accent-strong);
+  --color-accent-soft: var(--pb-accent-soft);
+  --color-star: var(--pb-star);
+  --color-success: var(--pb-success);
+  --color-danger: var(--pb-danger);
+  --color-danger-strong: var(--pb-danger-strong);
+  --color-danger-soft: var(--pb-danger-soft);
+  --color-diff-add-bg: var(--pb-diff-add-bg);
+  --color-diff-add-text: var(--pb-diff-add-text);
+  --color-diff-add-gutter: var(--pb-diff-add-gutter);
+  --color-diff-del-bg: var(--pb-diff-del-bg);
+  --color-diff-del-text: var(--pb-diff-del-text);
+  --color-diff-del-gutter: var(--pb-diff-del-gutter);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-app);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Subtle scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--pb-scrollbar) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--pb-scrollbar);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--pb-scrollbar-hover);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* CodeMirror host. Font size is user-configurable via --cm-font-size, set
+   on <html> from the editorFontSize pref (see lib/prefs.ts). */
+.cm-host {
+  height: 100%;
+  min-height: 0;
+}
+/* @uiw/react-codemirror renders an unstyled wrapper div between .cm-host and
+   .cm-editor; without a height it collapses to content size and long
+   documents overflow past the editor's flex allocation into the footer. */
+.cm-host > div {
+  height: 100%;
+  min-height: 0;
+}
+.cm-host .cm-editor {
+  height: 100%;
+  background: transparent;
+  font-size: var(--cm-font-size, 13px);
+}
+.cm-host .cm-editor.cm-focused {
+  outline: none;
+}
+.cm-host .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.65;
+}
+.cm-host .cm-gutters {
+  background: transparent;
+  border-right: 1px solid var(--color-line);
+  color: var(--color-ink-faint);
+}
+.cm-host .cm-activeLine {
+  background: var(--pb-cm-active-line);
+}
+.cm-host .cm-activeLineGutter {
+  background: transparent;
+  color: var(--color-ink-dim);
+}
+.cm-host .cm-selectionBackground,
+.cm-host .cm-editor ::selection {
+  background: var(--pb-selection) !important;
+}
+.cm-host .cm-cursor {
+  border-left-color: var(--color-ink);
+}
+
+/* Shiki dual-theme code blocks (lib/highlight.ts). Spans carry
+   --shiki-light/--shiki-dark inline vars; pick per app theme so highlighting
+   follows [data-theme] with no JS. The app surface owns background/border
+   (bg-app + border-line on the block wrapper), so Shiki's theme background
+   is dropped. */
+.pb-shiki .shiki {
+  background-color: transparent !important;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.pb-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+[data-theme="light"] .pb-shiki .shiki span {
+  color: var(--shiki-light);
+}
+
+/* Radix animation helpers */
+@keyframes pb-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Fade-only: dialogs are positioned with Tailwind's `translate` property
+   (-translate-x/y-1/2); animating `transform: translate(...)` here would
+   compound with it and flash the dialog off-center on open. */
+@keyframes pb-pop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pb-menu-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.pb-overlay {
+  animation: pb-overlay-in 120ms ease-out;
+}
+.pb-dialog {
+  animation: pb-pop-in 140ms ease-out;
+}
+.pb-menu {
+  animation: pb-menu-in 110ms ease-out;
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, top right);
+}
+
+/* Panel resize separators (react-resizable-panels); the data attribute
+   carries the interaction state (idle/hover/focus/active/disabled). */
+[data-separator] {
+  background: var(--color-line);
+  transition: background 120ms ease-out;
+}
+[data-separator]:hover,
+[data-separator="hover"],
+[data-separator="focus"] {
+  background: var(--color-line-strong);
+  outline: none;
+}
+[data-separator]:active,
+[data-separator="active"] {
+  background: var(--color-accent);
+}

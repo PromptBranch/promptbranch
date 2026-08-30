@@ -1,0 +1,20 @@
+node_modules/
+dist/
+release-artifacts/
+out/
+*.log
+.DS_Store
+*.tsbuildinfo
+coverage/
+docs-internal/
+*.db
+*.db-wal
+*.db-shm
+*.backup-*
+
+# per-package copies of the root LICENSE + THIRD_PARTY_NOTICES.md (created by
+# scripts/sync-package-licenses.mjs at publish time; root files are canonical)
+packages/*/LICENSE
+packages/*/THIRD_PARTY_NOTICES.md
+apps/cli/LICENSE
+apps/cli/THIRD_PARTY_NOTICES.md

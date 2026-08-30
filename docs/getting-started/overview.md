@@ -1,8 +1,8 @@
 # Overview & Philosophy
 
 **PromptBranch** is a local-first prompt library and version-control system for
-AI prompts. The 0.1.0 desktop app is available for macOS, while the CLI and MCP
-server provide cross-platform access. PromptBranch bridges the gap between
+AI prompts. The 0.1.0 desktop app, CLI, and MCP server are available across
+macOS, Windows, and Linux. PromptBranch bridges the gap between
 ad-hoc prompt testing and disciplined software engineering: treating prompts
 as first-class versioned code artifacts that evolve, branch, and improve with
 empirical evidence.
@@ -10,7 +10,7 @@ empirical evidence.
 ```mermaid
 graph TD
   subgraph Clients["Clients & Tools"]
-    Desktop["Desktop UI (macOS in 0.1.0)"]
+    Desktop["Desktop UI (macOS / Windows / Linux)"]
     CLI["CLI Utility"]
     MCP["MCP Server (Claude / Cursor / Windsurf)"]
   end

@@ -80,9 +80,6 @@
       "target": [
         {
           "target": "dmg"
-        },
-        {
-          "target": "zip"
         }
       ]
     },

@@ -6,8 +6,8 @@ PromptBranch can be used as a full desktop application with a visual UI, as a st
 
 ## Desktop Application
 
-PromptBranch desktop 0.1.0 is currently available only for macOS. The CLI and
-MCP server remain cross-platform.
+PromptBranch desktop 0.1.0 is available for macOS, Windows, and Linux on arm64
+and x64. The CLI and MCP server are also cross-platform.
 
 ### macOS
 
@@ -15,9 +15,7 @@ Download the native build for your Mac from
 [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
 - **Apple Silicon (arm64), DMG**: `promptbranch_0.1.0_macos_arm64.dmg`
-- **Apple Silicon (arm64), ZIP**: `promptbranch_0.1.0_macos_arm64.zip`
 - **Intel (x64), DMG**: `promptbranch_0.1.0_macos_x64.dmg`
-- **Intel (x64), ZIP**: `promptbranch_0.1.0_macos_x64.zip`
 
 Use only files published by the official PromptBranch repository and verify
 the checksum listed in the release notes.
@@ -27,14 +25,19 @@ the checksum listed in the release notes.
 
 ### Windows
 
-Windows desktop builds are planned, but no Windows desktop installer is
-available in 0.1.0. You can still use the cross-platform CLI and MCP server on
-Windows.
+Download the EXE installer for your Windows architecture:
+
+- **ARM64**: `promptbranch_0.1.0_windows_arm64.exe`
+- **x64**: `promptbranch_0.1.0_windows_x64.exe`
 
 ### Linux
 
-Linux desktop builds are planned, but no Linux desktop installer is available
-in 0.1.0. You can still use the cross-platform CLI and MCP server on Linux.
+Download the AppImage or Debian package for your Linux architecture:
+
+- **ARM64**: `promptbranch_0.1.0_linux_arm64.AppImage` or
+  `promptbranch_0.1.0_linux_arm64.deb`
+- **x64**: `promptbranch_0.1.0_linux_x64.AppImage` or
+  `promptbranch_0.1.0_linux_x64.deb`
 
 ---
 

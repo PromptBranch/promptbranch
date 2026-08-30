@@ -103,3 +103,36 @@ test("electron-builder uses explicit lowercase platform and architecture names",
   assert.equal(manifest.build.win.artifactName, "promptbranch_${version}_windows_${arch}.${ext}");
   assert.equal(manifest.build.linux.artifactName, "promptbranch_${version}_linux_${arch}.${ext}");
 });
+
+test("Linux installers force the X11 backend for reliable VM launches", async () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+  assert.deepEqual(manifest.build.linux.executableArgs, ["--ozone-platform=x11"]);
+});
+
+test("AppImage builds use the static runtime toolset", async () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+  assert.equal(manifest.build.toolsets.appimage, "1.0.3");
+});
+
+test("Debian packages declare every required Electron runtime library", async () => {
+  const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+  assert.deepEqual(manifest.build.deb.depends, [
+    "libgtk-3-0",
+    "libnotify4",
+    "libnss3",
+    "libxss1",
+    "libxtst6",
+    "xdg-utils",
+    "libatspi2.0-0",
+    "libuuid1",
+    "libsecret-1-0",
+    "libgbm1",
+    "libasound2",
+  ]);
+});

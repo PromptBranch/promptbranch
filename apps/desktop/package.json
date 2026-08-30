@@ -106,10 +106,16 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true
     },
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "linux": {
       "icon": "build/icon-512.png",
       "category": "Utility;Development;",
       "executableName": "promptbranch",
+      "executableArgs": [
+        "--ozone-platform=x11"
+      ],
       "maintainer": "PromptBranch <promptbranch@users.noreply.local>",
       "target": [
         {
@@ -120,6 +126,21 @@
         }
       ],
       "artifactName": "promptbranch_${version}_linux_${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2"
+      ]
     }
   },
   "dependencies": {

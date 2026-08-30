@@ -6,53 +6,35 @@ PromptBranch can be used as a full desktop application with a visual UI, as a st
 
 ## Desktop Application
 
-Download installers for macOS, Windows, and Linux from
-[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
+PromptBranch desktop 0.1.0 is currently available only for macOS. The CLI and
+MCP server remain cross-platform.
 
 ### macOS
 
-PromptBranch provides separate native builds for Apple Silicon (M1/M2/M3/M4) and Intel Macs:
+Download the native build for your Mac from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
-- **Apple Silicon (ARM64)**: `PromptBranch-<version>-macos-arm64.dmg`
-- **Intel (x64)**: `PromptBranch-<version>-macos-x64.dmg`
-- **Portable Zip**: `PromptBranch-<version>-macos-arm64.zip` / `PromptBranch-<version>-macos-x64.zip`
+- **Apple Silicon (arm64), DMG**: `promptbranch_0.1.0_macos_arm64.dmg`
+- **Apple Silicon (arm64), ZIP**: `promptbranch_0.1.0_macos_arm64.zip`
+- **Intel (x64), DMG**: `promptbranch_0.1.0_macos_x64.dmg`
+- **Intel (x64), ZIP**: `promptbranch_0.1.0_macos_x64.zip`
 
-The GitHub release notes state whether a macOS build is signed and notarized.
-Unsigned preview builds may trigger Gatekeeper; use only releases published by
-the official PromptBranch repository and verify the listed checksum.
+Use only files published by the official PromptBranch repository and verify
+the checksum listed in the release notes.
 
 > [!NOTE]
 > **Local Network Permission Prompt**: On macOS, the first time you enable Multi-Device Sync, macOS may display a system dialog asking for **Local Network** access. Select **Allow** so local discovery and peer-to-peer sync can reach your other devices.
 
 ### Windows
 
-- **Installer (Intel/AMD 64-bit)**: `PromptBranch-<version>-windows-x64.exe`
-- **Installer (ARM64)**: `PromptBranch-<version>-windows-arm64.exe`
-
-The Windows installer uses NSIS in **per-user mode** (`%LOCALAPPDATA%\Programs\PromptBranch`). It does not require administrator privileges to install or update.
-
-> [!TIP]
-> If Windows SmartScreen displays a warning on an unsigned build, click **More info** and select **Run anyway**.
+Windows desktop builds are planned, but no Windows desktop installer is
+available in 0.1.0. You can still use the cross-platform CLI and MCP server on
+Windows.
 
 ### Linux
 
-- **AppImage**: `PromptBranch-<version>-linux-x64.AppImage` / `PromptBranch-<version>-linux-arm64.AppImage`
-- **Debian / Ubuntu**: `PromptBranch-<version>-linux-x64.deb` / `PromptBranch-<version>-linux-arm64.deb`
-
-#### AppImage Prerequisites
-AppImage binaries on modern Linux distributions (such as Ubuntu 24.04+, Debian 12+, Fedora 40+) require FUSE 2 or 3:
-```bash
-# Ubuntu / Debian
-sudo apt install libfuse2
-
-# Fedora / RHEL
-sudo dnf install fuse-libs
-```
-To run the AppImage:
-```bash
-chmod +x PromptBranch-*.AppImage
-./PromptBranch-*.AppImage
-```
+Linux desktop builds are planned, but no Linux desktop installer is available
+in 0.1.0. You can still use the cross-platform CLI and MCP server on Linux.
 
 ---
 

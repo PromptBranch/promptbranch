@@ -49,12 +49,19 @@ and AI agents go through a propose-and-approve flow so humans stay in charge.
 
 ## Installation
 
-Download installers for macOS (`.dmg`), Windows (`.exe`) and Linux
-(`.AppImage`, `.deb`) from
-[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
+PromptBranch desktop 0.1.0 is currently available only for macOS, with native
+builds for Apple Silicon (arm64) and Intel (x64). Download one of these four
+files from [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
-Step-by-step guides for every platform — plus CLI and MCP server setup —
-live in [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
+- `promptbranch_0.1.0_macos_arm64.dmg`
+- `promptbranch_0.1.0_macos_arm64.zip`
+- `promptbranch_0.1.0_macos_x64.dmg`
+- `promptbranch_0.1.0_macos_x64.zip`
+
+Windows and Linux desktop builds are planned, but no installers for those
+platforms are available in 0.1.0. The CLI and MCP server remain
+cross-platform; setup instructions live in
+[`docs/getting-started/installation.md`](docs/getting-started/installation.md).
 
 ## Where your data lives
 

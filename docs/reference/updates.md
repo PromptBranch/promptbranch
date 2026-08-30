@@ -1,19 +1,20 @@
 # Updates
 
-PromptBranch v0.1 uses manual desktop updates. Its version check runs only
-when you ask for it: the app checks the latest public GitHub release version
-and, after your confirmation, can open the public GitHub Releases page. It
-never downloads, installs, or applies an update, and it never checks for
-updates in the background.
+PromptBranch v0.1 uses manual desktop updates. The app does not check GitHub
+for a newer version or compare versions for you. It never checks for updates
+in the background, and it never downloads, installs, or applies an update.
 
-## How it works
+## Check for an update manually
 
-- Run the app's version check, or open
+- Open **About PromptBranch** and note the installed `Version` shown there.
+- Open **Settings → Updates** and select **Open GitHub Releases**. You can also
+  select **View Releases** in About, choose **GitHub Releases…** from the app
+  menu, or open
   [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases)
   directly.
-- If a newer version is available, confirm that you want to open the release
-  page.
-- Choose the macOS installer for your CPU architecture.
+- Manually compare the installed version with the latest public release.
+- If the public release is newer, choose the macOS installer for your CPU
+  architecture.
 - Quit PromptBranch, install the new version, and reopen it. Your library stays
   in the same application-data directory.
 

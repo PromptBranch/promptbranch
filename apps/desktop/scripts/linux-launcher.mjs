@@ -4,7 +4,16 @@ import { join } from "node:path";
 function launcherScript(executableName) {
   const binaryName = `${executableName}-bin`;
   return `#!/bin/sh
-binary="$(dirname "$0")/${binaryName}"
+launcher="$0"
+while [ -L "$launcher" ]; do
+  launcher_dir="$(cd -P "$(dirname "$launcher")" >/dev/null 2>&1 && pwd)"
+  launcher_target="$(readlink "$launcher")"
+  case "$launcher_target" in
+    /*) launcher="$launcher_target" ;;
+    *) launcher="$launcher_dir/$launcher_target" ;;
+  esac
+done
+binary="$(cd -P "$(dirname "$launcher")" >/dev/null 2>&1 && pwd)/${binaryName}"
 
 for argument in "$@"; do
   case "$argument" in

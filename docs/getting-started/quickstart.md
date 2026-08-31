@@ -9,7 +9,7 @@ This guide walks you through creating your first version-controlled prompt, exec
 1. Launch **PromptBranch**.
 2. Click the **+** button (*New prompt*) at the top of the prompt list — or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> and choose **New Prompt**.
 3. Set a title: **`Code Refactoring Assistant`**, plus a brief description: *Refactors messy code into clean, idiomatic, well-tested functions.*
-4. Leave **Initial content (v1)** empty for this walkthrough. If you fill it in (or use **Generate with AI…**), PromptBranch creates v1 immediately and the save in Step 2 will create v2 instead.
+4. Leave **Initial content (v1)** empty for this walkthrough. Creating a prompt always creates `main` v1, so the save in Step 2 will create v2. You can also use **Generate with AI…** to draft the initial v1 content before creating the prompt.
 5. Optionally select existing tags. New tags are created with the **+** button beside **Tags** in the left rail and can be attached after creation.
 6. Click **Create prompt**.
 
@@ -36,7 +36,7 @@ Code to Refactor:
 Provide the refactored code followed by a bulleted summary of the changes and unit tests.
 ````
 
-When you reach a stable point, click **Save as new version** on the toolbar. In the *Save as v1* dialog, enter a change note (e.g. *"Initial prompt template"*) and click **Save version**. The draft is committed as an immutable version on the `main` branch.
+When you reach a stable point, click **Save as new version** on the toolbar. In the *Save as v2* dialog, enter a change note (e.g. *"Initial prompt template"*) and click **Save version**. The draft is committed as an immutable version on the `main` branch.
 
 ---
 

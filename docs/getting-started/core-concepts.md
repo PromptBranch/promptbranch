@@ -56,8 +56,8 @@ Key version attributes:
 - **`content`**: The exact template text at that point in time.
 - **`parent_version_id`**: Pointer to the previous version, forming an unbroken lineage graph.
 - **`change_note`**: A commit-like description explaining *why* the change was made (e.g., *"Added guardrails against SQL injection"*).
-- **`author`**: Identifier of who authored the version (defaults to `"You"` for humans, or the agent name for suggestions).
-- **`status`**: Either **`active`** (ready for use) or **`pending`** (awaiting human approval).
+- **`author`**: Identifier of who authored the version (defaults to `"You"` for human-created versions and `"Agent"` for suggestions).
+- **`status`**: **`active`** (ready for use), **`pending`** (awaiting human approval), or **`rejected`** (kept for history but permanently inactive).
 - **`source`**: Origin tag: **`user`** (human-created version) or **`agent`** (suggested by MCP or CLI). Sync preserves the original source.
 
 ---

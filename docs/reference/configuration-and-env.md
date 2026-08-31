@@ -30,13 +30,13 @@ If set in your shell environment, PromptBranch displays a **"Use environment key
 
 ## Default Filesystem Paths by OS
 
-These database and local-sync identity paths apply to the desktop app, CLI,
-and MCP server on every listed operating system.
+The database path applies to the desktop app, CLI, and MCP server. The sync
+identity path is used only by the desktop app.
 
 | Operating System | Default Database Path | Local Sync Identity & Keys |
 | :--- | :--- | :--- |
 | **macOS** | `~/Library/Application Support/PromptBranch/library.db` | `~/Library/Application Support/PromptBranch/sync/` |
-| **Linux** | `$XDG_CONFIG_HOME/promptbranch/library.db` (defaults to `~/.config/promptbranch/library.db`) | `$XDG_CONFIG_HOME/PromptBranch/sync/` (defaults to `~/.config/PromptBranch/sync/`) |
+| **Linux** | `$XDG_CONFIG_HOME/promptbranch/library.db` (defaults to `~/.config/promptbranch/library.db`) | The desktop app's Electron user-data directory, under `sync/` |
 | **Windows** | `%APPDATA%\PromptBranch\library.db` | `%APPDATA%\PromptBranch\sync\` |
 
 ---

@@ -2,26 +2,24 @@
 
 PromptBranch includes a **serverless, peer-to-peer (P2P) sync engine** that
 synchronizes your prompt library directly over your local network without any
-cloud servers or user accounts. In 0.1.0, the desktop app and sync UI are
-available only on macOS, so user-facing sync currently runs between Macs. The
-underlying architecture is designed to support future Windows and Linux
-desktop peers.
+cloud servers or user accounts. Sync runs between PromptBranch desktop devices
+on macOS, Windows, and Linux.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant MacA as Mac A
-  participant MacB as Mac B
+  participant DeviceA as Device A
+  participant DeviceB as Device B
 
-  Note over MacA,MacB: Discovery via local mDNS (_promptbranch._tcp)
-  MacA->>MacB: Connect & Exchange TLS Certificates
-  Note over MacA,MacB: User verifies 8-character fingerprint code<br/>Both sides pin each other's certificate fingerprints
-  MacA->>MacB: Request missing changes (cursor: N)
-  MacB-->>MacA: Transmit batch of timestamped ops
-  Note over MacA: Apply Deterministic LWW & Row Union
-  MacB->>MacA: Request missing changes (cursor: M)
-  MacA-->>MacB: Transmit batch of timestamped ops
-  Note over MacB: Apply Deterministic LWW & Row Union
+  Note over DeviceA,DeviceB: Discovery via local mDNS (_promptbranch._tcp)
+  DeviceA->>DeviceB: Connect & Exchange TLS Certificates
+  Note over DeviceA,DeviceB: User verifies 8-character fingerprint code<br/>Both sides pin each other's certificate fingerprints
+  DeviceA->>DeviceB: Request missing changes (cursor: N)
+  DeviceB-->>DeviceA: Transmit batch of timestamped ops
+  Note over DeviceA: Apply Deterministic LWW & Row Union
+  DeviceB->>DeviceA: Request missing changes (cursor: M)
+  DeviceA-->>DeviceB: Transmit batch of timestamped ops
+  Note over DeviceB: Apply Deterministic LWW & Row Union
 ```
 
 ---
@@ -57,25 +55,25 @@ Certain data is strictly isolated to the host machine and is **never synchronize
 > [!NOTE]
 > Published share records and their delete tokens **do synchronize** across
 > your paired devices, allowing you to manage and revoke your shares from any
-> paired Mac in 0.1.0.
+> paired device.
 
 ---
 
 ## Pairing Devices Step-by-Step
 
-### Step 1: Enable Sync on Both Macs
-1. On **Mac A** and **Mac B**, open **Settings → Sync**.
+### Step 1: Enable Sync on Both Devices
+1. On **Device A** and **Device B**, open **Settings → Sync**.
 2. Toggle **Device-to-device sync** to ON.
 3. If macOS displays a **Local Network** permission prompt, click **Allow**.
 
 ### Step 2: Initiate Pairing
-1. On **Mac A**, click **Add a device** and choose **Show pairing code**.
-2. Mac A displays an **8-character pairing code** in the form `XXXX-XXXX`.
-3. On **Mac B**, click **Add a device**:
-   - Pick Mac A from the **discovered nearby devices** list, or
+1. On **Device A**, click **Add a device** and choose **Show pairing code**.
+2. Device A displays an **8-character pairing code** in the form `XXXX-XXXX`.
+3. On **Device B**, click **Add a device**:
+   - Pick Device A from the **discovered nearby devices** list, or
    - Use **Pair by address** (VPNs, manual setup) and enter Mac A's IP/hostname and port.
 4. Type in the pairing code and confirm.
-5. Both Macs verify the mutual TLS fingerprints, pin each other's certificates, and immediately exchange any missing history.
+5. Both devices verify the mutual TLS fingerprints, pin each other's certificates, and immediately exchange any missing history.
 
 ---
 

@@ -69,7 +69,7 @@ You retain complete ownership over your published prompts:
 Anyone viewing a snapshot can import it into their local PromptBranch library:
 
 ### 1. One-Click Deep Links (`promptbranch://`)
-Clicking **Import to PromptBranch** on a web snapshot triggers the custom OS protocol handler `promptbranch://import?url=...`. The desktop app opens a validated preview; nothing is written until you click **Import**. The imported prompt preserves the published scope and tags and includes a provenance note.
+Clicking **Import to PromptBranch** on a web snapshot triggers the custom OS protocol handler `promptbranch://import?url=...`. The desktop app opens a validated preview; nothing is written until you click **Import**. The import creates a new local prompt with the snapshot's content, description, and tags plus a provenance change note and note. If the share includes history, that history remains on the portal; the local prompt starts with the latest shared content as v1.
 
 ### 2. CLI Import
 ```bash

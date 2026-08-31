@@ -36,9 +36,11 @@ promptbranch import https://promptbranch.app/p/<id>    # imports the snapshot as
 list) and stores the delete token in the library's `shared_snapshots` table so
 the share can be revoked from the desktop app. `--portal <base-url>` overrides
 the portal for one call; otherwise the library's `portal_base_url` setting
-(default `https://promptbranch.app`) is used. A full snapshot URL names its
-own portal — importing a friend's self-hosted link needs no flag. Portal
-requests time out after 30 seconds instead of waiting indefinitely.
+(default `https://promptbranch.app`) is used. A full snapshot URL supplies its
+own portal origin, so importing it needs no extra flag. Imports create a new
+local prompt with the snapshot content, tags, and a provenance note; they do
+not recreate a shared version history. Portal requests time out after 30
+seconds instead of waiting indefinitely.
 
 ## Environment
 

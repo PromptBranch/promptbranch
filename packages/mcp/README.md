@@ -37,6 +37,10 @@ Point your MCP client at it:
 | `add_note` | Attach a note to a prompt or a specific version |
 | `suggest_variation` | Propose an improved version — stays **pending** until a human approves it in the app |
 
+The MCP server deliberately has no publish or import tool. It can read the
+library, log runs and notes, and submit pending suggestions; sharing remains a
+human action in the desktop app or CLI.
+
 ## Configuration
 
 Set `PROMPTBRANCH_DB=/path/to.db` to point at a different library (the

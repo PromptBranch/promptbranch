@@ -25,8 +25,8 @@ Popular providers (OpenAI, Anthropic, Google) are pinned at the top of the list;
 1. In PromptBranch, open **Settings** (<kbd>⌘,</kbd> / <kbd>Ctrl+,</kbd>) and navigate to **AI Providers**.
 2. Click **Connect a provider…**.
 3. Select a provider from the catalog list — or **Custom OpenAI-compatible provider** for a local or self-hosted endpoint.
-4. Enter your API Key.
-5. Click **Connect**. PromptBranch verifies authentication with a minimal test request ("Reply with: ok") before saving the connection.
+4. Enter an API key when the provider needs one. Custom local endpoints can omit it when their server accepts unauthenticated requests.
+5. Choose a test model when the catalog has models, then click **Connect**. PromptBranch saves the provider and runs a minimal `Reply with: ok` test. If the test fails, the provider remains available to fix and re-test later.
 
 ### One-Click Environment Key Detection
 If standard provider API keys are defined in your shell environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GOOGLE_GENERATIVE_AI_API_KEY`), PromptBranch automatically detects them and displays a **Use environment key** button for instant setup.
@@ -72,9 +72,9 @@ sequenceDiagram
   Note over DB,Renderer: Plaintext key is NEVER stored in SQLite<br/>and NEVER sent back to Renderer
 ```
 
-- **`safeStorage`**: In the 0.1.0 desktop app, API keys are encrypted at rest
-  with macOS Keychain. Planned Windows and Linux desktop builds use Windows
-  DPAPI and Linux Secret Service respectively.
+- **`safeStorage`**: API keys are encrypted at rest through Electron's
+  platform-backed secure storage. If encryption is unavailable on a desktop
+  session, PromptBranch refuses to store the key rather than saving plaintext.
 - **Renderer Isolation**: The renderer necessarily holds a key while you type it, then sends it once to the main process. Stored keys are never returned to or decrypted in the renderer.
 - **Export & Sync Safety**: Library JSON exports can include provider metadata and model declarations, but the `api_key_enc` field is cleared. Multi-device sync also redacts that field, so keys must be configured separately on each device.
 

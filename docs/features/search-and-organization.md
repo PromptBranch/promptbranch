@@ -6,9 +6,8 @@ PromptBranch provides an embedded **SQLite FTS5 full-text search engine** and fl
 
 ## Instant Full-Text Search (FTS5)
 
-In the 0.1.0 macOS desktop app, press <kbd>⌘K</kbd> from anywhere in the
-application to open the **Command Palette & Search Modal**. Planned Windows and
-Linux desktop builds use <kbd>Ctrl+K</kbd>.
+Press <kbd>⌘K</kbd> on macOS or <kbd>Ctrl+K</kbd> on Windows and Linux from
+anywhere in the application to open the **Command Palette & Search Modal**.
 
 ### How the Search Engine Works
 

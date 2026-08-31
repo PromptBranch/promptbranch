@@ -13,11 +13,11 @@
 ---
 
 PromptBranch is a local-first prompt library and version-control system for
-managing and evolving AI prompts. The 0.1.0 desktop app is available for
-macOS, while the CLI and MCP server make the library cross-platform. The
-library is a single SQLite file on your own disk; the desktop UI, CLI and MCP
-server all work against the same store, and AI agents go through a
-propose-and-approve flow so humans stay in charge.
+managing and evolving AI prompts. The desktop app, CLI, and MCP server run on
+macOS, Windows, and Linux for arm64 and x64 builds. The library is a single
+SQLite file on your own disk; the desktop UI, CLI and MCP server all work
+against the same store, and AI agents go through a propose-and-approve flow so
+humans stay in charge.
 
 ## Features
 
@@ -42,25 +42,23 @@ propose-and-approve flow so humans stay in charge.
   `promptbranch://import` deep links, revocable delete tokens and a Shares
   view in the app.
 - 🔄 **Multi-device sync** — peer-to-peer over the local network, no server and
-  no account. In 0.1.0, pair macOS desktop devices with a short code
-  (Signal-style verification against the device certificate), then changes
-  flow automatically whenever they can reach each other. The sync architecture
-  is designed to support future desktop platforms. Offline-first: every change
-  is durable locally the moment it's written, and sync is pure catch-up when
-  devices meet.
+  no account. Pair desktop devices with a short code (verification against the
+  device certificate), then changes flow automatically whenever they can reach
+  each other. Offline-first: every change is durable locally the moment it's
+  written, and sync is pure catch-up when devices meet.
 
 ## Installation
 
-PromptBranch desktop 0.1.0 is available for macOS, Windows, and Linux on arm64
-and x64. Download the installer for your operating system and CPU from
+PromptBranch desktop is available for macOS, Windows, and Linux on arm64 and
+x64. Download the installer for your operating system and CPU from
 [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
 
-- `promptbranch_0.1.0_macos_arm64.dmg`
-- `promptbranch_0.1.0_macos_x64.dmg`
-- `promptbranch_0.1.0_windows_arm64.exe`
-- `promptbranch_0.1.0_windows_x64.exe`
-- `promptbranch_0.1.0_linux_arm64.AppImage` or `.deb`
-- `promptbranch_0.1.0_linux_x64.AppImage` or `.deb`
+- `promptbranch_<version>_macos_arm64.dmg`
+- `promptbranch_<version>_macos_x64.dmg`
+- `promptbranch_<version>_windows_arm64.exe`
+- `promptbranch_<version>_windows_x64.exe`
+- `promptbranch_<version>_linux_arm64.AppImage` or `.deb`
+- `promptbranch_<version>_linux_x64.AppImage` or `.deb`
 
 The CLI and MCP server are also cross-platform; setup instructions live in
 [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
@@ -187,8 +185,9 @@ official portal, <https://promptbranch.app>.
   stored locally so shares can be revoked later from the **Shares view** in
   the left rail (search, status filtering, copy link, revoke).
 - **Importing** works via `promptbranch://import?url=` deep links or
-  `promptbranch import`; snapshots come back as regular local prompts tagged
-  with their origin.
+  `promptbranch import`; the snapshot becomes a new local prompt with its
+  tags and a provenance note. A shared history remains viewable on the portal;
+  it is not recreated as a local version chain.
 
 ## Multi-device sync
 

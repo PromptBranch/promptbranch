@@ -191,6 +191,7 @@ describe("UpdatesSection", () => {
     const toggle = await screen.findByRole("switch", {
       name: "Automatically check for updates",
     });
+    expect(screen.getByText(/Checks when PromptBranch starts/)).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-checked", "true");
     await user.click(toggle);
 

@@ -26,9 +26,9 @@ version is available.
 ## Automatic checks
 
 **Automatically check for updates** is enabled by default. PromptBranch checks
-quietly after launch and no more than once per day. It shows a notification only
-when a matching update is available; routine successes and failures do not
-interrupt your work.
+quietly each time the packaged app starts. It does not run periodic checks while
+the app remains open. PromptBranch shows a notification only when a matching
+update is available; routine successes and failures do not interrupt your work.
 
 Turn the setting off at any time in **Settings → Updates**. Manual checks remain
 available while automatic checks are disabled.

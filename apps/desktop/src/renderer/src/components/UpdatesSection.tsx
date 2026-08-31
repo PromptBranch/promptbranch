@@ -332,7 +332,8 @@ export function UpdatesSection() {
             Automatically check for updates
           </p>
           <p className="mt-0.5 max-w-[48ch] text-[11px] leading-relaxed text-ink-faint">
-            Checks once a day. PromptBranch never downloads or installs an update without you.
+            Checks when PromptBranch starts. Manual checks remain available when this is off.
+            PromptBranch never downloads or installs an update without you.
           </p>
         </div>
         <button

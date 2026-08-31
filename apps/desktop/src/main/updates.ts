@@ -10,7 +10,6 @@ import type {
 export const GITHUB_LATEST_RELEASE_URL =
   "https://api.github.com/repos/PromptBranch/promptbranch/releases/latest";
 
-const AUTOMATIC_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 const AUTOMATIC_CHECK_SETTING = "updates.automatic_checks";
 const LAST_CHECK_SETTING = "updates.last_checked_at";
 const RELEASE_CACHE_SETTING = "updates.release_cache";
@@ -268,12 +267,8 @@ export class UpdateService {
     return this.inFlight;
   }
 
-  async checkAutomaticallyIfDue(): Promise<UpdateStateDto | null> {
-    if (
-      this.deps.isDevelopment ||
-      !this.automaticChecksEnabled ||
-      !this.isCheckDue(this.state.lastCheckedAt)
-    ) {
+  async checkAutomaticallyAtStartup(): Promise<UpdateStateDto | null> {
+    if (this.deps.isDevelopment || !this.automaticChecksEnabled) {
       return null;
     }
     return this.check("automatic");
@@ -447,12 +442,6 @@ export class UpdateService {
       assets: [],
       errorMessage: null,
     };
-  }
-
-  private isCheckDue(lastCheckedAt: string | null): boolean {
-    if (!lastCheckedAt) return true;
-    const last = Date.parse(lastCheckedAt);
-    return !Number.isFinite(last) || this.deps.now().getTime() - last >= AUTOMATIC_CHECK_INTERVAL_MS;
   }
 
   private emit(): void {

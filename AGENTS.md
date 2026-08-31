@@ -373,7 +373,8 @@ when touching it:
   GitHub Release, compares semantic versions, and exposes only canonical,
   exact OS/architecture installer assets. The validated release and ETag are
   cached in device-local settings; automatic detection is enabled by default
-  and limited to once per day. Downloads open in the system browser and
+  and runs once after each packaged-app startup, with no periodic checks while
+  the app remains open. Downloads open in the system browser and
   installation remains manual: there is no `electron-updater` dependency or
   unattended download/install path. Adding in-app installation requires a
   separate signed, architecture-aware design and target-backed update testing.

@@ -187,7 +187,6 @@ app.on("open-url", (event, url) => {
 
 const BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const UPDATE_STARTUP_DELAY_MS = 20_000;
-const UPDATE_RECHECK_INTERVAL_MS = 60 * 60 * 1_000;
 
 let db: Database | null = null;
 let library: PromptLibrary | null = null;
@@ -195,8 +194,6 @@ let backupsDir: string | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
-let updateRecheckTimer: NodeJS.Timeout | null = null;
-let automaticUpdateChecksArmed = false;
 
 function getDb(): Database {
   if (!db) throw new Error("Database not initialized");
@@ -786,9 +783,6 @@ function registerIpcHandlers(): void {
     const state = updateStateDtoSchema.parse(
       getUpdateService().setAutomaticChecksEnabled(enabled),
     );
-    if (enabled && automaticUpdateChecksArmed) {
-      void getUpdateService().checkAutomaticallyIfDue();
-    }
     return state;
   });
 
@@ -1004,10 +998,6 @@ function createWindow(): void {
     if (mainWindow === window) mainWindow = null;
     importDispatcher.windowClosed();
   });
-  window.on("focus", () => {
-    if (automaticUpdateChecksArmed) void updateService?.checkAutomaticallyIfDue();
-  });
-
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1158,14 +1148,9 @@ if (!gotSingleInstanceLock) {
   syncPokeTimer.unref?.();
 
   updateStartupTimer = setTimeout(() => {
-    automaticUpdateChecksArmed = true;
-    void updateService?.checkAutomaticallyIfDue();
+    void updateService?.checkAutomaticallyAtStartup();
   }, UPDATE_STARTUP_DELAY_MS);
   updateStartupTimer.unref?.();
-  updateRecheckTimer = setInterval(() => {
-    void updateService?.checkAutomaticallyIfDue();
-  }, UPDATE_RECHECK_INTERVAL_MS);
-  updateRecheckTimer.unref?.();
 
   installAppMenu();
   // Dev mode runs the bare Electron binary, whose dock icon is the Electron
@@ -1193,8 +1178,6 @@ app.on("before-quit", () => {
   // status reads before the database closes, then close after the listener
   // is down.
   desktopSync?.dispose();
-  automaticUpdateChecksArmed = false;
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
-  if (updateRecheckTimer) clearInterval(updateRecheckTimer);
   void desktopSync?.stop().catch(() => undefined).then(() => db?.close());
 });

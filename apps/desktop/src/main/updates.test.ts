@@ -323,17 +323,37 @@ describe("UpdateService validation and caching", () => {
 });
 
 describe("UpdateService preferences and guarded navigation", () => {
-  it("checks automatically at most once per day and never in development", async () => {
-    const automatic = makeService();
-    expect(automatic.service.getState().automaticChecksEnabled).toBe(true);
+  it("checks on startup even when the previous check was recent", async () => {
+    const settings = new Map<string, string>([
+      ["updates.last_checked_at", NOW.toISOString()],
+    ]);
+    const automatic = makeService({}, settings);
 
-    expect(await automatic.service.checkAutomaticallyIfDue()).not.toBeNull();
-    expect(await automatic.service.checkAutomaticallyIfDue()).toBeNull();
+    expect(await automatic.service.checkAutomaticallyAtStartup()).not.toBeNull();
     expect(automatic.fetchImpl).toHaveBeenCalledTimes(1);
+  });
 
+  it("skips startup checks when disabled or in development", async () => {
+    const disabledSettings = new Map<string, string>([
+      ["updates.automatic_checks", "false"],
+    ]);
+    const disabled = makeService({}, disabledSettings);
     const development = makeService({ isDevelopment: true });
-    expect(await development.service.checkAutomaticallyIfDue()).toBeNull();
+
+    expect(await disabled.service.checkAutomaticallyAtStartup()).toBeNull();
+    expect(await development.service.checkAutomaticallyAtStartup()).toBeNull();
+    expect(disabled.fetchImpl).not.toHaveBeenCalled();
     expect(development.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps manual checks available when startup checks are disabled", async () => {
+    const settings = new Map<string, string>([
+      ["updates.automatic_checks", "false"],
+    ]);
+    const { service, fetchImpl } = makeService({}, settings);
+
+    expect(await service.check("manual")).toMatchObject({ checkSource: "manual" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("persists the automatic-check preference", () => {

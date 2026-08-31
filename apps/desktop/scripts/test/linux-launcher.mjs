@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -58,4 +58,24 @@ test("Linux package launcher preserves an explicit Ozone backend override", asyn
   );
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.stdout.trim().split("\n"), ["--ozone-platform=wayland", "--probe"]);
+});
+
+test("Linux package launcher resolves its installed symlink before locating Electron", async () => {
+  const appOutDir = await fixture();
+  const { default: installLinuxLauncher } = await import(hookUrl.href);
+
+  await installLinuxLauncher({
+    appOutDir,
+    electronPlatformName: "linux",
+    packager: { executableName: "promptbranch" },
+  });
+
+  const binDir = join(appOutDir, "bin");
+  await mkdir(binDir);
+  const installedLauncher = join(binDir, "promptbranch");
+  await symlink(join(appOutDir, "promptbranch"), installedLauncher);
+
+  const result = spawnSync(installedLauncher, ["--probe"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), ["--ozone-platform=x11", "--probe"]);
 });

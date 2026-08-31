@@ -4,55 +4,63 @@
 
 # PromptBranch
 
-**A local-first prompt library and version-control system for AI prompts**
+**A local-first prompt library and version-control system for AI prompts.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-3178C6)](LICENSE)
+
+[Features](#features) · [Install](#installation) · [Docs](#documentation) · [GitHub](https://github.com/PromptBranch/promptbranch)
 
 </div>
 
 ---
 
-PromptBranch is a simple, local-first place to create, organize, test, and improve your AI prompts. Keep your prompts on your own computer, track changes over time, run them with different AI models, and connect your favorite AI tools. You stay in control of your data and approve any changes before they are saved.
+PromptBranch is a simple, local-first place to create, organize, test, and improve
+your AI prompts. Keep prompts on your own computer, track their changes over time,
+run them with different AI models, and connect your favorite AI tools. You stay in
+control of your data and approve changes before they are saved.
+
+> [!WARNING]
+> **Work in progress.** PromptBranch is actively evolving. You may encounter bugs or
+> incomplete behavior, and parts of this documentation may be inaccurate or unfinished.
+> Please [report non-security issues](https://github.com/PromptBranch/promptbranch/issues).
+> Report security concerns privately through the [security policy](.github/SECURITY.md).
 
 ## Features
 
-- 📚 **Library** — prompt CRUD with soft delete, tags, collections, starred
-  prompts, filters/sort, instant full-text search (⌘K), History and Notes
-  tabs, JSON import/export and automatic local backups.
-- 🌿 **Versioning** — branches, append-only per-branch sequential versions
-  with change notes and a current pointer, a diff view for any two versions,
-  and "duplicate as variation" branching.
-- 🧪 **Evaluation** — 1–5 ratings across four dimensions, a run log
-  (Results tab), an LLM judge that scores run outputs, side-by-side compare
-  of any two runs and an evaluation summary.
-- ⚡ **AI runs** — a [models.dev](https://models.dev)-backed provider catalog
-  (OpenAI, Anthropic, Google, OpenAI-compatible endpoints) with
-  safeStorage-encrypted API keys, streaming multi-model runs (up to
-  6 models concurrently) with token/cost tracking.
-- 🤖 **Agent integration** — a CLI and an MCP server over the same library;
-  agent-reported runs and notes, and a Suggestions review queue — agents
-  propose, humans approve.
-- 🔗 **Sharing** — publish immutable prompt snapshots to the sharing portal
-  behind unguessable URLs, with a pre-publish secret scan,
-  `promptbranch://import` deep links, revocable delete tokens and a Shares
-  view in the app.
-- 🔄 **Multi-device sync** — peer-to-peer over the local network, no server and
-  no account. Pair desktop devices with a short code (verification against the
-  device certificate), then changes flow automatically whenever they can reach
-  each other. Offline-first: every change is durable locally the moment it's
-  written, and sync is pure catch-up when devices meet.
+### Build a prompt library
+
+- 📚 **Organize prompts** with tags, collections, starring, filters, full-text
+  search (⌘K), History and Notes, JSON import/export, and automatic local backups.
+- 🌿 **Track versions** with branches, sequential version history, change notes,
+  diffs, and duplicate-as-variation workflows.
+- 🧪 **Evaluate results** with four-dimension ratings, a Results run log,
+  side-by-side comparison, an LLM judge, and an evaluation summary.
+
+### Run with AI and agents
+
+- ⚡ **Run against multiple models** using a [models.dev](https://models.dev)-backed
+  catalog for OpenAI, Anthropic, Google, and OpenAI-compatible endpoints. Run up to
+  six models concurrently with encrypted API keys and token/cost tracking.
+- 🤖 **Work with agents** through a CLI and MCP server over the same library. Agents
+  can report runs and notes or propose variations; humans review and approve them.
+
+### Share and sync on your terms
+
+- 🔗 **Share immutable snapshots** behind unguessable URLs, with pre-publish secret
+  scanning, import deep links, revocable delete tokens, and a dedicated Shares view.
+- 🔄 **Sync directly between your devices** on the local network. Pair with a short
+  verified code; changes are stored locally first and catch up automatically when
+  devices can reach one another.
 
 ## Installation
 
-PromptBranch desktop is available for macOS, Windows, and Linux. Download the
+PromptBranch desktop is available for macOS, Windows, and Linux. Download an
 installer for your operating system from
-[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases).
 
-The CLI and MCP server are also cross-platform; setup instructions live in
-[`docs/getting-started/installation.md`](docs/getting-started/installation.md).
-To build PromptBranch from a source checkout, see the
-[Build from source](docs/getting-started/installation.md#build-from-source)
-instructions.
+The CLI and MCP server are cross-platform too. See the
+[installation guide](docs/getting-started/installation.md) for setup, including
+[building from source](docs/getting-started/installation.md#build-from-source).
 
 ## Where your data lives
 
@@ -212,25 +220,20 @@ record-level changes over mutually-pinned TLS. Enable it in
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/SUMMARY.md):
+Browse the full documentation in [`docs/`](docs/SUMMARY.md).
 
-- [Overview & Philosophy](docs/getting-started/overview.md) ·
-  [Installation](docs/getting-started/installation.md) ·
-  [Quickstart](docs/getting-started/quickstart.md) ·
-  [Core Concepts](docs/getting-started/core-concepts.md)
-- Features — [Prompt Management](docs/features/prompt-management.md),
-  [Search & Organization](docs/features/search-and-organization.md),
-  [Library Data & Backups](docs/features/library-data-and-backups.md),
-  [Multi-Model Execution](docs/features/ai-execution-and-models.md),
-  [LLM Judge](docs/features/llm-judge-and-evaluations.md),
-  [AI Assist](docs/features/ai-assist.md)
-- Integrations — [MCP Server](docs/integrations/mcp-server.md),
-  [CLI](docs/integrations/cli.md),
-  [AI Providers](docs/integrations/ai-providers.md)
-- [Peer-to-Peer Sync](docs/sync/peer-to-peer-sync.md) ·
-  [Link Sharing](docs/sharing/link-sharing-and-portal.md) ·
-  [Configuration & Environment](docs/reference/configuration-and-env.md) ·
-  [Contributing](CONTRIBUTING.md)
+| Start here | Go deeper |
+| --- | --- |
+| [Overview & Philosophy](docs/getting-started/overview.md) | [Prompt Management](docs/features/prompt-management.md) |
+| [Installation](docs/getting-started/installation.md) | [Search & Organization](docs/features/search-and-organization.md) |
+| [Quickstart](docs/getting-started/quickstart.md) | [Library Data & Backups](docs/features/library-data-and-backups.md) |
+| [Core Concepts](docs/getting-started/core-concepts.md) | [Multi-Model Execution](docs/features/ai-execution-and-models.md) |
+| [MCP Server](docs/integrations/mcp-server.md) | [LLM Judge](docs/features/llm-judge-and-evaluations.md) |
+| [CLI](docs/integrations/cli.md) | [AI Assist](docs/features/ai-assist.md) |
+| [AI Providers](docs/integrations/ai-providers.md) | [Peer-to-Peer Sync](docs/sync/peer-to-peer-sync.md) |
+| [Link Sharing](docs/sharing/link-sharing-and-portal.md) | [Configuration & Environment](docs/reference/configuration-and-env.md) |
+
+Want to contribute? Read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

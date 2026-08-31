@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PropsWithChildren, Ref } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { installMockBridge } from "./test/mock-bridge";
+import type { UpdateStateDto } from "../../shared/ipc.js";
+import { installMockBridge, type MockBridge } from "./test/mock-bridge";
 import { renderApp } from "./test/render";
 import App from "./App";
 
@@ -21,6 +22,30 @@ interface PanelHandle {
 }
 
 const panelState = vi.hoisted(() => new Map<string, boolean>());
+
+const AVAILABLE_UPDATE: UpdateStateDto = {
+  status: "update-available",
+  currentVersion: "0.1.0",
+  latestVersion: "0.2.0",
+  platform: "macOS",
+  architecture: "arm64",
+  automaticChecksEnabled: true,
+  lastCheckedAt: "2026-08-31T12:00:00.000Z",
+  checkSource: "automatic",
+  releaseName: "PromptBranch 0.2.0",
+  releaseNotes: "A safer update flow",
+  publishedAt: "2026-08-31T10:00:00.000Z",
+  assets: [
+    {
+      name: "promptbranch_0.2.0_macos_arm64.dmg",
+      label: "macOS disk image",
+      kind: "dmg",
+      sizeBytes: 12_345,
+      recommended: true,
+    },
+  ],
+  errorMessage: null,
+};
 
 // The live Electron regression occurs when an imperative expand changes the
 // panel width before its ResizeObserver-backed onResize callback catches up.
@@ -80,10 +105,12 @@ vi.mock("react-resizable-panels", async () => {
   };
 });
 
+let bridge: MockBridge;
+
 beforeEach(() => {
   panelState.clear();
   localStorage.clear();
-  installMockBridge();
+  bridge = installMockBridge();
 });
 
 describe("App collapsible navigation", () => {
@@ -120,5 +147,28 @@ describe("App prompt-list empty states", () => {
 
     expect(await screen.findByText("No matching prompts")).toBeInTheDocument();
     expect(screen.queryByText("Trash is empty")).not.toBeInTheDocument();
+  });
+});
+
+describe("App update events", () => {
+  it("opens Settings to Updates and starts a check from the application menu", async () => {
+    bridge.updates.check.mockResolvedValue({ ...AVAILABLE_UPDATE, checkSource: "manual" });
+    renderApp(<App />);
+
+    act(() => bridge.emitOpenUpdates());
+
+    expect(await screen.findAllByText("Updates")).toHaveLength(2);
+    expect(bridge.updates.check).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an actionable notification for an automatically discovered update", async () => {
+    const user = userEvent.setup();
+    renderApp(<App />);
+
+    act(() => bridge.emitUpdateState(AVAILABLE_UPDATE));
+
+    expect(await screen.findByText("PromptBranch 0.2.0 is available")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "View update" }));
+    expect(await screen.findAllByText("Updates")).toHaveLength(2);
   });
 });

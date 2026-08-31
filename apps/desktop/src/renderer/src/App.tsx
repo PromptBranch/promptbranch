@@ -13,7 +13,13 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { SharesView } from "./components/SharesView";
 import { SuggestionsView } from "./components/SuggestionsView";
 import { SyncPairRequestDialog } from "./components/SyncPairRequestDialog";
-import { useAppMutation, usePromptDetail, usePromptList, useTags } from "./hooks/use-data";
+import {
+  useAppMutation,
+  usePromptDetail,
+  usePromptList,
+  useTags,
+  useUpdateEvents,
+} from "./hooks/use-data";
 import { togglePanel } from "./lib/panels";
 import { usePref } from "./lib/prefs";
 import { useAppState } from "./state/app-state";
@@ -49,6 +55,7 @@ export default function App() {
   const { data: list } = usePromptList();
   const [editorFontSize] = usePref("editor-font-size");
   useGlobalShortcuts();
+  useUpdateEvents();
 
   // "About PromptBranch" from the macOS app menu / Help menu opens the
   // branded in-app dialog; "Settings…" (⌘,) opens the Settings dialog.

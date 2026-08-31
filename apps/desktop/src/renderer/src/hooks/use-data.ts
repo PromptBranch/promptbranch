@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { syncStatusDtoSchema, type PromptListQuery, type SyncStatusDto } from "../../../shared/ipc.js";
+import {
+  syncStatusDtoSchema,
+  updateStateDtoSchema,
+  type PromptListQuery,
+  type SyncStatusDto,
+  type UpdateStateDto,
+} from "../../../shared/ipc.js";
 import { userErrorMessage } from "../lib/errors";
 import { useAppState } from "../state/app-state";
 import { useToast } from "../lib/toast";
@@ -33,6 +39,7 @@ export const qk = {
   shares: ["shares"] as const,
   portalBaseUrl: ["portal-base-url"] as const,
   syncStatus: ["sync-status"] as const,
+  updateState: ["update-state"] as const,
 };
 
 export function usePromptList() {
@@ -103,6 +110,59 @@ export function useStats() {
 
 export function useAppInfo() {
   return useQuery({ queryKey: qk.appInfo, queryFn: () => api().app.info(), staleTime: Infinity });
+}
+
+export function useUpdateState() {
+  return useQuery({
+    queryKey: qk.updateState,
+    queryFn: async () => updateStateDtoSchema.parse(await api().updates.getState()),
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * One app-level subscription for main-process update events. Menu checks open
+ * the canonical Settings surface; only automatic discoveries raise a toast.
+ */
+export function useUpdateEvents() {
+  const queryClient = useQueryClient();
+  const { openSettings } = useAppState();
+  const { toast } = useToast();
+  const notifiedVersion = useRef<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribeState = api().updates.onStateChanged((raw) => {
+      const parsed = updateStateDtoSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const state = parsed.data;
+      queryClient.setQueryData<UpdateStateDto>(qk.updateState, state);
+      if (
+        state.status === "update-available" &&
+        state.checkSource === "automatic" &&
+        state.latestVersion &&
+        notifiedVersion.current !== state.latestVersion
+      ) {
+        notifiedVersion.current = state.latestVersion;
+        toast(`PromptBranch ${state.latestVersion} is available`, "info", {
+          label: "View update",
+          onClick: () => openSettings("updates"),
+        });
+      }
+    });
+    const unsubscribeOpen = api().updates.onOpen(() => {
+      openSettings("updates");
+      void api()
+        .updates.check()
+        .then((state) => {
+          queryClient.setQueryData(qk.updateState, updateStateDtoSchema.parse(state));
+        })
+        .catch(() => toast("Could not check for updates", "error"));
+    });
+    return () => {
+      unsubscribeState();
+      unsubscribeOpen();
+    };
+  }, [openSettings, queryClient, toast]);
 }
 
 /** Bundled third-party notices markdown (THIRD_PARTY_NOTICES.md, via main). */

@@ -53,6 +53,9 @@ import {
   suggestionRejectSchema,
   tagCreateSchema,
   tagOnPromptSchema,
+  updateOpenDownloadSchema,
+  updateSetAutomaticChecksSchema,
+  updateStateDtoSchema,
   versionCreateSchema,
   versionSetCurrentSchema,
   type ActivityItemDto,
@@ -114,8 +117,7 @@ import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from ".
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { DesktopSync } from "./sync/service.js";
-
-const RELEASES_URL = "https://github.com/PromptBranch/promptbranch/releases";
+import { UpdateService } from "./updates.js";
 
 /**
  * API keys are encrypted with the OS keychain before storage. When the
@@ -184,11 +186,14 @@ app.on("open-url", (event, url) => {
 });
 
 const BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const UPDATE_STARTUP_DELAY_MS = 20_000;
 
 let db: Database | null = null;
 let library: PromptLibrary | null = null;
 let backupsDir: string | null = null;
 let desktopSync: DesktopSync | null = null;
+let updateService: UpdateService | null = null;
+let updateStartupTimer: NodeJS.Timeout | null = null;
 
 function getDb(): Database {
   if (!db) throw new Error("Database not initialized");
@@ -203,6 +208,11 @@ function getLibrary(): PromptLibrary {
 function getDesktopSync(): DesktopSync {
   if (!desktopSync) throw new Error("Sync service not initialized");
   return desktopSync;
+}
+
+function getUpdateService(): UpdateService {
+  if (!updateService) throw new Error("Update service not initialized");
+  return updateService;
 }
 
 const idParam = z.string().trim().min(1).max(200);
@@ -759,6 +769,32 @@ function registerIpcHandlers(): void {
     }));
   });
 
+  // --------------------------------------------------------------- updates
+  ipcMain.handle(IPC_CHANNELS.updateGetState, () =>
+    updateStateDtoSchema.parse(getUpdateService().getState()),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.updateCheck, async () =>
+    updateStateDtoSchema.parse(await getUpdateService().check("manual")),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.updateSetAutomaticChecks, (_event, payload: unknown) => {
+    const { enabled } = updateSetAutomaticChecksSchema.parse(payload);
+    const state = updateStateDtoSchema.parse(
+      getUpdateService().setAutomaticChecksEnabled(enabled),
+    );
+    return state;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.updateOpenDownload, async (_event, payload: unknown) => {
+    const { assetName } = updateOpenDownloadSchema.parse(payload);
+    await getUpdateService().openDownload(assetName);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.updateOpenReleaseNotes, async () => {
+    await getUpdateService().openReleaseNotes();
+  });
+
   // ------------------------------------------------------------------- app
   ipcMain.handle(IPC_CHANNELS.appInfo, () => {
     // Absolute path to the built MCP server entry, when this is a source
@@ -816,10 +852,10 @@ function installAppMenu(): void {
     ...(menuIcons.about ? { icon: menuIcons.about } : {}),
     click: () => mainWindow?.webContents.send(IPC_CHANNELS.openAbout),
   };
-  const releasesItem: MenuItemConstructorOptions = {
-    label: "GitHub Releases…",
+  const checkUpdatesItem: MenuItemConstructorOptions = {
+    label: "Check for Updates…",
     ...(menuIcons.checkUpdates ? { icon: menuIcons.checkUpdates } : {}),
-    click: () => void shell.openExternal(RELEASES_URL),
+    click: () => mainWindow?.webContents.send(IPC_CHANNELS.openUpdates),
   };
   const settingsItem: MenuItemConstructorOptions = {
     label: "Settings…",
@@ -829,7 +865,7 @@ function installAppMenu(): void {
   };
   const helpMenu: MenuItemConstructorOptions = {
     label: "Help",
-    submenu: [aboutItem, releasesItem, settingsItem],
+    submenu: [aboutItem, checkUpdatesItem, settingsItem],
   };
 
   // Win/Linux: the menu bar is auto-hidden (Alt reveals it); a slim Help
@@ -845,7 +881,7 @@ function installAppMenu(): void {
       label: "PromptBranch",
       submenu: [
         aboutItem,
-        releasesItem,
+        checkUpdatesItem,
         { type: "separator" },
         settingsItem,
         { type: "separator" },
@@ -962,7 +998,6 @@ function createWindow(): void {
     if (mainWindow === window) mainWindow = null;
     importDispatcher.windowClosed();
   });
-
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1084,6 +1119,24 @@ if (!gotSingleInstanceLock) {
     sendPairRequest: (event) => mainWindow?.webContents.send(IPC_CHANNELS.syncPairRequest, event),
     log: (message) => console.log(`[sync] ${message}`),
   });
+  updateService = new UpdateService({
+    currentVersion: __APP_VERSION__,
+    platform: process.platform,
+    architecture: process.arch,
+    runningUnderArm64Translation: app.runningUnderARM64Translation,
+    launchedFromAppImage: Boolean(process.env["APPIMAGE"]),
+    isDevelopment: Boolean(process.env["ELECTRON_RENDERER_URL"]),
+    getSetting: (key) => library?.getSetting(key) ?? null,
+    setSetting: (key, value) => getLibrary().setSetting(key, value),
+    fetchImpl: (input, init) => fetch(input, init),
+    openExternal: (url) => shell.openExternal(url),
+    now: () => new Date(),
+    emitState: (state) =>
+      mainWindow?.webContents.send(
+        IPC_CHANNELS.updateStateChanged,
+        updateStateDtoSchema.parse(state),
+      ),
+  });
 
   registerIpcHandlers();
   console.log(`[main] IPC handlers registered: ${Object.values(IPC_CHANNELS).length} channels`);
@@ -1093,6 +1146,11 @@ if (!gotSingleInstanceLock) {
   // MCP server, which share the database file.
   const syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
   syncPokeTimer.unref?.();
+
+  updateStartupTimer = setTimeout(() => {
+    void updateService?.checkAutomaticallyAtStartup();
+  }, UPDATE_STARTUP_DELAY_MS);
+  updateStartupTimer.unref?.();
 
   installAppMenu();
   // Dev mode runs the bare Electron binary, whose dock icon is the Electron
@@ -1120,5 +1178,6 @@ app.on("before-quit", () => {
   // status reads before the database closes, then close after the listener
   // is down.
   desktopSync?.dispose();
+  if (updateStartupTimer) clearTimeout(updateStartupTimer);
   void desktopSync?.stop().catch(() => undefined).then(() => db?.close());
 });

@@ -8,6 +8,8 @@ PromptBranch library, for shell pipelines and AI coding agents that don't
 speak MCP. Thin adapter over `@promptbranch/core`; shares the desktop app's
 database.
 
+Requires Node.js 22 or later.
+
 > Part of [PromptBranch](../../README.md#agent-integration)
 
 ## Quick start
@@ -36,9 +38,11 @@ promptbranch import https://promptbranch.app/p/<id>    # imports the snapshot as
 list) and stores the delete token in the library's `shared_snapshots` table so
 the share can be revoked from the desktop app. `--portal <base-url>` overrides
 the portal for one call; otherwise the library's `portal_base_url` setting
-(default `https://promptbranch.app`) is used. A full snapshot URL names its
-own portal — importing a friend's self-hosted link needs no flag. Portal
-requests time out after 30 seconds instead of waiting indefinitely.
+(default `https://promptbranch.app`) is used. A full snapshot URL supplies its
+own portal origin, so importing it needs no extra flag. Imports create a new
+local prompt with the snapshot content, tags, and a provenance note; they do
+not recreate a shared version history. Portal requests time out after 30
+seconds instead of waiting indefinitely.
 
 ## Environment
 
@@ -49,3 +53,15 @@ different library (the PromptHub-era `PROMPTHUB_DB` and the pre-rename
 
 See the [main README](../../README.md#agent-integration) for tool semantics,
 title resolution and onboarding.
+
+## Build from source
+
+From the repository root, with Node.js 22 and pnpm 11.7.0 available:
+
+```sh
+pnpm install
+pnpm --filter @promptbranch/cli build
+```
+
+The built command is `dist/index.js`. For every command and option, see the
+[CLI guide](../../docs/integrations/cli.md).

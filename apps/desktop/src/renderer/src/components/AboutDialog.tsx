@@ -7,7 +7,6 @@ import { useToast } from "../lib/toast";
 import { LicensesDialog } from "./LicensesDialog";
 
 const WEBSITE_URL = "https://promptbranch.app/";
-const RELEASES_URL = "https://github.com/PromptBranch/promptbranch/releases";
 
 /** Branded About dialog; opened from the app menu, Help menu, or the settings popover. */
 export function AboutDialog({
@@ -24,12 +23,6 @@ export function AboutDialog({
   const openWebsite = () => {
     void window.promptBuilder.app.openExternal(WEBSITE_URL).catch(() => {
       toast("Could not open link");
-    });
-  };
-
-  const openReleases = () => {
-    void window.promptBuilder.app.openExternal(RELEASES_URL).catch(() => {
-      toast("Could not open releases page");
     });
   };
 
@@ -74,14 +67,6 @@ export function AboutDialog({
               className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[12px] font-medium text-accent transition-colors hover:bg-hover hover:text-accent-strong hover:underline"
             >
               https://promptbranch.app/
-              <ExternalLink size={12} aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={openReleases}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-            >
-              View Releases
               <ExternalLink size={12} aria-hidden />
             </button>
             <p className="mt-2 text-[11px] text-ink-faint">© 2026 PromptBranch</p>

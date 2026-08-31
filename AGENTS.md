@@ -369,10 +369,15 @@ when touching it:
   electron-vite; the CLI/MCP esbuild bundles inline them
   (`better-sqlite3` kept external — Node cannot resolve core's
   `.js`-suffixed TS imports directly without compilation).
-- Desktop updates are manual on every platform. The app opens the public
-  GitHub Releases page but has no updater feed, background update service, or
-  `electron-updater` dependency. Restoring automatic updates requires a
-  separate architecture-aware design and target-backed update testing.
+- Desktop updates use a main-process service that checks the latest stable
+  GitHub Release, compares semantic versions, and exposes only canonical,
+  exact OS/architecture installer assets. The validated release and ETag are
+  cached in device-local settings; automatic detection is enabled by default
+  and runs once after each packaged-app startup, with no periodic checks while
+  the app remains open. Downloads open in the system browser and
+  installation remains manual: there is no `electron-updater` dependency or
+  unattended download/install path. Adding in-app installation requires a
+  separate signed, architecture-aware design and target-backed update testing.
 - The app is offline-first *except* for model-catalog refreshes (models.dev)
   and model runs; a failed catalog refresh keeps serving the stale cache.
 - The portal deployment infrastructure (Docker Compose standalone stack,

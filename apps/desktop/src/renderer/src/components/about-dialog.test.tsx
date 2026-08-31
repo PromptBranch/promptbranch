@@ -28,13 +28,10 @@ describe("AboutDialog", () => {
     expect(bridge.app.licensesText).toHaveBeenCalled();
   });
 
-  it("opens GitHub Releases for manual updates", async () => {
-    const bridge = installMockBridge();
+  it("keeps update actions in the dedicated Updates flow", async () => {
+    installMockBridge();
     renderApp(<AboutDialog open onOpenChange={vi.fn()} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "View Releases" }));
-    expect(bridge.app.openExternal).toHaveBeenCalledWith(
-      "https://github.com/PromptBranch/promptbranch/releases",
-    );
+    expect(screen.queryByRole("button", { name: "View Releases" })).not.toBeInTheDocument();
   });
 });

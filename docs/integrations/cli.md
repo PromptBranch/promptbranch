@@ -2,6 +2,8 @@
 
 The **`promptbranch` CLI** (`@promptbranch/cli`) exposes the agent-safe library workflow plus human sharing commands to shell scripts and terminal workflows.
 
+It requires **Node.js 22** or later.
+
 Run a command without installing anything globally:
 
 ```bash
@@ -78,7 +80,7 @@ promptbranch get "sql-injection-audit" --branch "experiment/concise"
 ---
 
 ### 3. `promptbranch search`
-Executes an instant FTS5 BM25 search across all prompts, notes, and version contents.
+Searches prompt titles, descriptions, tags, notes, and version content.
 
 ```bash
 promptbranch search <query> [--limit <n>] [--json]
@@ -109,7 +111,7 @@ promptbranch report-run --prompt <name-or-id> \
 #### Example
 ```bash
 promptbranch report-run --prompt "sql-injection-audit" \
-  --tool "ci-eval" \
+  --tool "local-eval" \
   --model "claude-3-5-sonnet" \
   --outcome 5 \
   --summary "Identified 3 vulnerabilities in sample codebase"

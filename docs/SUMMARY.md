@@ -2,34 +2,36 @@
 
 # PromptBranch Documentation
 
-* [Overview & Philosophy](getting-started/overview.md)
-* [Installation & Setup](getting-started/installation.md)
+* [Overview](getting-started/overview.md)
+* [Installation, Setup & Build from Source](getting-started/installation.md)
 * [5-Minute Quickstart](getting-started/quickstart.md)
 * [Core Concepts](getting-started/core-concepts.md)
 
 ## Features & Workflows
 
-* [Prompt Management & Versioning](features/prompt-management.md)
-* [Search, Tags & Collections](features/search-and-organization.md)
-* [Multi-Model Execution & Cost](features/ai-execution-and-models.md)
-* [LLM Judge & Evaluations](features/llm-judge-and-evaluations.md)
+* [Manage Prompts & Versions](features/prompt-management.md)
+* [Search & Organize Prompts](features/search-and-organization.md)
+* [Library Data, Backups & Transfer](features/library-data-and-backups.md)
+* [Run Prompts with AI Models](features/ai-execution-and-models.md)
+* [Evaluate Prompt Results](features/llm-judge-and-evaluations.md)
 * [AI Prompt Assist](features/ai-assist.md)
 
 ## Integrations
 
-* [MCP Server Integration](integrations/mcp-server.md)
+* [MCP Server](integrations/mcp-server.md)
 * [Command-Line Interface (CLI)](integrations/cli.md)
-* [AI Providers & Key Encryption](integrations/ai-providers.md)
+* [Connect AI Providers](integrations/ai-providers.md)
 
 ## Multi-Device Sync
 
-* [Peer-to-Peer Multi-Device Sync](sync/peer-to-peer-sync.md)
+* [Sync Between Your Devices](sync/peer-to-peer-sync.md)
 
 ## Sharing & Portal
 
-* [Link Sharing & Secret Scanning](sharing/link-sharing-and-portal.md)
+* [Share a Prompt](sharing/link-sharing-and-portal.md)
 
 ## Configuration & Reference
 
 * [Configuration & Environment](reference/configuration-and-env.md)
 * [Updates](reference/updates.md)
+* [Contributing](../CONTRIBUTING.md)

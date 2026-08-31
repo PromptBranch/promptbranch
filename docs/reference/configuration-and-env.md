@@ -1,47 +1,41 @@
-# Configuration & Environment Variables
+# Configuration and environment
 
-This reference lists all configuration options, environment variables, filesystem paths, and network settings for PromptBranch.
+Most people can use PromptBranch without changing any configuration. This page
+covers the few settings useful for the CLI, MCP server, or provider setup.
 
----
+## Use a different library
 
-## Environment Variables
+The desktop app, CLI, and MCP server use the same local library by default. Set
+`PROMPTBRANCH_DB` when you want an entry point to use a different database:
 
-### Client & Database Variables
+    export PROMPTBRANCH_DB="/path/to/my-library.db"
+    promptbranch list
 
-| Variable | Scope | Default Value | Description |
-| :--- | :--- | :--- | :--- |
-| **`PROMPTBRANCH_DB`** | Desktop / CLI / MCP | OS default path | Overrides the SQLite database file path. |
-| **`PROMPTHUB_DB`** | Desktop / CLI / MCP | Unset | Deprecated fallback path override. |
-| **`PROMPTBUILDER_DB`** | Desktop / CLI / MCP | Unset | Deprecated fallback path override. |
+The default location is:
 
----
+| System | Library path |
+| --- | --- |
+| macOS | `~/Library/Application Support/PromptBranch/library.db` |
+| Linux | `$XDG_CONFIG_HOME/promptbranch/library.db` (or `~/.config/promptbranch/library.db`) |
+| Windows | `%APPDATA%\PromptBranch\library.db` |
 
-### AI Provider Keys (Auto-Detected)
+Older `PROMPTHUB_DB` and `PROMPTBUILDER_DB` variables still work as fallback
+names if `PROMPTBRANCH_DB` is not set.
 
-If set in your shell environment, PromptBranch displays a **"Use environment key"** quick-connect button in Settings → AI Providers:
+## Use an environment API key
 
-| Variable | Provider | Description |
-| :--- | :--- | :--- |
-| **`OPENAI_API_KEY`** | OpenAI | API key for OpenAI GPT models. |
-| **`ANTHROPIC_API_KEY`** | Anthropic | API key for Anthropic Claude models. |
-| **`GOOGLE_GENERATIVE_AI_API_KEY`** | Google | API key for Google Gemini models. |
+Set one of these before starting PromptBranch, then use **Use environment key**
+in **Settings → AI Providers**:
 
----
+| Variable | Provider |
+| --- | --- |
+| `OPENAI_API_KEY` | OpenAI |
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google |
 
-## Default Filesystem Paths by OS
+## Sync connectivity
 
-The database path applies to the desktop app, CLI, and MCP server. The sync
-identity path is used only by the desktop app.
-
-| Operating System | Default Database Path | Local Sync Identity & Keys |
-| :--- | :--- | :--- |
-| **macOS** | `~/Library/Application Support/PromptBranch/library.db` | `~/Library/Application Support/PromptBranch/sync/` |
-| **Linux** | `$XDG_CONFIG_HOME/promptbranch/library.db` (defaults to `~/.config/promptbranch/library.db`) | The desktop app's Electron user-data directory, under `sync/` |
-| **Windows** | `%APPDATA%\PromptBranch\library.db` | `%APPDATA%\PromptBranch\sync\` |
-
----
-
-## Network & Discovery Ports
-
-- **mDNS Service**: `_promptbranch._tcp` advertised over UDP port `5353` (multicast DNS).
-- **Peer-to-Peer Sync**: Each device listens on a local TLS port for paired peers; firewalls must allow inbound connections to it on your LAN.
+For device sync, allow PromptBranch to communicate with your other devices on
+your local network or VPN. On macOS, allow the system Local Network permission
+when prompted. If nearby discovery does not work, use **Pair by address** in
+**Settings → Sync**.

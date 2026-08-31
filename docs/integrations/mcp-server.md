@@ -1,16 +1,18 @@
-# MCP Server Integration
+# MCP server integration
 
-PromptBranch publishes a **Model Context Protocol (MCP)** stdio server (`@promptbranch/mcp`). It allows AI coding assistants—such as **Claude Desktop**, **Cursor**, **Windsurf**, and custom agent frameworks—to interact with your local prompt library.
+PromptBranch exposes your local library through a standard-input/output MCP
+server. Use it with any MCP-capable coding agent or harness, including Claude
+Desktop, Cursor, Windsurf, Cline, and custom clients.
 
----
+It requires **Node.js 22** or later.
 
-## Configuration
+The MCP server and desktop app use the same local library. Open **Settings →
+Agent integration** in the app for the resolved database path and a ready-to-
+paste configuration.
 
-### Claude Desktop
-Add the following to your `claude_desktop_config.json`:
+## Add it to an MCP client
 
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+Configure a stdio server with this command:
 
 ```json
 {
@@ -23,107 +25,48 @@ Add the following to your `claude_desktop_config.json`:
 }
 ```
 
-### Cursor & Windsurf
-Add an MCP stdio server with:
-- **Command**: `npx`
-- **Args**: `["-y", "@promptbranch/mcp"]`
+For an agent harness with separate command and argument fields, use `npx` as
+the command and `-y`, `@promptbranch/mcp` as the arguments. Restart or reload
+the client after saving its configuration.
 
-> [!TIP]
-> The desktop app prints this configuration ready-to-paste in **Settings → Agent integration**.
+To connect a client to a different library, set `PROMPTBRANCH_DB` in that
+client's MCP environment. See [configuration](../reference/configuration-and-env.md).
 
----
+## What an agent can do
 
-## Registered MCP Tools
+| Tool | Use it for |
+| --- | --- |
+| `get_prompt` | Fetch the current prompt, or a chosen version or variation. |
+| `search_prompts` | Find prompts by text, tag, or collection. |
+| `list_prompts` | Browse prompt titles and current versions. |
+| `report_run` | Record a tool, model, rating, summary, and optional metrics. |
+| `add_note` | Save a finding on a prompt or version. |
+| `suggest_variation` | Submit an improved version for human review. |
 
-The PromptBranch MCP server registers 6 specialized tools:
+Prompt references can be a title or id. Title matching tries an exact match,
+then a case-insensitive match, then a unique substring. If a reference is
+ambiguous, the server returns close matches.
 
-| Tool Name | Purpose | Key Parameters |
-| :--- | :--- | :--- |
-| **`get_prompt`** | Fetch full prompt template & metadata | `prompt`, `version` (opt), `branch` (opt) |
-| **`search_prompts`** | Full-text FTS5 BM25 search with filters | `query`, `tag` (opt), `collection` (opt), `limit` (opt) |
-| **`list_prompts`** | List library prompts by tag or collection | `tag` (opt), `collection` (opt) |
-| **`report_run`** | Log execution outcome & metrics | `prompt`, `version`, `tool`, `model`, `outcomeRating` (1–5), `resultSummary` |
-| **`add_note`** | Attach observations & research notes | `prompt`, `versionId` (opt), `body` |
-| **`suggest_variation`** | Propose improved prompt variations | `prompt`, `baseVersion` (opt), `newContent`, `rationale` |
+## Recommended agent workflow
 
----
+1. Search for or fetch the prompt before using it.
+2. Use the returned content and record the outcome with `report_run`.
+3. Add a note when the result needs context.
+4. Use `suggest_variation` only when you have a concrete improvement and a
+   rationale.
 
-### 1. `get_prompt`
-Fetches a prompt's full content, version metadata, and tags. By default, returns the **Current** designated production version.
+Agents propose, humans approve: a suggested variation is pending, invisible to
+normal search and listings, and cannot become current until someone approves
+it in the desktop app's **Suggestions** view. MCP intentionally cannot publish
+or import web content; sharing is a human action in the desktop app or CLI.
 
-#### Input Schema
-- `prompt` (string, required): Prompt title (exact, case-insensitive, or unique substring) or prompt ID.
-- `version` (integer, optional): Per-branch version number (e.g. `1`, `2`). Defaults to current version.
-- `branch` (string, optional): Branch name. Defaults to the current version's branch.
+## Build from source
 
-#### Example Call
-```json
-{
-  "prompt": "security-audit",
-  "version": 2
-}
+From a PromptBranch checkout:
+
+```sh
+pnpm install
+pnpm --filter @promptbranch/mcp build
 ```
 
----
-
-### 2. `search_prompts`
-Performs an instant full-text search over prompt titles, descriptions, tags, notes, and version contents using SQLite FTS5 BM25 ranking.
-
-#### Input Schema
-- `query` (string, required): Search term or keyword.
-- `tag` (string, optional): Restrict search to prompts carrying this tag name.
-- `collection` (string, optional): Restrict search to this collection name.
-- `limit` (integer, optional): Maximum results (default `10`).
-
----
-
-### 3. `list_prompts`
-Lists prompts in the library with titles, current version labels, and update timestamps.
-
-#### Input Schema
-- `tag` (string, optional): Filter by tag name.
-- `collection` (string, optional): Filter by collection name.
-
----
-
-### 4. `report_run`
-Enables agents to report when they executed a prompt, logging the model used, outcome rating (1–5), and a result summary.
-
-#### Input Schema
-- `prompt` (string, required): Prompt title or ID.
-- `version` (integer, optional): Version number executed.
-- `tool` (string, required): Name of tool or agent (e.g. `'cursor'`, `'claude-desktop'`, `'kimi-cli'`).
-- `model` (string, optional): Model identifier (e.g. `'claude-3-5-sonnet'`).
-- `outcomeRating` (integer, optional): Integer score from `1` (poor) to `5` (excellent).
-- `resultSummary` (string, optional): Short summary of the run outcome.
-- `metrics` (object, optional): Structured metrics (latency, token counts, error codes).
-
----
-
-### 5. `add_note`
-Attaches research notes, caveats, or test observations to a prompt.
-
-#### Input Schema
-- `prompt` (string, required): Prompt title or ID.
-- `versionId` (string, optional): Specific version ID; omit for a prompt-level note.
-- `body` (string, required): Markdown note content.
-
----
-
-### 6. `suggest_variation`
-Proposes an improved rewrite or variation of a prompt.
-
-> [!IMPORTANT]
-> **Agents Propose, Humans Approve**: Suggestions created by agents are marked with `status = 'pending'`. They are invisible to search and regular listings, and cannot become the active production version until a human reviews and approves them in the **Suggestions** view of the desktop app.
-
-#### Input Schema
-- `prompt` (string, required): Prompt title or ID.
-- `baseVersion` (integer, optional): Version number to base the variation on. Defaults to current.
-- `newContent` (string, required): The proposed new prompt text.
-- `rationale` (string, required): Explanation of why this change improves the prompt.
-
----
-
-## Agent Skill File (`SKILL.md`)
-
-For agents that support custom skill files, the `@promptbranch/mcp` package includes a ready-to-use `SKILL.md`. It teaches coding agents the **fetch → execute → report → suggest** workflow.
+The built server is `packages/mcp/dist/index.js`.

@@ -12,12 +12,7 @@
 
 ---
 
-PromptBranch is a local-first prompt library and version-control system for
-managing and evolving AI prompts. The desktop app, CLI, and MCP server run on
-macOS, Windows, and Linux for arm64 and x64 builds. The library is a single
-SQLite file on your own disk; the desktop UI, CLI and MCP server all work
-against the same store, and AI agents go through a propose-and-approve flow so
-humans stay in charge.
+PromptBranch is a simple, local-first place to create, organize, test, and improve your AI prompts. Keep your prompts on your own computer, track changes over time, run them with different AI models, and connect your favorite AI tools. You stay in control of your data and approve any changes before they are saved.
 
 ## Features
 
@@ -49,19 +44,15 @@ humans stay in charge.
 
 ## Installation
 
-PromptBranch desktop is available for macOS, Windows, and Linux on arm64 and
-x64. Download the installer for your operating system and CPU from
+PromptBranch desktop is available for macOS, Windows, and Linux. Download the
+installer for your operating system from
 [GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
-
-- `promptbranch_<version>_macos_arm64.dmg`
-- `promptbranch_<version>_macos_x64.dmg`
-- `promptbranch_<version>_windows_arm64.exe`
-- `promptbranch_<version>_windows_x64.exe`
-- `promptbranch_<version>_linux_arm64.AppImage` or `.deb`
-- `promptbranch_<version>_linux_x64.AppImage` or `.deb`
 
 The CLI and MCP server are also cross-platform; setup instructions live in
 [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
+To build PromptBranch from a source checkout, see the
+[Build from source](docs/getting-started/installation.md#build-from-source)
+instructions.
 
 ## Where your data lives
 
@@ -229,6 +220,7 @@ Full documentation lives in [`docs/`](docs/SUMMARY.md):
   [Core Concepts](docs/getting-started/core-concepts.md)
 - Features — [Prompt Management](docs/features/prompt-management.md),
   [Search & Organization](docs/features/search-and-organization.md),
+  [Library Data & Backups](docs/features/library-data-and-backups.md),
   [Multi-Model Execution](docs/features/ai-execution-and-models.md),
   [LLM Judge](docs/features/llm-judge-and-evaluations.md),
   [AI Assist](docs/features/ai-assist.md)
@@ -237,7 +229,8 @@ Full documentation lives in [`docs/`](docs/SUMMARY.md):
   [AI Providers](docs/integrations/ai-providers.md)
 - [Peer-to-Peer Sync](docs/sync/peer-to-peer-sync.md) ·
   [Link Sharing](docs/sharing/link-sharing-and-portal.md) ·
-  [Configuration & Environment](docs/reference/configuration-and-env.md)
+  [Configuration & Environment](docs/reference/configuration-and-env.md) ·
+  [Contributing](CONTRIBUTING.md)
 
 ## License
 

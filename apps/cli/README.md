@@ -8,6 +8,8 @@ PromptBranch library, for shell pipelines and AI coding agents that don't
 speak MCP. Thin adapter over `@promptbranch/core`; shares the desktop app's
 database.
 
+Requires Node.js 22 or later.
+
 > Part of [PromptBranch](../../README.md#agent-integration)
 
 ## Quick start
@@ -51,3 +53,15 @@ different library (the PromptHub-era `PROMPTHUB_DB` and the pre-rename
 
 See the [main README](../../README.md#agent-integration) for tool semantics,
 title resolution and onboarding.
+
+## Build from source
+
+From the repository root, with Node.js 22 and pnpm 11.7.0 available:
+
+```sh
+pnpm install
+pnpm --filter @promptbranch/cli build
+```
+
+The built command is `dist/index.js`. For every command and option, see the
+[CLI guide](../../docs/integrations/cli.md).

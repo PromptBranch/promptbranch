@@ -6,42 +6,68 @@ PromptBranch can be used as a full desktop application with a visual UI, as a st
 
 ## Desktop Application
 
-PromptBranch desktop is available for macOS, Windows, and Linux on arm64 and
-x64. The CLI and MCP server are also cross-platform.
+PromptBranch desktop is available for macOS, Windows, and Linux. The CLI and
+MCP server are also cross-platform.
 
 ### macOS
 
-Download the native build for your Mac from
-[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases):
-
-- **Apple Silicon (arm64), DMG**: `promptbranch_<version>_macos_arm64.dmg`
-- **Intel (x64), DMG**: `promptbranch_<version>_macos_x64.dmg`
-
-Use only files published by the official PromptBranch repository and verify
-the checksum listed in the release notes.
+Download the installer that matches your Mac from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases),
+open it, and move PromptBranch to Applications.
 
 > [!NOTE]
 > **Local Network Permission Prompt**: On macOS, the first time you enable Multi-Device Sync, macOS may display a system dialog asking for **Local Network** access. Select **Allow** so local discovery and peer-to-peer sync can reach your other devices.
 
 ### Windows
 
-Download the EXE installer for your Windows architecture:
-
-- **ARM64**: `promptbranch_<version>_windows_arm64.exe`
-- **x64**: `promptbranch_<version>_windows_x64.exe`
+Download the installer that matches your Windows device from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases),
+then run it.
 
 ### Linux
 
-Download the AppImage or Debian package for your Linux architecture:
+Download the AppImage or Debian package that matches your Linux device from
+[GitHub Releases](https://github.com/PromptBranch/promptbranch/releases),
+then install or run it using your distribution's normal method.
 
-- **ARM64**: `promptbranch_<version>_linux_arm64.AppImage` or
-  `promptbranch_<version>_linux_arm64.deb`
-- **x64**: `promptbranch_<version>_linux_x64.AppImage` or
-  `promptbranch_<version>_linux_x64.deb`
+---
+
+## Build from Source
+
+To build PromptBranch from a checkout, install **Node.js 22** and enable
+**pnpm 11.7.0** through Corepack. Then clone the repository and build every
+workspace package:
+
+```bash
+git clone https://github.com/PromptBranch/promptbranch.git
+cd promptbranch
+corepack enable
+pnpm install
+pnpm build
+```
+
+`pnpm build` builds the desktop app as well as the CLI and MCP server. To run
+the desktop app from the checkout, use:
+
+```bash
+pnpm dev
+```
+
+To build just one command-line adapter, run its package build command:
+
+```bash
+pnpm --filter @promptbranch/cli build
+pnpm --filter @promptbranch/mcp build
+```
+
+The resulting Node entry points are `apps/cli/dist/index.js` and
+`packages/mcp/dist/index.js`.
 
 ---
 
 ## Command-Line Interface (CLI)
+
+The CLI needs **Node.js 22** or later.
 
 Run `@promptbranch/cli` directly from npm without a global installation:
 
@@ -63,6 +89,8 @@ promptbranch db-path
 ---
 
 ## Model Context Protocol (MCP) Server
+
+The MCP server needs **Node.js 22** or later.
 
 PromptBranch provides a stdio MCP server that enables AI assistants (such as Claude Desktop, Cursor, Windsurf, or Cline) to read prompts, log run metrics, and suggest variations.
 
@@ -122,8 +150,8 @@ promptbranch list
 > [!NOTE]
 > For backwards compatibility, PromptBranch also recognizes the legacy environment variables `PROMPTHUB_DB` and `PROMPTBUILDER_DB` as fallbacks if `PROMPTBRANCH_DB` is not set.
 
-### Automatic Migration from Legacy Apps
-If you previously used pre-release versions (named *PromptBuilder* or *PromptHub*), PromptBranch automatically migrates your existing database on first launch:
-1. It locates the legacy `library.db` along with its WAL/SHM sidecar files.
-2. It safely copies them into the new `PromptBranch` directory.
-3. The original legacy database files are left completely untouched as a backup.
+### Moving from earlier preview apps
+
+If you previously used *PromptBuilder* or *PromptHub*, PromptBranch copies
+that library to its new location on first launch. Your original library stays
+unchanged.

@@ -7,6 +7,8 @@
 library to AI coding agents. Thin adapter over `@promptbranch/core`; shares
 the desktop app's database.
 
+Requires Node.js 22 or later.
+
 > Part of [PromptBranch](../../README.md#agent-integration) · agent workflow: [`SKILL.md`](SKILL.md)
 
 ## Install
@@ -50,3 +52,16 @@ honored as deprecated fallbacks).
 Prompts are referenced by title or id; see the
 [main README](../../README.md#agent-integration) for the
 "agents propose, humans approve" invariant and onboarding.
+
+## Build from source
+
+From the repository root, with Node.js 22 and pnpm 11.7.0 available:
+
+```sh
+pnpm install
+pnpm --filter @promptbranch/mcp build
+```
+
+The built server is `dist/index.js`. The
+[MCP integration guide](../../docs/integrations/mcp-server.md) has
+configuration and agent-workflow guidance.

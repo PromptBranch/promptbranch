@@ -17,7 +17,8 @@ This guide walks you through creating your first version-controlled prompt, exec
 
 ## Step 2: Write a Prompt Template with Dynamic Variables
 
-In the CodeMirror editor, enter your prompt template. Use double curly braces `{{variable_name}}` for any input parameters:
+In the prompt editor, enter your template. Use double curly braces
+`{{variable_name}}` for any input parameters:
 
 ````markdown
 You are a senior software engineer. Refactor the provided code according to the target style guidelines.
@@ -47,7 +48,9 @@ When you reach a stable point, click **Save as new version** on the toolbar. In 
 3. Pick a provider from the list — popular providers (**OpenAI**, **Anthropic**, **Google**) are pinned at the top, and the full catalog of OpenAI-compatible providers follows. For a local endpoint (Ollama, LM Studio), choose **Custom OpenAI-compatible provider**.
 4. Paste your API key. If a standard key exists in your environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`), click **Use environment key** instead.
 5. For a custom endpoint, also enter the **Base URL** (e.g. `http://localhost:11434/v1` for Ollama) and pick a test model.
-6. Click **Connect**. PromptBranch verifies the key with a minimal test request, encrypts it using your OS keychain (`safeStorage`), and loads the model catalog from [models.dev](https://models.dev).
+6. Click **Connect**. PromptBranch tests the connection, saves the key using
+   your operating system's secure storage, and loads the model catalog from
+   [models.dev](https://models.dev).
 
 Add any model IDs the catalog doesn't know about (e.g. locally pulled Ollama models) later via **Manage models**.
 
@@ -95,7 +98,9 @@ The version dropdown groups versions by branch, so you can switch between `main`
 
 1. Click the **Share** button on the prompt toolbar.
 2. Choose the scope: **Current version only**, or **Include full history**.
-3. PromptBranch runs the **pre-publish secret scanner** on the exact JSON payload and shows you the findings before anything leaves your machine — high-severity findings (API keys, private keys, tokens) block publishing until removed.
+3. PromptBranch scans the content before anything leaves your machine.
+   High-severity findings, such as API keys, private keys, and tokens, block
+   publishing until removed.
 4. Click **Publish**.
 5. PromptBranch uploads the immutable snapshot to `https://promptbranch.app/p/<id>` and shows your unlisted share link. The revocation **delete token** is stored locally — manage and revoke the share any time from the **Shares** view. (When publishing via the CLI, the token is also printed once.)
 

@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "license": "MIT",
   "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
@@ -15,13 +15,13 @@
     "postinstall": "node scripts/patch-electron-name.mjs || true",
     "dist": "electron-vite build && node scripts/package-desktop.mjs",
     "test": "vitest run && pnpm test:release-assets",
-    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/linux-launcher.mjs scripts/test/package-desktop.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
+    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/linux-launcher.mjs scripts/test/macos-executable-uuid.mjs scripts/test/package-desktop.mjs scripts/test/verify-macos-distribution.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
   },
   "build": {
     "appId": "com.promptbranch.app",
     "productName": "PromptBranch",
-    "afterPack": "scripts/linux-launcher.mjs",
+    "afterPack": "scripts/after-pack.mjs",
     "files": [
       "out/**",
       "package.json"

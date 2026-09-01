@@ -182,10 +182,15 @@ export const shareImportPreviewSchema = z.object({ url: z.string().trim().min(1)
 // Sync
 
 const fingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/, "fingerprint");
+const syncPairRequestIdSchema = z.string().uuid();
 
 export const syncSetEnabledSchema = z.object({ enabled: z.boolean() });
 
 export const syncSetDeviceNameSchema = z.object({ name: z.string().trim().min(1).max(100) });
+
+export const syncSetListenPortSchema = z.object({
+  port: z.number().int().min(1_024).max(65_535),
+});
 
 export const syncPairWithCodeSchema = z.object({
   address: z.string().trim().min(1).max(255),
@@ -194,16 +199,21 @@ export const syncPairWithCodeSchema = z.object({
 });
 
 export const syncRespondPairingSchema = z.object({
-  fingerprint: fingerprintSchema,
+  requestId: syncPairRequestIdSchema,
   accept: z.boolean(),
 });
 
 export const syncForgetDeviceSchema = z.object({ fingerprint: fingerprintSchema });
 
 export const syncPairRequestEventSchema = z.object({
+  requestId: syncPairRequestIdSchema,
   fingerprint: fingerprintSchema,
   fingerprintShort: z.string().min(1),
   name: z.string().min(1).max(100),
+});
+
+export const syncPairRequestClosedEventSchema = z.object({
+  requestId: syncPairRequestIdSchema,
 });
 
 export const syncPeerDtoSchema = z.object({
@@ -219,6 +229,8 @@ export const syncPeerDtoSchema = z.object({
 export const syncStatusDtoSchema = z.object({
   enabled: z.boolean(),
   listening: z.boolean(),
+  listenPort: z.number().int().min(1_024).max(65_535).nullable(),
+  listenError: z.string().min(1).max(1_000).nullable(),
   deviceName: z.string().min(1).max(100),
   fingerprintShort: z.string(),
   pairingActive: z.boolean(),
@@ -883,6 +895,8 @@ export interface SyncNearbyDto {
 export interface SyncStatusDto {
   enabled: boolean;
   listening: boolean;
+  listenPort: number | null;
+  listenError: string | null;
   deviceName: string;
   fingerprintShort: string;
   pairingActive: boolean;
@@ -895,9 +909,15 @@ export interface SyncStatusDto {
 
 /** Main → renderer: another device wants to pair with this library. */
 export interface SyncPairRequestEvent {
+  requestId: string;
   fingerprint: string;
   fingerprintShort: string;
   name: string;
+}
+
+/** Main → renderer: this exact pairing prompt is no longer actionable. */
+export interface SyncPairRequestClosedEvent {
+  requestId: string;
 }
 
 export interface SyncPairResult {
@@ -1000,13 +1020,15 @@ export interface PromptBuilderApi {
     /** Enables or disables sync (persists; enabling bootstraps the op log). */
     setEnabled(enabled: boolean): Promise<SyncStatusDto>;
     setDeviceName(name: string): Promise<SyncStatusDto>;
+    /** Changes the TCP listener port and restarts networking when enabled. */
+    setListenPort(port: number): Promise<SyncStatusDto>;
     /** Opens the 10-minute pairing window; resolves to the code to show. */
     beginPairing(): Promise<SyncStatusDto>;
     cancelPairing(): Promise<SyncStatusDto>;
     /** Connects to a nearby/manual device using the code shown there. */
     pairWithCode(input: { address: string; port: number; code: string }): Promise<SyncPairResult>;
     /** Renderer's answer to an onPairRequest event. */
-    respondPairing(input: { fingerprint: string; accept: boolean }): Promise<void>;
+    respondPairing(input: { requestId: string; accept: boolean }): Promise<void>;
     /** Unpins a device permanently. */
     forgetDevice(fingerprint: string): Promise<SyncStatusDto>;
     /** Refines local changes and nudges connected peers now. */
@@ -1015,6 +1037,8 @@ export interface PromptBuilderApi {
     onStateChanged(callback: (status: SyncStatusDto) => void): () => void;
     /** Main → renderer: a device is asking to pair; answer via respondPairing. */
     onPairRequest(callback: (event: SyncPairRequestEvent) => void): () => void;
+    /** Main → renderer: a request timed out, completed, or was cancelled. */
+    onPairRequestClosed(callback: (event: SyncPairRequestClosedEvent) => void): () => void;
   };
   ai: {
     providers: {

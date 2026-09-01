@@ -49,6 +49,7 @@ import {
   syncRespondPairingSchema,
   syncSetDeviceNameSchema,
   syncSetEnabledSchema,
+  syncSetListenPortSchema,
   suggestionApproveSchema,
   suggestionRejectSchema,
   tagCreateSchema,
@@ -116,6 +117,7 @@ import {
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
+import { createBeforeQuitHandler } from "./shutdown.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
 
@@ -194,6 +196,7 @@ let backupsDir: string | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
+let syncPokeTimer: NodeJS.Timeout | null = null;
 
 function getDb(): Database {
   if (!db) throw new Error("Database not initialized");
@@ -677,6 +680,11 @@ function registerIpcHandlers(): void {
     return sync.setDeviceName(name);
   });
 
+  ipcMain.handle(IPC_CHANNELS.syncSetListenPort, (_e, payload: unknown) => {
+    const { port } = syncSetListenPortSchema.parse(payload);
+    return sync.setListenPort(port);
+  });
+
   ipcMain.handle(IPC_CHANNELS.syncBeginPairing, () => sync.beginPairing());
 
   ipcMain.handle(IPC_CHANNELS.syncCancelPairing, () => sync.cancelPairing());
@@ -687,8 +695,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.syncRespondPairing, (_e, payload: unknown) => {
-    const { fingerprint, accept } = syncRespondPairingSchema.parse(payload);
-    sync.respondPairing(fingerprint, accept);
+    const { requestId, accept } = syncRespondPairingSchema.parse(payload);
+    sync.respondPairing(requestId, accept);
   });
 
   ipcMain.handle(IPC_CHANNELS.syncForgetDevice, (_e, payload: unknown) => {
@@ -1117,6 +1125,8 @@ if (!gotSingleInstanceLock) {
     deviceNameFallback: () => os.hostname(),
     sendStatus: (status) => mainWindow?.webContents.send(IPC_CHANNELS.syncStateChanged, status),
     sendPairRequest: (event) => mainWindow?.webContents.send(IPC_CHANNELS.syncPairRequest, event),
+    sendPairRequestClosed: (event) =>
+      mainWindow?.webContents.send(IPC_CHANNELS.syncPairRequestClosed, event),
     log: (message) => console.log(`[sync] ${message}`),
   });
   updateService = new UpdateService({
@@ -1144,7 +1154,7 @@ if (!gotSingleInstanceLock) {
   void desktopSync.ensureStarted();
   // Background drain: refines writes from this app but also from the CLI and
   // MCP server, which share the database file.
-  const syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
+  syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
   syncPokeTimer.unref?.();
 
   updateStartupTimer = setTimeout(() => {
@@ -1173,11 +1183,26 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
-  // Ops are durable at write time; stopping is just closing sockets. Suppress
-  // status reads before the database closes, then close after the listener
-  // is down.
-  desktopSync?.dispose();
-  if (updateStartupTimer) clearTimeout(updateStartupTimer);
-  void desktopSync?.stop().catch(() => undefined).then(() => db?.close());
+const handleBeforeQuit = createBeforeQuitHandler({
+  clearBackgroundWork: () => {
+    if (syncPokeTimer) clearInterval(syncPokeTimer);
+    syncPokeTimer = null;
+    if (updateStartupTimer) clearTimeout(updateStartupTimer);
+    updateStartupTimer = null;
+  },
+  disposeSync: () => desktopSync?.dispose(),
+  stopSync: () => desktopSync?.stop() ?? Promise.resolve(),
+  closeDatabase: () => {
+    db?.close();
+    db = null;
+    library = null;
+  },
+  quit: () => app.quit(),
+  log: (message, error) => console.error(`[main] ${message}:`, error),
+});
+
+app.on("before-quit", (event) => {
+  // Prevent Electron from terminating while a queued sync restart still owns
+  // sockets or SQLite. The helper reissues quit after stop + close complete.
+  void handleBeforeQuit(event);
 });

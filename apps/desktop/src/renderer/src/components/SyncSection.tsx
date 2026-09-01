@@ -53,6 +53,7 @@ const STATE_DOT: Record<string, string> = {
 export function SyncSection() {
   const { data: status } = useSyncStatus();
   const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const [portDraft, setPortDraft] = useState<string | null>(null);
   const [manualAddress, setManualAddress] = useState("");
   const [manualPort, setManualPort] = useState("");
   const [code, setCode] = useState("");
@@ -66,6 +67,11 @@ export function SyncSection() {
     toast: "Device name saved",
     invalidateKeys: [["sync-status"]],
     onSuccess: () => setNameDraft(null),
+  });
+  const setListenPort = useAppMutation((port: number) => window.promptBuilder.sync.setListenPort(port), {
+    toast: "Listening port saved",
+    invalidateKeys: [["sync-status"]],
+    onSuccess: () => setPortDraft(null),
   });
   const beginPairing = useAppMutation(() => window.promptBuilder.sync.beginPairing(), {
     quiet: true,
@@ -104,6 +110,13 @@ export function SyncSection() {
   );
 
   if (!status) return null;
+  const portValue = portDraft ?? (status.listenPort === null ? "" : String(status.listenPort));
+  const portNumber = Number(portValue);
+  const portValid =
+    /^\d+$/.test(portValue) &&
+    Number.isInteger(portNumber) &&
+    portNumber >= 1_024 &&
+    portNumber <= 65_535;
 
   return (
     <div className="space-y-6">
@@ -155,6 +168,28 @@ export function SyncSection() {
               {" · "}
               {status.pendingDirty > 0 ? `${status.pendingDirty} change${status.pendingDirty === 1 ? "" : "s"} waiting to sync` : `Last synced ${relativeTime(status.lastSyncedAt)}`}
             </p>
+            <div className="flex items-center gap-2">
+              <input
+                aria-label="Listening port"
+                inputMode="numeric"
+                value={portValue}
+                onChange={(e) => setPortDraft(e.target.value.replace(/[^0-9]/g, ""))}
+                className="w-28 rounded-md border border-line bg-app px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              <button
+                type="button"
+                aria-label="Save port"
+                onClick={() => setListenPort.mutate(portNumber)}
+                disabled={portDraft === null || !portValid || setListenPort.isPending}
+                className={ghostButton}
+              >
+                Save port
+              </button>
+            </div>
+            {portDraft !== null && !portValid && (
+              <p className="text-[11px] text-red-500">Use a port from 1024 to 65535.</p>
+            )}
+            {status.listenError && <p className="text-[12px] text-red-500">{status.listenError}</p>}
           </div>
 
           <div className="space-y-2">
@@ -167,6 +202,9 @@ export function SyncSection() {
                 <div>
                   <p className="text-[12px] font-medium text-ink">Pairing window open</p>
                   <p className="mt-0.5 font-mono text-[15px] tracking-wider text-ink">{status.pairingCode}</p>
+                  {status.listenPort !== null && (
+                    <p className="mt-0.5 text-[11px] text-ink-faint">Port {status.listenPort}</p>
+                  )}
                 </div>
                 <button type="button" onClick={() => cancelPairing.mutate()} className={ghostButton}>
                   Close
@@ -216,6 +254,10 @@ export function SyncSection() {
 
             <details className="text-[12px] text-ink-dim">
               <summary className="cursor-pointer select-none text-ink-faint">Pair by address (VPNs, manual setup)</summary>
+              <p className="mt-1 text-[11px] text-ink-faint">
+                Enter the address and listening port shown in Settings → Sync on the other device.
+                {status.listenPort !== null && ` This device uses port ${status.listenPort}.`}
+              </p>
               <div className="mt-2 flex items-center gap-2">
                 <input
                   aria-label="Device address"
@@ -285,7 +327,7 @@ export function SyncSection() {
             <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
               <Laptop size={13} />
               {status.listening
-                ? "Listening for your devices on this network"
+                ? `Listening on port ${status.listenPort}`
                 : "Listener not running — try re-enabling sync"}
             </span>
             <button type="button" onClick={() => syncNow.mutate()} disabled={syncNow.isPending} className={ghostButton}>

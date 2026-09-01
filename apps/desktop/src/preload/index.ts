@@ -99,6 +99,7 @@ const api: PromptBuilderApi = {
     getStatus: () => invoke(IPC_CHANNELS.syncGetStatus),
     setEnabled: (enabled) => invoke(IPC_CHANNELS.syncSetEnabled, { enabled }),
     setDeviceName: (name) => invoke(IPC_CHANNELS.syncSetDeviceName, { name }),
+    setListenPort: (port) => invoke(IPC_CHANNELS.syncSetListenPort, { port }),
     beginPairing: () => invoke(IPC_CHANNELS.syncBeginPairing),
     cancelPairing: () => invoke(IPC_CHANNELS.syncCancelPairing),
     pairWithCode: (input) => invoke(IPC_CHANNELS.syncPairWithCode, input),
@@ -118,6 +119,13 @@ const api: PromptBuilderApi = {
       };
       ipcRenderer.on(IPC_CHANNELS.syncPairRequest, listener);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairRequest, listener);
+    },
+    onPairRequestClosed: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+        callback(event as Parameters<typeof callback>[0]);
+      };
+      ipcRenderer.on(IPC_CHANNELS.syncPairRequestClosed, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairRequestClosed, listener);
     },
   },
   ai: {

@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { syncPairRequestEventSchema, type SyncPairRequestEvent } from "../../../shared/ipc.js";
+import {
+  syncPairRequestClosedEventSchema,
+  syncPairRequestEventSchema,
+  type SyncPairRequestEvent,
+} from "../../../shared/ipc.js";
 
 /**
  * Global pairing gate: another device on the network entered this device's
@@ -9,20 +13,42 @@ import { syncPairRequestEventSchema, type SyncPairRequestEvent } from "../../../
  * live TLS certificate in the main process — never against message content.
  */
 export function SyncPairRequestDialog() {
-  const [request, setRequest] = useState<SyncPairRequestEvent | null>(null);
+  const [requests, setRequests] = useState<SyncPairRequestEvent[]>([]);
+  const request = requests[0] ?? null;
 
   useEffect(() => {
-    const unsubscribe = window.promptBuilder.sync.onPairRequest((raw) => {
+    const unsubscribeRequest = window.promptBuilder.sync.onPairRequest((raw) => {
       // Push payloads are validated here, like ai:run-progress events.
       const parsed = syncPairRequestEventSchema.safeParse(raw);
-      if (parsed.success) setRequest(parsed.data);
+      if (parsed.success) {
+        setRequests((current) =>
+          current.some((entry) => entry.requestId === parsed.data.requestId)
+            ? current
+            : [...current, parsed.data],
+        );
+      }
     });
-    return unsubscribe;
+    const unsubscribeClosed = window.promptBuilder.sync.onPairRequestClosed((raw) => {
+      const parsed = syncPairRequestClosedEventSchema.safeParse(raw);
+      if (parsed.success) {
+        setRequests((current) =>
+          current.filter((entry) => entry.requestId !== parsed.data.requestId),
+        );
+      }
+    });
+    return () => {
+      unsubscribeRequest();
+      unsubscribeClosed();
+    };
   }, []);
 
   const respond = (accept: boolean) => {
-    if (request) void window.promptBuilder.sync.respondPairing({ fingerprint: request.fingerprint, accept });
-    setRequest(null);
+    if (request) void window.promptBuilder.sync.respondPairing({ requestId: request.requestId, accept });
+    setRequests((current) =>
+      current[0]?.requestId === request?.requestId
+        ? current.slice(1)
+        : current.filter((entry) => entry.requestId !== request?.requestId),
+    );
   };
 
   return (
@@ -37,18 +63,20 @@ export function SyncPairRequestDialog() {
             receive and send every prompt in this library.
           </AlertDialog.Description>
           <div className="mt-5 flex justify-end gap-2">
-            <AlertDialog.Action
+            <button
+              type="button"
               onClick={() => respond(false)}
               className="rounded-md border border-line px-3 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
             >
               Decline
-            </AlertDialog.Action>
-            <AlertDialog.Action
+            </button>
+            <button
+              type="button"
               onClick={() => respond(true)}
               className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent-strong"
             >
               Accept
-            </AlertDialog.Action>
+            </button>
           </div>
         </AlertDialog.Content>
       </AlertDialog.Portal>

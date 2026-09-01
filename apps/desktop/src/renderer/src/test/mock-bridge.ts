@@ -13,6 +13,7 @@ import { afterEach, vi, type Mock } from "vitest";
 import type {
   AiRunProgressEvent,
   PromptBuilderApi,
+  SyncPairRequestClosedEvent,
   SyncPairRequestEvent,
   SyncStatusDto,
   UpdateStateDto,
@@ -32,6 +33,8 @@ export type MockBridge = Mocked<PromptBuilderApi> & {
   emitSyncState(status: SyncStatusDto): void;
   /** Delivers a sync:pair-request event to subscribed listeners. */
   emitSyncPairRequest(event: SyncPairRequestEvent): void;
+  /** Delivers a sync:pair-request-closed event to subscribed listeners. */
+  emitSyncPairRequestClosed(event: SyncPairRequestClosedEvent): void;
   /** Delivers an updates:state-changed event to subscribed listeners. */
   emitUpdateState(state: UpdateStateDto): void;
   /** Delivers the application menu's Check for Updates action. */
@@ -49,12 +52,15 @@ export function createMockBridge(): MockBridge {
   // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
   const syncStateListeners = new Set<(status: SyncStatusDto) => void>();
   const syncPairListeners = new Set<(event: SyncPairRequestEvent) => void>();
+  const syncPairClosedListeners = new Set<(event: SyncPairRequestClosedEvent) => void>();
   const updateStateListeners = new Set<(state: UpdateStateDto) => void>();
   const openUpdatesListeners = new Set<() => void>();
 
   const disabledSyncStatus: SyncStatusDto = {
     enabled: false,
     listening: false,
+    listenPort: null,
+    listenError: null,
     deviceName: "Test Mac",
     fingerprintShort: "",
     pairingActive: false,
@@ -280,6 +286,7 @@ export function createMockBridge(): MockBridge {
       getStatus: vi.fn(async () => disabledSyncStatus),
       setEnabled: vi.fn(async (enabled: boolean) => ({ ...disabledSyncStatus, enabled })),
       setDeviceName: vi.fn(async (name: string) => ({ ...disabledSyncStatus, deviceName: name })),
+      setListenPort: vi.fn(async (port: number) => ({ ...disabledSyncStatus, listenPort: port })),
       beginPairing: vi.fn(async () => disabledSyncStatus),
       cancelPairing: vi.fn(async () => disabledSyncStatus),
       pairWithCode: vi.fn(async () => ({ ok: true })),
@@ -298,6 +305,12 @@ export function createMockBridge(): MockBridge {
           syncPairListeners.delete(callback);
         };
       }),
+      onPairRequestClosed: vi.fn((callback: (event: SyncPairRequestClosedEvent) => void) => {
+        syncPairClosedListeners.add(callback);
+        return () => {
+          syncPairClosedListeners.delete(callback);
+        };
+      }),
     },
   };
   return Object.assign(api as unknown as MockBridge, {
@@ -312,6 +325,9 @@ export function createMockBridge(): MockBridge {
     },
     emitSyncPairRequest: (event: SyncPairRequestEvent) => {
       for (const listener of [...syncPairListeners]) listener(event);
+    },
+    emitSyncPairRequestClosed: (event: SyncPairRequestClosedEvent) => {
+      for (const listener of [...syncPairClosedListeners]) listener(event);
     },
     emitUpdateState: (state: UpdateStateDto) => {
       for (const listener of [...updateStateListeners]) listener(state);

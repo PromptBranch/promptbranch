@@ -99,6 +99,7 @@ const api: PromptBuilderApi = {
     getStatus: () => invoke(IPC_CHANNELS.syncGetStatus),
     setEnabled: (enabled) => invoke(IPC_CHANNELS.syncSetEnabled, { enabled }),
     setDeviceName: (name) => invoke(IPC_CHANNELS.syncSetDeviceName, { name }),
+    setListenPort: (port) => invoke(IPC_CHANNELS.syncSetListenPort, { port }),
     beginPairing: () => invoke(IPC_CHANNELS.syncBeginPairing),
     cancelPairing: () => invoke(IPC_CHANNELS.syncCancelPairing),
     pairWithCode: (input) => invoke(IPC_CHANNELS.syncPairWithCode, input),

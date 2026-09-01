@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -50,12 +52,11 @@ async function rig(name = "Test Mac"): Promise<Rig> {
   return { lib, db, identity, sync, statuses, pairRequests };
 }
 
-/** The renderer never needs its own port; tests reach it for loopback dialing. */
+/** Tests reach the visible listener port for loopback pairing. */
 function listeningPort(sync: DesktopSync): number {
   const status = sync.status();
   if (!status.listening) throw new Error("sync not listening");
-  const internal = (sync as unknown as { service: { status: () => { port: number | null } } }).service;
-  const port = internal.status().port;
+  const port = status.listenPort;
   if (port === null) throw new Error("no port");
   return port;
 }
@@ -101,6 +102,69 @@ describe("DesktopSync coordinator", () => {
     const status = await sync.setDeviceName("Studio");
     expect(status.deviceName).toBe("Studio");
     expect(lib.getSetting("sync.deviceName")).toBe("Studio");
+  });
+
+  it("persists the first ephemeral listener port and reuses it in a fresh coordinator", async () => {
+    const first = await rig();
+    const enabled = await first.sync.setEnabled(true);
+    expect(enabled.listenPort).toBeGreaterThanOrEqual(1_024);
+    expect(first.lib.getSetting("sync.listenPort")).toBe(String(enabled.listenPort));
+    await first.sync.stop();
+
+    const statuses: SyncStatusDto[] = [];
+    const restarted = new DesktopSync({
+      lib: first.lib,
+      db: first.db,
+      identityDir: dirs[0]!,
+      deviceNameFallback: () => "Test Mac",
+      sendStatus: (status) => statuses.push(status),
+      sendPairRequest: () => {},
+      discoveryFactory: () => ({ start: () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    syncs.push(restarted);
+    await restarted.ensureStarted();
+    expect(restarted.status().listenPort).toBe(enabled.listenPort);
+    expect(restarted.status().listening).toBe(true);
+  });
+
+  it("restarts on an explicit non-privileged port", async () => {
+    const { lib, sync } = await rig();
+    await sync.setEnabled(true);
+    const probe = net.createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    probe.close();
+    await once(probe, "close");
+
+    const status = await sync.setListenPort(port);
+    expect(status.listening).toBe(true);
+    expect(status.listenPort).toBe(port);
+    expect(status.listenError).toBeNull();
+    expect(lib.getSetting("sync.listenPort")).toBe(String(port));
+  });
+
+  it("keeps a requested port visible and actionable when binding fails", async () => {
+    const blocker = net.createServer();
+    blocker.listen(0, "0.0.0.0");
+    await once(blocker, "listening");
+    const address = blocker.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const { lib, sync } = await rig();
+
+    try {
+      await sync.setEnabled(true);
+      const status = await sync.setListenPort(port);
+      expect(status.listening).toBe(false);
+      expect(status.listenPort).toBe(port);
+      expect(status.listenError).toMatch(/already in use.*choose another port/i);
+      expect(lib.getSetting("sync.listenPort")).toBe(String(port));
+    } finally {
+      blocker.close();
+      await once(blocker, "close");
+    }
   });
 
   it("the background drain refines dirty rows even while sync is disabled", async () => {

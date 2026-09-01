@@ -15,6 +15,7 @@ import { PeerService, type SyncServiceStatus } from "./peers-service.js";
 
 const ENABLED_SETTING = "sync.enabled";
 const DEVICE_NAME_SETTING = "sync.deviceName";
+const LISTEN_PORT_SETTING = "sync.listenPort";
 const BOOTSTRAP_MARKER = "bootstrapped";
 const CONFIRM_TIMEOUT_MS = 60_000;
 const STATUS_THROTTLE_MS = 250;
@@ -87,6 +88,11 @@ export class DesktopSync {
     return raw.trim().slice(0, 100);
   }
 
+  private configuredListenPort(): number | null {
+    const value = Number(this.deps.lib.getSetting(LISTEN_PORT_SETTING));
+    return Number.isInteger(value) && value >= 1_024 && value <= 65_535 ? value : null;
+  }
+
   private async startService(): Promise<void> {
     if (this.service || this.disposed) return;
     this.identity ??= await loadOrCreateIdentity(this.deps.identityDir);
@@ -97,10 +103,15 @@ export class DesktopSync {
       confirmPairing: (fingerprint, name) => this.confirmPairing(fingerprint, name),
       onStatusChange: () => this.scheduleEmit(),
       discovery: this.deps.discoveryFactory?.() ?? createBonjourDiscovery(),
+      listen: { port: this.configuredListenPort() ?? 0 },
       log: (message) => this.deps.log?.(message),
       now: this.deps.now,
     });
     await this.service.start();
+    const started = this.service.status();
+    if (started.listening && started.port !== null && this.configuredListenPort() === null) {
+      this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(started.port));
+    }
     this.emitStatus();
   }
 
@@ -128,6 +139,19 @@ export class DesktopSync {
     this.deps.lib.setSetting(DEVICE_NAME_SETTING, name);
     // The name rides in every hello; re-run anti-entropy so peers see it.
     this.poke();
+    return this.status();
+  }
+
+  async setListenPort(port: number): Promise<SyncStatusDto> {
+    if (!Number.isInteger(port) || port < 1_024 || port > 65_535) {
+      throw new RangeError("Listening port must be between 1024 and 65535");
+    }
+    this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(port));
+    if (this.isEnabled()) {
+      await this.stop();
+      await this.startService();
+    }
+    this.emitStatus();
     return this.status();
   }
 
@@ -198,6 +222,8 @@ export class DesktopSync {
     return {
       enabled: this.isEnabled(),
       listening: raw?.listening ?? false,
+      listenPort: raw?.port ?? this.configuredListenPort(),
+      listenError: raw?.listenError ?? null,
       deviceName: this.deviceName(),
       fingerprintShort: this.identity?.fingerprintShort ?? "",
       pairingActive: raw?.pairingActive ?? false,

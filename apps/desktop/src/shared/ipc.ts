@@ -187,6 +187,10 @@ export const syncSetEnabledSchema = z.object({ enabled: z.boolean() });
 
 export const syncSetDeviceNameSchema = z.object({ name: z.string().trim().min(1).max(100) });
 
+export const syncSetListenPortSchema = z.object({
+  port: z.number().int().min(1_024).max(65_535),
+});
+
 export const syncPairWithCodeSchema = z.object({
   address: z.string().trim().min(1).max(255),
   port: z.number().int().min(1).max(65_535),
@@ -219,6 +223,8 @@ export const syncPeerDtoSchema = z.object({
 export const syncStatusDtoSchema = z.object({
   enabled: z.boolean(),
   listening: z.boolean(),
+  listenPort: z.number().int().min(1_024).max(65_535).nullable(),
+  listenError: z.string().min(1).max(1_000).nullable(),
   deviceName: z.string().min(1).max(100),
   fingerprintShort: z.string(),
   pairingActive: z.boolean(),
@@ -883,6 +889,8 @@ export interface SyncNearbyDto {
 export interface SyncStatusDto {
   enabled: boolean;
   listening: boolean;
+  listenPort: number | null;
+  listenError: string | null;
   deviceName: string;
   fingerprintShort: string;
   pairingActive: boolean;
@@ -1000,6 +1008,8 @@ export interface PromptBuilderApi {
     /** Enables or disables sync (persists; enabling bootstraps the op log). */
     setEnabled(enabled: boolean): Promise<SyncStatusDto>;
     setDeviceName(name: string): Promise<SyncStatusDto>;
+    /** Changes the TCP listener port and restarts networking when enabled. */
+    setListenPort(port: number): Promise<SyncStatusDto>;
     /** Opens the 10-minute pairing window; resolves to the code to show. */
     beginPairing(): Promise<SyncStatusDto>;
     cancelPairing(): Promise<SyncStatusDto>;

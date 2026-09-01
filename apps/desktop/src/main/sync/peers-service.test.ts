@@ -1,4 +1,4 @@
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/core";
-import type { DiscoveredPeer, Discovery } from "./discovery.js";
+import { createBonjourDiscovery, type DiscoveredPeer, type Discovery } from "./discovery.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { PeerService, type PeerServiceDeps } from "./peers-service.js";
 
@@ -42,16 +42,23 @@ function mockConfirm() {
   };
 }
 
-function fakeDiscovery(): { impl: Discovery; fire(peer: DiscoveredPeer): void } {
+function fakeDiscovery(): {
+  impl: Discovery;
+  fire(peer: DiscoveredPeer): void;
+  down(fingerprint: string): void;
+} {
   let onPeer: ((peer: DiscoveredPeer) => void) | null = null;
+  let onPeerDown: ((fingerprint: string) => void) | null = null;
   return {
     impl: {
-      start: (_advertise, callback) => {
+      start: (_advertise, callback, down) => {
         onPeer = callback;
+        onPeerDown = down;
       },
       stop: async () => {},
     },
     fire: (peer) => onPeer?.(peer),
+    down: (fingerprint) => onPeerDown?.(fingerprint),
   };
 }
 
@@ -81,6 +88,56 @@ async function start(rig: ServiceRig): Promise<number> {
 }
 
 describe("peer service over real TLS (loopback)", () => {
+  it("refreshes Bonjour endpoints on srv-update and removes down services", async () => {
+    const browser = new EventEmitter() as EventEmitter & { stop(): void };
+    browser.stop = () => {};
+    class FakeBonjour {
+      publish(): void {}
+      find(): typeof browser {
+        return browser;
+      }
+      async unpublishAll(): Promise<void> {}
+      destroy(): void {}
+    }
+    vi.doMock("bonjour-service", () => ({ Bonjour: FakeBonjour }));
+    const discovery = createBonjourDiscovery();
+    const peers: DiscoveredPeer[] = [];
+    const down: string[] = [];
+    const localFingerprint = "a".repeat(64);
+    const remoteFingerprint = "b".repeat(64);
+
+    try {
+      discovery.start(
+        { port: 52_100, fingerprint: localFingerprint, deviceName: "Local" },
+        (peer) => peers.push(peer),
+        (fingerprint) => down.push(fingerprint),
+      );
+      await vi.waitFor(() => expect(browser.listenerCount("srv-update")).toBe(1));
+      browser.emit("up", {
+        name: "Remote",
+        port: 52_101,
+        addresses: ["127.0.0.1"],
+        txt: { fp: remoteFingerprint },
+      });
+      browser.emit("srv-update", {
+        name: "Remote",
+        port: 53_000,
+        addresses: ["127.0.0.2"],
+        txt: { fp: remoteFingerprint },
+      });
+      browser.emit("down", { txt: { fp: remoteFingerprint } });
+
+      expect(peers.map(({ address, port }) => `${address}:${port}`)).toEqual([
+        "127.0.0.1:52101",
+        "127.0.0.2:53000",
+      ]);
+      expect(down).toEqual([remoteFingerprint]);
+    } finally {
+      await discovery.stop();
+      vi.doUnmock("bonjour-service");
+    }
+  });
+
   it("keeps an established session alive beyond the TLS handshake deadline", async () => {
     const handshakeTimeoutMs = 60;
     const transitionsA: string[] = [];
@@ -359,6 +416,195 @@ describe("peer service over real TLS (loopback)", () => {
     dialer.engine.refineDirty();
     dialer.service.notifyPeers();
     await vi.waitFor(() => expect(listener.lib.listPrompts().length).toBe(before + 1));
+  });
+
+  it("reconnects a paired peer from its saved endpoint without discovery", async () => {
+    const listener = await rig("Listener", { startupReconnectDelayMs: 25 });
+    const listenerPort = await start(listener);
+    const dialer = await rig("Dialer", { startupReconnectDelayMs: 25 });
+    await start(dialer);
+
+    const code = listener.service.beginPairing();
+    expect(
+      (await dialer.service.pairWithCode("127.0.0.1", listenerPort, code)).ok,
+    ).toBe(true);
+    await vi.waitFor(() => expect(dialer.service.status().peers[0]?.state).toBe("steady"));
+
+    await dialer.service.stop();
+    await listener.service.stop();
+    listener.service.deps.listen = { host: "127.0.0.1", port: listenerPort };
+    await listener.service.start();
+    await dialer.service.start();
+
+    await vi.waitFor(
+      () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 5_000 },
+    );
+  });
+
+  it("uses the latest discovered endpoint for a pending reconnect", async () => {
+    const discoveryA = fakeDiscovery();
+    const discoveryB = fakeDiscovery();
+    const a = await rig("A", { discovery: discoveryA.impl, startupReconnectDelayMs: 60_000 });
+    const b = await rig("B", { discovery: discoveryB.impl, startupReconnectDelayMs: 60_000 });
+    const portA = await start(a);
+    await start(b);
+    expect((await b.service.pairWithCode("127.0.0.1", portA, a.service.beginPairing())).ok).toBe(true);
+    await vi.waitFor(() => expect(a.service.status().peers[0]?.state).toBe("steady"));
+
+    const aDials = a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    const dialer = aDials ? a : b;
+    const dialerDiscovery = aDials ? discoveryA : discoveryB;
+    const listener = aDials ? b : a;
+    await listener.service.stop();
+    await listener.service.start();
+    const currentPort = listener.service.status().port!;
+    await vi.waitFor(() => expect(dialer.service.status().peers[0]?.state).toBe("offline"));
+
+    dialerDiscovery.fire({
+      fingerprint: listener.service.deps.identity.fingerprint,
+      name: listener.service.deps.deviceName(),
+      address: "127.0.0.1",
+      port: 1,
+    });
+    dialerDiscovery.fire({
+      fingerprint: listener.service.deps.identity.fingerprint,
+      name: listener.service.deps.deviceName(),
+      address: "127.0.0.1",
+      port: currentPort,
+    });
+
+    await vi.waitFor(
+      () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 5_000 },
+    );
+    expect(dialer.engine.getSyncPeer(listener.service.deps.identity.fingerprint)?.address)
+      .toBe(`127.0.0.1:${currentPort}`);
+  });
+
+  it("removes a down nearby device without forgetting a paired peer", async () => {
+    const discovery = fakeDiscovery();
+    const local = await rig("Local", { discovery: discovery.impl });
+    await start(local);
+    const fingerprint = "a".repeat(64);
+    discovery.fire({ fingerprint, name: "Nearby", address: "127.0.0.1", port: 52_100 });
+    expect(local.service.status().nearby).toHaveLength(1);
+    discovery.down(fingerprint);
+    expect(local.service.status().nearby).toEqual([]);
+
+    local.engine.upsertSyncPeer({ fingerprint, name: "Paired", address: "127.0.0.1:52100" });
+    discovery.down(fingerprint);
+    expect(local.engine.getSyncPeer(fingerprint)?.forgotten_at).toBeNull();
+  });
+
+  it("reserves one outbound dial while repeated discovery events overlap", async () => {
+    const discoveryA = fakeDiscovery();
+    const discoveryB = fakeDiscovery();
+    let connectCallsA = 0;
+    let connectCallsB = 0;
+    const a = await rig("A", {
+      discovery: discoveryA.impl,
+      connectTls: (options) => {
+        connectCallsA += 1;
+        return tls.connect(options);
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    const b = await rig("B", {
+      discovery: discoveryB.impl,
+      connectTls: (options) => {
+        connectCallsB += 1;
+        return tls.connect(options);
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    const portA = await start(a);
+    const portB = await start(b);
+    const aDials = a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    const dialer = aDials ? a : b;
+    const listener = aDials ? b : a;
+    const discovery = aDials ? discoveryA : discoveryB;
+    const listenerPort = aDials ? portB : portA;
+    dialer.engine.upsertSyncPeer({
+      fingerprint: listener.service.deps.identity.fingerprint,
+      name: "Remote",
+    });
+    listener.engine.upsertSyncPeer({
+      fingerprint: dialer.service.deps.identity.fingerprint,
+      name: "Dialer",
+    });
+    const peer = {
+      fingerprint: listener.service.deps.identity.fingerprint,
+      name: "Remote",
+      address: "127.0.0.1",
+      port: listenerPort,
+    };
+    discovery.fire(peer);
+    const manualReconnect = dialer.service.pairWithCode(
+      peer.address,
+      peer.port,
+      listener.service.deps.identity.pairingCode,
+    );
+    discovery.fire(peer);
+    discovery.fire(peer);
+
+    expect((await manualReconnect).ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(dialer.service.status().peers[0]?.state).toBe("steady");
+      expect(listener.service.status().peers[0]?.state).toBe("steady");
+    });
+    expect(connectCallsA + connectCallsB).toBe(1);
+  });
+
+  it("resolves an inbound/outbound race with the fingerprint direction preference", async () => {
+    let outboundA: tls.TLSSocket | null = null;
+    let outboundB: tls.TLSSocket | null = null;
+    const a = await rig("A", {
+      connectTls: (options) => {
+        outboundA = tls.connect(options);
+        return outboundA;
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    const b = await rig("B", {
+      connectTls: (options) => {
+        outboundB = tls.connect(options);
+        return outboundB;
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    const portA = await start(a);
+    const portB = await start(b);
+    a.engine.upsertSyncPeer({
+      fingerprint: b.service.deps.identity.fingerprint,
+      name: "B",
+      address: `127.0.0.1:${portB}`,
+    });
+    b.engine.upsertSyncPeer({
+      fingerprint: a.service.deps.identity.fingerprint,
+      name: "A",
+      address: `127.0.0.1:${portA}`,
+    });
+
+    const [resultA, resultB] = await Promise.all([
+      a.service.pairWithCode("127.0.0.1", portB, b.service.deps.identity.pairingCode),
+      b.service.pairWithCode("127.0.0.1", portA, a.service.deps.identity.pairingCode),
+    ]);
+    expect(resultA.ok).toBe(true);
+    expect(resultB.ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(a.service.status().peers).toHaveLength(1);
+      expect(b.service.status().peers).toHaveLength(1);
+      expect(a.service.status().peers[0]?.state).toBe("steady");
+      expect(b.service.status().peers[0]?.state).toBe("steady");
+    });
+
+    const aPrefersOutbound =
+      a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    await vi.waitFor(() => {
+      expect(outboundA?.destroyed).toBe(!aPrefersOutbound);
+      expect(outboundB?.destroyed).toBe(aPrefersOutbound);
+    });
   });
 
   it("flags a peer as unhealthy after repeated failed dials", async () => {

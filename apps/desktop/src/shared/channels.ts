@@ -93,6 +93,7 @@ export const IPC_CHANNELS = {
   syncGetStatus: "sync:get-status",
   syncSetEnabled: "sync:set-enabled",
   syncSetDeviceName: "sync:set-device-name",
+  syncSetListenPort: "sync:set-listen-port",
   syncBeginPairing: "sync:begin-pairing",
   syncCancelPairing: "sync:cancel-pairing",
   syncPairWithCode: "sync:pair-with-code",

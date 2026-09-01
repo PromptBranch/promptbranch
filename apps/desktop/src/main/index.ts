@@ -49,6 +49,7 @@ import {
   syncRespondPairingSchema,
   syncSetDeviceNameSchema,
   syncSetEnabledSchema,
+  syncSetListenPortSchema,
   suggestionApproveSchema,
   suggestionRejectSchema,
   tagCreateSchema,
@@ -675,6 +676,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.syncSetDeviceName, (_e, payload: unknown) => {
     const { name } = syncSetDeviceNameSchema.parse(payload);
     return sync.setDeviceName(name);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.syncSetListenPort, (_e, payload: unknown) => {
+    const { port } = syncSetListenPortSchema.parse(payload);
+    return sync.setListenPort(port);
   });
 
   ipcMain.handle(IPC_CHANNELS.syncBeginPairing, () => sync.beginPairing());

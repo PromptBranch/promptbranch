@@ -55,6 +55,8 @@ export function createMockBridge(): MockBridge {
   const disabledSyncStatus: SyncStatusDto = {
     enabled: false,
     listening: false,
+    listenPort: null,
+    listenError: null,
     deviceName: "Test Mac",
     fingerprintShort: "",
     pairingActive: false,
@@ -280,6 +282,7 @@ export function createMockBridge(): MockBridge {
       getStatus: vi.fn(async () => disabledSyncStatus),
       setEnabled: vi.fn(async (enabled: boolean) => ({ ...disabledSyncStatus, enabled })),
       setDeviceName: vi.fn(async (name: string) => ({ ...disabledSyncStatus, deviceName: name })),
+      setListenPort: vi.fn(async (port: number) => ({ ...disabledSyncStatus, listenPort: port })),
       beginPairing: vi.fn(async () => disabledSyncStatus),
       cancelPairing: vi.fn(async () => disabledSyncStatus),
       pairWithCode: vi.fn(async () => ({ ok: true })),

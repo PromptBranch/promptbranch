@@ -14,6 +14,8 @@ function status(partial: Partial<SyncStatusDto>): SyncStatusDto {
   return {
     enabled: true,
     listening: true,
+    listenPort: 52_100,
+    listenError: null,
     deviceName: "Test Mac",
     fingerprintShort: "a1b2c3d4e5",
     pairingActive: false,
@@ -70,6 +72,8 @@ describe("SyncSection", () => {
     expect(await screen.findByLabelText("Device name")).toHaveValue("Mac Studio");
     expect(screen.getByText("MacBook Pro")).toBeInTheDocument();
     expect(screen.getByText("PromptBranch Mac mini")).toBeInTheDocument();
+    expect(screen.getByLabelText("Listening port")).toHaveValue("52100");
+    expect(screen.getByText("Listening on port 52100")).toBeInTheDocument();
 
     // Typing a code and pressing Pair on the nearby device calls the bridge.
     await userEvent.type(screen.getByLabelText("Pairing code"), "ABCD-2345");
@@ -79,6 +83,37 @@ describe("SyncSection", () => {
       port: 52100,
       code: "ABCD-2345",
     });
+  });
+
+  it("validates and saves a non-privileged listening port", async () => {
+    const bridge = installMockBridge();
+    bridge.sync.getStatus.mockResolvedValue(status({ listenPort: 52_100 }));
+    renderApp(<SyncSection />);
+
+    const input = await screen.findByLabelText("Listening port");
+    await userEvent.clear(input);
+    await userEvent.type(input, "80");
+    expect(screen.getByRole("button", { name: "Save port" })).toBeDisabled();
+    expect(screen.getByText("Use a port from 1024 to 65535.")).toBeInTheDocument();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "53000");
+    await userEvent.click(screen.getByRole("button", { name: "Save port" }));
+    expect(bridge.sync.setListenPort).toHaveBeenCalledWith(53_000);
+  });
+
+  it("shows an actionable listener error without hiding the configured port", async () => {
+    const bridge = installMockBridge();
+    bridge.sync.getStatus.mockResolvedValue(
+      status({
+        listening: false,
+        listenPort: 53_000,
+        listenError: "Port 53000 is already in use. Choose another port.",
+      }),
+    );
+    renderApp(<SyncSection />);
+    expect(await screen.findByLabelText("Listening port")).toHaveValue("53000");
+    expect(screen.getByText("Port 53000 is already in use. Choose another port.")).toBeInTheDocument();
   });
 
   it("opens the pairing window and shows the code", async () => {

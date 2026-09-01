@@ -120,6 +120,13 @@ const api: PromptBuilderApi = {
       ipcRenderer.on(IPC_CHANNELS.syncPairRequest, listener);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairRequest, listener);
     },
+    onPairRequestClosed: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+        callback(event as Parameters<typeof callback>[0]);
+      };
+      ipcRenderer.on(IPC_CHANNELS.syncPairRequestClosed, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairRequestClosed, listener);
+    },
   },
   ai: {
     providers: {

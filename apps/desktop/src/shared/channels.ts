@@ -102,4 +102,5 @@ export const IPC_CHANNELS = {
   syncNow: "sync:now",
   syncStateChanged: "sync:state-changed",
   syncPairRequest: "sync:pair-request",
+  syncPairRequestClosed: "sync:pair-request-closed",
 } as const;

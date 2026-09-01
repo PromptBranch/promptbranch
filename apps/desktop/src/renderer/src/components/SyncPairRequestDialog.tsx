@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { syncPairRequestEventSchema, type SyncPairRequestEvent } from "../../../shared/ipc.js";
+import {
+  syncPairRequestClosedEventSchema,
+  syncPairRequestEventSchema,
+  type SyncPairRequestEvent,
+} from "../../../shared/ipc.js";
 
 /**
  * Global pairing gate: another device on the network entered this device's
@@ -13,7 +17,7 @@ export function SyncPairRequestDialog() {
   const request = requests[0] ?? null;
 
   useEffect(() => {
-    const unsubscribe = window.promptBuilder.sync.onPairRequest((raw) => {
+    const unsubscribeRequest = window.promptBuilder.sync.onPairRequest((raw) => {
       // Push payloads are validated here, like ai:run-progress events.
       const parsed = syncPairRequestEventSchema.safeParse(raw);
       if (parsed.success) {
@@ -24,7 +28,18 @@ export function SyncPairRequestDialog() {
         );
       }
     });
-    return unsubscribe;
+    const unsubscribeClosed = window.promptBuilder.sync.onPairRequestClosed((raw) => {
+      const parsed = syncPairRequestClosedEventSchema.safeParse(raw);
+      if (parsed.success) {
+        setRequests((current) =>
+          current.filter((entry) => entry.requestId !== parsed.data.requestId),
+        );
+      }
+    });
+    return () => {
+      unsubscribeRequest();
+      unsubscribeClosed();
+    };
   }, []);
 
   const respond = (accept: boolean) => {

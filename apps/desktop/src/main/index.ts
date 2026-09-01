@@ -1125,6 +1125,8 @@ if (!gotSingleInstanceLock) {
     deviceNameFallback: () => os.hostname(),
     sendStatus: (status) => mainWindow?.webContents.send(IPC_CHANNELS.syncStateChanged, status),
     sendPairRequest: (event) => mainWindow?.webContents.send(IPC_CHANNELS.syncPairRequest, event),
+    sendPairRequestClosed: (event) =>
+      mainWindow?.webContents.send(IPC_CHANNELS.syncPairRequestClosed, event),
     log: (message) => console.log(`[sync] ${message}`),
   });
   updateService = new UpdateService({

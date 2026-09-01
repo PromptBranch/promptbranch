@@ -273,6 +273,36 @@ describe("SyncPairRequestDialog", () => {
       [{ requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57", accept: false }],
     ]);
   });
+
+  it("removes only the exact request cancelled by main and advances the queue", async () => {
+    const bridge = installMockBridge();
+    renderApp(<SyncPairRequestDialog />);
+    bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      fingerprint: "a".repeat(64),
+      fingerprintShort: "aaaaaaaaaa",
+      name: "Timed out Mac",
+    });
+    bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      fingerprint: "b".repeat(64),
+      fingerprintShort: "bbbbbbbbbb",
+      name: "Current Mac",
+    });
+
+    expect(await screen.findByText("Timed out Mac")).toBeInTheDocument();
+    bridge.emitSyncPairRequestClosed({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(await screen.findByText("Current Mac")).toBeInTheDocument();
+
+    // A stale duplicate completion must not consume the current request.
+    bridge.emitSyncPairRequestClosed({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(screen.getByText("Current Mac")).toBeInTheDocument();
+    expect(bridge.sync.respondPairing).not.toHaveBeenCalled();
+  });
 });
 
 describe("sync error toast", () => {

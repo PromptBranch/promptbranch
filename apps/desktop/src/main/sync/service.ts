@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { SyncEngine, type Database, type PromptLibrary } from "@promptbranch/core";
-import type { SyncPairRequestEvent, SyncStatusDto } from "../../shared/ipc.js";
+import type {
+  SyncPairRequestClosedEvent,
+  SyncPairRequestEvent,
+  SyncStatusDto,
+} from "../../shared/ipc.js";
 import type { Discovery } from "./discovery.js";
 import { createBonjourDiscovery } from "./discovery.js";
 import { fingerprintShort, loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
@@ -30,6 +34,7 @@ export interface DesktopSyncDeps {
   deviceNameFallback(): string;
   sendStatus(status: SyncStatusDto): void;
   sendPairRequest(event: SyncPairRequestEvent): void;
+  sendPairRequestClosed(event: SyncPairRequestClosedEvent): void;
   discoveryFactory?: () => Discovery;
   log?: (message: string) => void;
   now?: () => number;
@@ -121,7 +126,17 @@ export class DesktopSync {
       now: this.deps.now,
     });
     this.service = service;
-    await service.start();
+    try {
+      await service.start();
+    } catch (err) {
+      if (this.service === service) this.service = null;
+      try {
+        await service.stop();
+      } catch (stopErr) {
+        this.deps.log?.(`failed to clean up sync service after startup error: ${String(stopErr)}`);
+      }
+      throw err;
+    }
     if (this.service !== service) {
       await service.stop();
       return;
@@ -227,11 +242,7 @@ export class DesktopSync {
   }
 
   respondPairing(requestId: string, accept: boolean): void {
-    const pending = this.pendingConfirms.get(requestId);
-    if (!pending) return;
-    this.pendingConfirms.delete(requestId);
-    clearTimeout(pending.timeout);
-    pending.resolve(accept);
+    this.finishPendingConfirm(requestId, accept);
   }
 
   forgetDevice(fingerprint: string): Promise<SyncStatusDto> {
@@ -315,8 +326,7 @@ export class DesktopSync {
       let pending!: PendingConfirm;
       const timeout = setTimeout(() => {
         if (this.pendingConfirms.get(requestId) !== pending) return;
-        this.pendingConfirms.delete(requestId);
-        resolve(false);
+        this.finishPendingConfirm(requestId, false);
       }, CONFIRM_TIMEOUT_MS);
       timeout.unref?.();
       pending = { resolve, timeout };
@@ -331,12 +341,18 @@ export class DesktopSync {
   }
 
   private rejectPendingConfirms(): void {
-    const pending = [...this.pendingConfirms.values()];
-    this.pendingConfirms.clear();
-    for (const confirm of pending) {
-      clearTimeout(confirm.timeout);
-      confirm.resolve(false);
+    for (const requestId of [...this.pendingConfirms.keys()]) {
+      this.finishPendingConfirm(requestId, false);
     }
+  }
+
+  private finishPendingConfirm(requestId: string, accept: boolean): void {
+    const pending = this.pendingConfirms.get(requestId);
+    if (!pending) return;
+    this.pendingConfirms.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(accept);
+    this.deps.sendPairRequestClosed({ requestId });
   }
 
   /** Coalesces status pushes: at most one per 250ms, always the latest. */

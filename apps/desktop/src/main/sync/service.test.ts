@@ -27,6 +27,7 @@ interface Rig {
   sync: DesktopSync;
   statuses: SyncStatusDto[];
   pairRequests: SyncPairRequestEvent[];
+  pairRequestClosures: string[];
 }
 
 async function rig(
@@ -40,6 +41,7 @@ async function rig(
   const lib = new PromptLibrary(db);
   const statuses: SyncStatusDto[] = [];
   const pairRequests: SyncPairRequestEvent[] = [];
+  const pairRequestClosures: string[] = [];
   // The identity directory must be shared between minting and the service.
   const identityDir = tempDir();
   const identity = await loadOrCreateIdentity(identityDir);
@@ -50,11 +52,13 @@ async function rig(
     deviceNameFallback: () => name,
     sendStatus: (status) => statuses.push(status),
     sendPairRequest: (event) => pairRequests.push(event),
+    sendPairRequestClosed: (event: { requestId: string }) =>
+      pairRequestClosures.push(event.requestId),
     discoveryFactory,
     log: () => {},
   });
   syncs.push(sync);
-  return { lib, db, identity, sync, statuses, pairRequests };
+  return { lib, db, identity, sync, statuses, pairRequests, pairRequestClosures };
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -154,6 +158,24 @@ describe("DesktopSync coordinator", () => {
     expect(disabled.listening).toBe(false);
   });
 
+  it("retries startup after a discovery failure instead of retaining the failed service", async () => {
+    let starts = 0;
+    const { lib, sync } = await rig("Test Mac", () => ({
+      start: () => {
+        starts += 1;
+        if (starts === 1) throw new Error("bonjour unavailable");
+      },
+      stop: async () => {},
+    }));
+    lib.setSetting("sync.enabled", "1");
+
+    await expect(sync.ensureStarted()).rejects.toThrow("bonjour unavailable");
+    await sync.ensureStarted();
+
+    expect(starts).toBe(2);
+    expect(sync.status().listening).toBe(true);
+  });
+
   it("persists the device name and reports it", async () => {
     const { lib, sync } = await rig();
     await sync.setEnabled(true);
@@ -177,6 +199,7 @@ describe("DesktopSync coordinator", () => {
       deviceNameFallback: () => "Test Mac",
       sendStatus: (status) => statuses.push(status),
       sendPairRequest: () => {},
+      sendPairRequestClosed: () => {},
       discoveryFactory: () => ({ start: () => {}, stop: async () => {} }),
       log: () => {},
     });
@@ -290,7 +313,7 @@ describe("DesktopSync coordinator", () => {
   });
 
   it("does not let an old timeout or stale response consume a newer request", async () => {
-    const { sync, pairRequests } = await rig();
+    const { sync, pairRequests, pairRequestClosures } = await rig();
     vi.useFakeTimers();
     try {
       const fingerprint = "f".repeat(64);
@@ -302,11 +325,16 @@ describe("DesktopSync coordinator", () => {
 
       await vi.advanceTimersByTimeAsync(50_000);
       expect(await first).toBe(false);
+      expect(pairRequestClosures).toEqual([firstRequest.requestId]);
       sync.respondPairing(firstRequest.requestId, true);
       sync.respondPairing(secondRequest.requestId, true);
       await vi.advanceTimersByTimeAsync(10_000);
 
       expect(await second).toBe(true);
+      expect(pairRequestClosures).toEqual([
+        firstRequest.requestId,
+        secondRequest.requestId,
+      ]);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.clearAllTimers();
@@ -317,7 +345,7 @@ describe("DesktopSync coordinator", () => {
   it.each(["stop", "dispose"] as const)(
     "%s rejects pending confirmations and clears their timers",
     async (action) => {
-      const { sync } = await rig();
+      const { sync, pairRequests, pairRequestClosures } = await rig();
       vi.useFakeTimers();
       try {
         let outcome: boolean | undefined;
@@ -330,6 +358,7 @@ describe("DesktopSync coordinator", () => {
         await Promise.resolve();
 
         expect(outcome).toBe(false);
+        expect(pairRequestClosures).toEqual([pairRequests[0]!.requestId]);
         expect(vi.getTimerCount()).toBe(0);
       } finally {
         vi.clearAllTimers();

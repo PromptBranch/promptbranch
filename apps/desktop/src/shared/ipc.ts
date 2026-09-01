@@ -212,6 +212,10 @@ export const syncPairRequestEventSchema = z.object({
   name: z.string().min(1).max(100),
 });
 
+export const syncPairRequestClosedEventSchema = z.object({
+  requestId: syncPairRequestIdSchema,
+});
+
 export const syncPeerDtoSchema = z.object({
   fingerprint: fingerprintSchema,
   name: z.string().min(1).max(100),
@@ -911,6 +915,11 @@ export interface SyncPairRequestEvent {
   name: string;
 }
 
+/** Main → renderer: this exact pairing prompt is no longer actionable. */
+export interface SyncPairRequestClosedEvent {
+  requestId: string;
+}
+
 export interface SyncPairResult {
   ok: boolean;
   error?: string;
@@ -1028,6 +1037,8 @@ export interface PromptBuilderApi {
     onStateChanged(callback: (status: SyncStatusDto) => void): () => void;
     /** Main → renderer: a device is asking to pair; answer via respondPairing. */
     onPairRequest(callback: (event: SyncPairRequestEvent) => void): () => void;
+    /** Main → renderer: a request timed out, completed, or was cancelled. */
+    onPairRequestClosed(callback: (event: SyncPairRequestClosedEvent) => void): () => void;
   };
   ai: {
     providers: {

@@ -4,6 +4,7 @@ import {
   shareImportPreviewSchema,
   sharePortalSetSchema,
   shareScopeSchema,
+  syncPairRequestClosedEventSchema,
   syncPairRequestEventSchema,
   syncRespondPairingSchema,
   updateOpenDownloadSchema,
@@ -78,6 +79,7 @@ describe("sync pairing IPC schemas", () => {
       requestId,
       accept: true,
     });
+    expect(syncPairRequestClosedEventSchema.parse({ requestId })).toEqual({ requestId });
   });
 
   it("rejects legacy fingerprint-only events and responses", () => {
@@ -89,6 +91,7 @@ describe("sync pairing IPC schemas", () => {
       }).success,
     ).toBe(false);
     expect(syncRespondPairingSchema.safeParse({ fingerprint, accept: true }).success).toBe(false);
+    expect(syncPairRequestClosedEventSchema.safeParse({ fingerprint }).success).toBe(false);
   });
 });
 

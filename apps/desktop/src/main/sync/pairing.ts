@@ -59,10 +59,16 @@ export class PairingInitiator {
  */
 export class PairingAcceptor {
   private settled = false;
+  private cancelled = false;
+  private confirmation: AbortController | null = null;
 
   constructor(
     private readonly deps: {
-      confirmPairing(fingerprint: string, name: string): Promise<boolean>;
+      confirmPairing(
+        fingerprint: string,
+        name: string,
+        signal: AbortSignal,
+      ): Promise<boolean>;
       onPaired(name: string): void;
       onRejected(): void;
       log?: (message: string) => void;
@@ -81,14 +87,27 @@ export class PairingAcceptor {
     void this.settle(parsed.name, peerFingerprint);
   }
 
+  cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    this.settled = true;
+    this.confirmation?.abort();
+  }
+
   private async settle(name: string, fingerprint: string): Promise<void> {
+    const confirmation = new AbortController();
+    this.confirmation = confirmation;
     let accepted = false;
     try {
-      accepted = await this.deps.confirmPairing(fingerprint, name);
+      accepted = await this.deps.confirmPairing(fingerprint, name, confirmation.signal);
     } catch (err) {
-      this.deps.log?.(`pairing confirm failed: ${String(err)}`);
+      if (!confirmation.signal.aborted) {
+        this.deps.log?.(`pairing confirm failed: ${String(err)}`);
+      }
       accepted = false;
     }
+    if (this.confirmation === confirmation) this.confirmation = null;
+    if (this.cancelled || confirmation.signal.aborted) return;
     if (accepted) this.deps.onPaired(name);
     else this.deps.onRejected();
   }

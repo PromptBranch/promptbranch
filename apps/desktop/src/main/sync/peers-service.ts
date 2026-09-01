@@ -18,7 +18,7 @@ export interface PeerServiceDeps {
   identity: DeviceIdentity;
   deviceName(): string;
   /** UI gate for inbound pairing attempts. */
-  confirmPairing(fingerprint: string, name: string): Promise<boolean>;
+  confirmPairing(fingerprint: string, name: string, signal: AbortSignal): Promise<boolean>;
   onStatusChange(): void;
   discovery?: Discovery;
   listen?: { host?: string; port?: number };
@@ -67,7 +67,7 @@ const NEARBY_TTL_MS = 5 * 60 * 1000;
 export const UNHEALTHY_FAILURES = 3;
 
 type Phase =
-  | { kind: "pairing-in"; fingerprint: string }
+  | { kind: "pairing-in"; fingerprint: string; acceptor: PairingAcceptor }
   | { kind: "pairing-out"; fingerprint: string; initiator: PairingInitiator }
   | { kind: "sync"; fingerprint: string; session: SyncSession };
 
@@ -87,6 +87,11 @@ interface DialAttempt {
   endpoint: PeerEndpoint;
   state: { superseded: boolean };
   promise: Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+interface PendingPairing {
+  connection: Connection;
+  cancel(reason: string): void;
 }
 
 class Connection {
@@ -128,6 +133,7 @@ class Connection {
 
   private readonly onClose = (): void => {
     this.closing = true;
+    if (this.phase.kind === "pairing-in") this.phase.acceptor.cancel();
     this.detachHandlers();
     if (this.phase.kind === "sync") {
       this.phase.session.markClosed(this.failed ? "error" : "closed");
@@ -185,7 +191,7 @@ class Connection {
   private dispatch(message: unknown): void {
     if (this.closing) return;
     if (this.phase.kind === "pairing-in") {
-      this.service.feedPairingAcceptor(this.phase.fingerprint, message);
+      this.phase.acceptor.handleMessage(message, this.phase.fingerprint);
     } else if (this.phase.kind === "pairing-out") {
       this.phase.initiator.handleMessage(message);
     } else {
@@ -222,7 +228,8 @@ class Connection {
     // the stream must not reach pairing or sync after ownership is dropped.
     this.socket.off("data", this.onData);
     this.socket.off("end", this.onEnd);
-    if (this.phase.kind === "sync") this.phase.session.markClosed("closed");
+    if (this.phase.kind === "pairing-in") this.phase.acceptor.cancel();
+    else if (this.phase.kind === "sync") this.phase.session.markClosed("closed");
     this.socket.destroy();
     return this.closed;
   }
@@ -243,12 +250,13 @@ export class PeerService {
   private readonly connections = new Map<string, Connection>();
   private readonly inFlightDials = new Map<string, DialAttempt>();
   private readonly pendingSockets = new Set<PendingSocket>();
-  private readonly pendingPairings = new Map<string, (reason: string) => void>();
+  private readonly pendingPairings = new Map<string, PendingPairing>();
+  /** Reserves the first user action before TLS reveals the peer fingerprint. */
+  private readonly outboundPairingCodes = new Map<string, object>();
   private lifecycleState: LifecycleState = "new";
   private lifecycleGeneration = 0;
   private readonly peerInvalidations = new Map<string, number>();
   private pairingUntil = 0;
-  private readonly pairingAcceptors = new Map<string, PairingAcceptor>();
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private lastSyncedAt: string | null = null;
@@ -275,6 +283,7 @@ export class PeerService {
     this.lifecycleState = "starting";
     this.cancelPendingSockets("Sync networking restarted");
     this.cancelPendingPairings("Sync networking restarted");
+    this.outboundPairingCodes.clear();
     this.inFlightDials.clear();
     this.manualEndpointClaims.clear();
     this.discoveredEndpoints.clear();
@@ -348,6 +357,7 @@ export class PeerService {
     const connections = [...this.connections.values()];
     this.cancelPendingSockets("Sync networking stopped");
     this.cancelPendingPairings("Sync networking stopped");
+    this.outboundPairingCodes.clear();
     this.inFlightDials.clear();
     this.manualEndpointClaims.clear();
     this.discoveredEndpoints.clear();
@@ -359,7 +369,6 @@ export class PeerService {
     this.pingTimer = null;
     this.connections.clear();
     await Promise.all(connections.map((connection) => connection.close()));
-    this.pairingAcceptors.clear();
     const server = this.server;
     this.server = null;
     this.port = null;
@@ -385,8 +394,9 @@ export class PeerService {
     this.pairingUntil = 0;
     for (const [fingerprint, connection] of this.connections) {
       if (connection.phaseKind === "pairing-in") {
-        this.connections.delete(fingerprint);
-        this.pairingAcceptors.delete(fingerprint);
+        if (this.connections.get(fingerprint) === connection) {
+          this.connections.delete(fingerprint);
+        }
         void connection.close();
       }
     }
@@ -430,18 +440,38 @@ export class PeerService {
       }
     }
 
+    const reservation = {};
+    if (this.outboundPairingCodes.has(formattedCode)) {
+      return { ok: false, error: "Pairing with this device is already in progress" };
+    }
+    this.outboundPairingCodes.set(formattedCode, reservation);
+    const releaseReservation = () => {
+      if (this.outboundPairingCodes.get(formattedCode) === reservation) {
+        this.outboundPairingCodes.delete(formattedCode);
+      }
+    };
+
     if (!this.canAdopt(generation, true)) {
+      releaseReservation();
       return { ok: false, error: "Sync networking is stopped" };
     }
-    const connect = await this.connectSocket(address, port, null);
-    if (!connect.ok) return connect;
+    const connect = await this.connectSocket(address, port, null).catch((err: unknown) => {
+      releaseReservation();
+      throw err;
+    });
+    if (!connect.ok) {
+      releaseReservation();
+      return connect;
+    }
     const { socket, fingerprint } = connect;
     if (!this.canAdopt(generation, true)) {
       socket.destroy();
+      releaseReservation();
       return { ok: false, error: "Sync networking changed during connection" };
     }
     if (derivePairingCode(fingerprint) !== formattedCode) {
       socket.destroy();
+      releaseReservation();
       return { ok: false, error: "That code does not match this device" };
     }
 
@@ -455,21 +485,34 @@ export class PeerService {
         "outbound",
       );
       if (this.adoptConnection(connection, fingerprint, `${address}:${port}`)) session.start();
+      releaseReservation();
       return { ok: true };
+    }
+
+    if (this.connections.has(fingerprint)) {
+      socket.destroy();
+      releaseReservation();
+      return { ok: false, error: "Pairing with this device is already in progress" };
     }
 
     return new Promise((resolve) => {
       let settled = false;
       let connection: Connection;
+      let pending: PendingPairing;
       const finish = (result: { ok: true } | { ok: false; error: string }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.pendingPairings.delete(fingerprint);
+        if (this.pendingPairings.get(fingerprint) === pending) {
+          this.pendingPairings.delete(fingerprint);
+        }
+        releaseReservation();
         resolve(result);
       };
       const timer = setTimeout(() => {
-        this.connections.delete(fingerprint);
+        if (this.connections.get(fingerprint) === connection) {
+          this.connections.delete(fingerprint);
+        }
         void connection.close();
         finish({ ok: false, error: "Timed out waiting for the other device to accept" });
       }, this.deps.pairTimeoutMs ?? 60_000);
@@ -481,7 +524,8 @@ export class PeerService {
           if (
             !this.canAdopt(generation, true) ||
             connection.isClosing ||
-            this.connections.get(fingerprint) !== connection
+            this.connections.get(fingerprint) !== connection ||
+            this.pendingPairings.get(fingerprint) !== pending
           ) {
             void connection.close();
             finish({ ok: false, error: "Sync networking changed during pairing" });
@@ -513,13 +557,17 @@ export class PeerService {
         "outbound",
       );
       this.connections.set(fingerprint, connection);
-      this.pendingPairings.set(fingerprint, (reason) => {
-        if (this.connections.get(fingerprint) === connection) {
-          this.connections.delete(fingerprint);
-        }
-        void connection.close();
-        finish({ ok: false, error: reason });
-      });
+      pending = {
+        connection,
+        cancel: (reason) => {
+          if (this.connections.get(fingerprint) === connection) {
+            this.connections.delete(fingerprint);
+          }
+          void connection.close();
+          finish({ ok: false, error: reason });
+        },
+      };
+      this.pendingPairings.set(fingerprint, pending);
       initiator.start();
     });
   }
@@ -540,14 +588,12 @@ export class PeerService {
     for (const pending of [...this.pendingSockets]) {
       if (pending.expectedFingerprint === fingerprint) pending.cancel("Device forgotten");
     }
-    this.pendingPairings.get(fingerprint)?.("Device forgotten");
-    this.pendingPairings.delete(fingerprint);
+    this.pendingPairings.get(fingerprint)?.cancel("Device forgotten");
     const connection = this.connections.get(fingerprint);
     if (connection) {
       this.connections.delete(fingerprint);
       void connection.close();
     }
-    this.pairingAcceptors.delete(fingerprint);
     const timer = this.reconnectTimers.get(fingerprint);
     if (timer) {
       clearTimeout(timer);
@@ -687,11 +733,14 @@ export class PeerService {
       return;
     }
     if (this.pairingActive) {
+      if (this.connections.has(fingerprint)) {
+        socket.destroy();
+        return;
+      }
       let connection: Connection;
       const acceptor = new PairingAcceptor({
-        confirmPairing: (fp, name) => this.deps.confirmPairing(fp, name),
+        confirmPairing: (fp, name, signal) => this.deps.confirmPairing(fp, name, signal),
         onPaired: (name) => {
-          this.pairingAcceptors.delete(fingerprint);
           if (
             !this.canAdopt(generation, false) ||
             connection.isClosing ||
@@ -704,7 +753,6 @@ export class PeerService {
           connection.upgradeToSync(name);
         },
         onRejected: () => {
-          this.pairingAcceptors.delete(fingerprint);
           if (this.connections.get(fingerprint) !== connection) {
             void connection.close();
             return;
@@ -713,11 +761,10 @@ export class PeerService {
         },
         log: (message) => this.deps.log?.(`[pairing] ${message}`),
       });
-      this.pairingAcceptors.set(fingerprint, acceptor);
       connection = new Connection(
         socket,
         this,
-        { kind: "pairing-in", fingerprint },
+        { kind: "pairing-in", fingerprint, acceptor },
         "inbound",
       );
       this.connections.set(fingerprint, connection);
@@ -725,11 +772,6 @@ export class PeerService {
     }
     // Unknown peer with no pairing window open.
     socket.destroy();
-  }
-
-  feedPairingAcceptor(fingerprint: string, message: unknown): void {
-    const acceptor = this.pairingAcceptors.get(fingerprint);
-    acceptor?.handleMessage(message, fingerprint);
   }
 
   private connectSocket(
@@ -999,12 +1041,14 @@ export class PeerService {
     const fingerprint = connection.fingerprint;
     if (this.connections.get(fingerprint) !== connection) return;
     if (connection.phaseKind === "pairing-out") {
-      this.pendingPairings.get(fingerprint)?.("Connection closed during pairing");
+      const pending = this.pendingPairings.get(fingerprint);
+      if (pending?.connection === connection) {
+        pending.cancel("Connection closed during pairing");
+      }
       this.deps.onStatusChange();
       return;
     }
     this.connections.delete(fingerprint);
-    this.pairingAcceptors.delete(fingerprint);
     if (connection.failed) this.recordFailure(fingerprint);
     const peer = this.deps.engine.getSyncPeer(fingerprint);
     if (peer && !peer.forgotten_at) this.scheduleReconnect(fingerprint);
@@ -1100,8 +1144,7 @@ export class PeerService {
   }
 
   private cancelPendingPairings(reason: string): void {
-    for (const cancel of [...this.pendingPairings.values()]) cancel(reason);
-    this.pendingPairings.clear();
+    for (const pending of [...this.pendingPairings.values()]) pending.cancel(reason);
   }
 }
 

@@ -43,6 +43,8 @@ export interface DesktopSyncDeps {
 interface PendingConfirm {
   resolve(accept: boolean): void;
   timeout: NodeJS.Timeout;
+  signal: AbortSignal;
+  onAbort(): void;
 }
 
 export class DesktopSync {
@@ -118,7 +120,8 @@ export class DesktopSync {
       engine: this.engine,
       identity,
       deviceName: () => this.deviceName(),
-      confirmPairing: (fingerprint, name) => this.confirmPairing(fingerprint, name),
+      confirmPairing: (fingerprint, name, signal) =>
+        this.confirmPairing(fingerprint, name, signal),
       onStatusChange: () => this.scheduleEmit(),
       discovery: this.deps.discoveryFactory?.() ?? createBonjourDiscovery(),
       listen: { port: this.configuredListenPort() ?? 0 },
@@ -319,18 +322,32 @@ export class DesktopSync {
     };
   }
 
-  private confirmPairing(fingerprint: string, name: string): Promise<boolean> {
+  private confirmPairing(
+    fingerprint: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (signal.aborted) return Promise.resolve(false);
     // No window (headless start) → decline rather than hang the initiator.
     const requestId = randomUUID();
     return new Promise<boolean>((resolve) => {
       let pending!: PendingConfirm;
+      const onAbort = () => {
+        if (this.pendingConfirms.get(requestId) !== pending) return;
+        this.finishPendingConfirm(requestId, false);
+      };
       const timeout = setTimeout(() => {
         if (this.pendingConfirms.get(requestId) !== pending) return;
         this.finishPendingConfirm(requestId, false);
       }, CONFIRM_TIMEOUT_MS);
       timeout.unref?.();
-      pending = { resolve, timeout };
+      pending = { resolve, timeout, signal, onAbort };
       this.pendingConfirms.set(requestId, pending);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
       this.deps.sendPairRequest({
         requestId,
         fingerprint,
@@ -351,6 +368,7 @@ export class DesktopSync {
     if (!pending) return;
     this.pendingConfirms.delete(requestId);
     clearTimeout(pending.timeout);
+    pending.signal.removeEventListener("abort", pending.onAbort);
     pending.resolve(accept);
     this.deps.sendPairRequestClosed({ requestId });
   }

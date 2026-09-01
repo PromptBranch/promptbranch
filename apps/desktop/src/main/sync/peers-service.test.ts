@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/core";
 import { createBonjourDiscovery, type DiscoveredPeer, type Discovery } from "./discovery.js";
 import { encodeFrame } from "./frames.js";
-import { loadOrCreateIdentity } from "./identity.js";
+import { loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
 import { PeerService, type PeerServiceDeps } from "./peers-service.js";
 
 const dirs: string[] = [];
@@ -87,6 +87,21 @@ async function start(rig: ServiceRig): Promise<number> {
   const port = rig.service.status().port;
   expect(port).not.toBeNull();
   return port!;
+}
+
+async function connectWithIdentity(
+  port: number,
+  identity: DeviceIdentity,
+): Promise<tls.TLSSocket> {
+  const socket = tls.connect({
+    host: "127.0.0.1",
+    port,
+    key: identity.keyPem,
+    cert: identity.certPem,
+    rejectUnauthorized: false,
+  });
+  await once(socket, "secureConnect");
+  return socket;
 }
 
 function controlledTlsSocket(fingerprint: string): {
@@ -484,6 +499,185 @@ describe("peer service over real TLS (loopback)", () => {
     const statusA = a.service.status();
     expect(statusA.listening).toBe(true);
     expect(statusA.peers[0]?.state).toBe("steady");
+  });
+
+  it("keeps the first same-certificate inbound pairing as the only owner", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    let resolveConfirmation!: (accepted: boolean) => void;
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    const requests: Array<{ fingerprint: string; name: string }> = [];
+    const local = await rig("Local", {
+      confirmPairing: async (fingerprint, name) => {
+        requests.push({ fingerprint, name });
+        return confirmation;
+      },
+    });
+    const port = await start(local);
+    local.service.beginPairing();
+    const first = await connectWithIdentity(port, remoteIdentity);
+    let second: tls.TLSSocket | null = null;
+
+    try {
+      first.write(encodeFrame({ t: "pair-introduce", name: "First owner" }));
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+      second = await connectWithIdentity(port, remoteIdentity);
+      second.write(encodeFrame({ t: "pair-introduce", name: "Duplicate" }));
+      await vi.waitFor(() => expect(second?.destroyed).toBe(true));
+      expect(requests).toEqual([
+        { fingerprint: remoteIdentity.fingerprint, name: "First owner" },
+      ]);
+
+      resolveConfirmation(true);
+      await vi.waitFor(() => {
+        expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)?.name).toBe("First owner");
+      });
+      expect(first.destroyed).toBe(false);
+    } finally {
+      resolveConfirmation(false);
+      first.destroy();
+      second?.destroy();
+    }
+  });
+
+  it("aborts an inbound confirmation when its remote socket closes", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    let resolveConfirmation!: (accepted: boolean) => void;
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    const local = await rig("Local", {
+      confirmPairing: async (_fingerprint, _name, candidateSignal?: AbortSignal) => {
+        signal = candidateSignal;
+        return confirmation;
+      },
+    });
+    const port = await start(local);
+    local.service.beginPairing();
+    const remote = await connectWithIdentity(port, remoteIdentity);
+
+    remote.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    remote.destroy();
+    await once(remote, "close");
+
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    resolveConfirmation(true);
+    await Promise.resolve();
+    expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+  });
+
+  it.each(["cancel", "stop"] as const)(
+    "%s aborts the exact inbound confirmation immediately",
+    async (action) => {
+      const remoteIdentity = await loadOrCreateIdentity(tempDir());
+      let resolveConfirmation!: (accepted: boolean) => void;
+      const confirmation = new Promise<boolean>((resolve) => {
+        resolveConfirmation = resolve;
+      });
+      let signal: AbortSignal | undefined;
+      const local = await rig("Local", {
+        confirmPairing: async (_fingerprint, _name, candidateSignal?: AbortSignal) => {
+          signal = candidateSignal;
+          return confirmation;
+        },
+      });
+      const port = await start(local);
+      local.service.beginPairing();
+      const remote = await connectWithIdentity(port, remoteIdentity);
+
+      remote.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      if (action === "cancel") local.service.cancelPairing();
+      else await local.service.stop();
+
+      await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+      await vi.waitFor(() => expect(remote.destroyed).toBe(true));
+      resolveConfirmation(true);
+      await Promise.resolve();
+      expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+      remote.destroy();
+    },
+  );
+
+  it("keeps the first outbound pairing call when a duplicate connects faster", async () => {
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const attemptedHosts: string[] = [];
+    const acceptor = await rig("Acceptor");
+    const port = await start(acceptor);
+    const initiator = await rig("Initiator", {
+      connectTls: (options) => {
+        attemptedHosts.push(String(options.host));
+        if (options.host !== "first-pairing.invalid") return tls.connect(options);
+        return tls.connect({
+          ...options,
+          lookup: (_hostname, lookupOptions, callback) => {
+            markFirstStarted();
+            void firstGate.then(() => {
+              if (lookupOptions.all) {
+                callback(null, [{ address: "127.0.0.1", family: 4 }]);
+              } else {
+                callback(null, "127.0.0.1", 4);
+              }
+            });
+          },
+        });
+      },
+      handshakeTimeoutMs: 5_000,
+    });
+    await start(initiator);
+    const code = acceptor.service.beginPairing();
+    const first = initiator.service.pairWithCode("first-pairing.invalid", port, code);
+
+    try {
+      await firstStarted;
+      const duplicate = await initiator.service.pairWithCode("127.0.0.1", port, code);
+      expect(duplicate).toEqual({
+        ok: false,
+        error: "Pairing with this device is already in progress",
+      });
+      expect(attemptedHosts).toEqual(["first-pairing.invalid"]);
+
+      releaseFirst();
+      expect(await first).toEqual({ ok: true });
+      expect(acceptor.confirm.state.decisions).toHaveLength(1);
+    } finally {
+      releaseFirst();
+      await first;
+    }
+  });
+
+  it("releases outbound pairing ownership when the TLS connector throws", async () => {
+    const acceptor = await rig("Acceptor");
+    const port = await start(acceptor);
+    let attempts = 0;
+    const initiator = await rig("Initiator", {
+      connectTls: (options) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("connector failed");
+        return tls.connect(options);
+      },
+    });
+    await start(initiator);
+    const code = acceptor.service.beginPairing();
+
+    await expect(
+      initiator.service.pairWithCode("127.0.0.1", port, code),
+    ).rejects.toThrow("connector failed");
+    expect(
+      await initiator.service.pairWithCode("127.0.0.1", port, code),
+    ).toEqual({ ok: true });
+    expect(attempts).toBe(2);
   });
 
   it("rejects a mistyped pairing code without introducing itself", async () => {

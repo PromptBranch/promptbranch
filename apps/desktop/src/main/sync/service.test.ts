@@ -73,12 +73,17 @@ function requestConfirmation(
   sync: DesktopSync,
   fingerprint: string,
   name = "MacBook Pro",
+  signal = new AbortController().signal,
 ): Promise<boolean> {
   return (
     sync as unknown as {
-      confirmPairing(candidateFingerprint: string, candidateName: string): Promise<boolean>;
+      confirmPairing(
+        candidateFingerprint: string,
+        candidateName: string,
+        candidateSignal: AbortSignal,
+      ): Promise<boolean>;
     }
-  ).confirmPairing(fingerprint, name);
+  ).confirmPairing(fingerprint, name, signal);
 }
 
 async function hangingTlsServer(): Promise<{ port: number; sockets: Set<net.Socket> }> {
@@ -342,6 +347,30 @@ describe("DesktopSync coordinator", () => {
     }
   });
 
+  it("aborting one confirmation closes only its exact same-fingerprint request", async () => {
+    const { sync, pairRequests, pairRequestClosures } = await rig();
+    const fingerprint = "a".repeat(64);
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = requestConfirmation(sync, fingerprint, "First", firstController.signal);
+    const second = requestConfirmation(sync, fingerprint, "Second", secondController.signal);
+    let firstResult: boolean | undefined;
+    void first.then((accepted) => {
+      firstResult = accepted;
+    });
+
+    firstController.abort();
+    await vi.waitFor(() => expect(firstResult).toBe(false));
+    expect(pairRequestClosures).toEqual([pairRequests[0]!.requestId]);
+    sync.respondPairing(pairRequests[0]!.requestId, true);
+    sync.respondPairing(pairRequests[1]!.requestId, true);
+    expect(await second).toBe(true);
+    expect(pairRequestClosures).toEqual([
+      pairRequests[0]!.requestId,
+      pairRequests[1]!.requestId,
+    ]);
+  });
+
   it.each(["stop", "dispose"] as const)(
     "%s rejects pending confirmations and clears their timers",
     async (action) => {
@@ -504,6 +533,29 @@ describe("DesktopSync coordinator", () => {
     const statusA = a.sync.status();
     expect(statusA.peers.length).toBe(1);
     expect(statusA.peers[0]?.name).toBe("MacBook Pro");
+  });
+
+  it("rejects a same-device double submit without stealing the first pairing", async () => {
+    const a = await rig("Acceptor");
+    const b = await rig("Initiator");
+    await a.sync.setEnabled(true);
+    await b.sync.setEnabled(true);
+    const code = (await a.sync.beginPairing()).pairingCode!;
+
+    const first = b.sync.pairWithCode("127.0.0.1", listeningPort(a.sync), code);
+    await vi.waitFor(() => expect(a.pairRequests).toHaveLength(1));
+    const second = b.sync.pairWithCode("127.0.0.1", listeningPort(a.sync), code);
+    let secondResult: Awaited<typeof second> | undefined;
+    void second.then((result) => {
+      secondResult = result;
+    });
+
+    await vi.waitFor(() => expect(secondResult).toMatchObject({ ok: false }), { timeout: 750 });
+    expect(a.pairRequests).toHaveLength(1);
+    a.sync.respondPairing(a.pairRequests[0]!.requestId, true);
+    expect(await first).toEqual({ ok: true });
+    expect(a.sync.status().peers).toHaveLength(1);
+    expect(b.sync.status().peers).toHaveLength(1);
   });
 
   it("forgetting a device unpins it and drops its live connection", async () => {

@@ -228,6 +228,55 @@ describe("peer service over real TLS (loopback)", () => {
     }
   });
 
+  it("cancels an initial manual pairing socket when the service stops", async () => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.resume();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const client = await rig("Client", { handshakeTimeoutMs: 5_000 });
+    await start(client);
+
+    try {
+      const pairing = client.service.pairWithCode(
+        "127.0.0.1",
+        port,
+        remoteIdentity.pairingCode,
+      );
+      await vi.waitFor(() => expect(sockets.size).toBe(1));
+      await client.service.stop();
+      await vi.waitFor(() => expect(sockets.size).toBe(0));
+      const result = await Promise.race([
+        pairing,
+        new Promise<"still pending">((resolve) => setTimeout(() => resolve("still pending"), 250)),
+      ]);
+      expect(result).not.toBe("still pending");
+      expect(result).toMatchObject({ ok: false });
+      expect(client.engine.listSyncPeers()).toEqual([]);
+      expect(client.service.status().peers).toEqual([]);
+
+      expect(
+        await client.service.pairWithCode(
+          "127.0.0.1",
+          port,
+          remoteIdentity.pairingCode,
+        ),
+      ).toMatchObject({ ok: false });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(sockets.size).toBe(0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("keeps the secure socket guarded while handing it to a live connection", async () => {
     const serverIdentity = await loadOrCreateIdentity(tempDir());
     const serverState: { socket: tls.TLSSocket | null } = { socket: null };
@@ -438,6 +487,77 @@ describe("peer service over real TLS (loopback)", () => {
 
     await vi.waitFor(
       () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 5_000 },
+    );
+  });
+
+  it("persists a known manual endpoint and a fresh service redials it", async () => {
+    const oldRemote = await rig("Remote old", { startupReconnectDelayMs: 60_000 });
+    const oldPort = await start(oldRemote);
+    const local = await rig("Local", { startupReconnectDelayMs: 60_000 });
+    await start(local);
+    const replacementDb = openMemoryDatabase();
+    const replacementEngine = new SyncEngine(replacementDb);
+    replacementEngine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    const replacement = new PeerService({
+      engine: replacementEngine,
+      identity: oldRemote.service.deps.identity,
+      deviceName: () => "Remote replacement",
+      confirmPairing: async () => false,
+      onStatusChange: () => {},
+      listen: { host: "127.0.0.1", port: 0 },
+      startupReconnectDelayMs: 60_000,
+    });
+    services.push(replacement);
+    await replacement.start();
+    const replacementPort = replacement.status().port!;
+
+    local.engine.upsertSyncPeer({
+      fingerprint: oldRemote.service.deps.identity.fingerprint,
+      name: "Remote",
+      address: `127.0.0.1:${oldPort}`,
+    });
+    oldRemote.engine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    expect(
+      (await local.service.pairWithCode(
+        "127.0.0.1",
+        oldPort,
+        oldRemote.service.deps.identity.pairingCode,
+      )).ok,
+    ).toBe(true);
+    await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("steady"));
+
+    expect(
+      (await local.service.pairWithCode(
+        "127.0.0.1",
+        replacementPort,
+        oldRemote.service.deps.identity.pairingCode,
+      )).ok,
+    ).toBe(true);
+    expect(local.engine.getSyncPeer(oldRemote.service.deps.identity.fingerprint)?.address)
+      .toBe(`127.0.0.1:${replacementPort}`);
+
+    await local.service.stop();
+    await oldRemote.service.stop();
+    const fresh = new PeerService({
+      engine: local.engine,
+      identity: local.service.deps.identity,
+      deviceName: () => "Local fresh",
+      confirmPairing: async () => false,
+      onStatusChange: () => {},
+      listen: { host: "127.0.0.1", port: 0 },
+      startupReconnectDelayMs: 25,
+    });
+    services.push(fresh);
+    await fresh.start();
+    await vi.waitFor(
+      () => expect(fresh.status().peers[0]?.state).toBe("steady"),
       { timeout: 5_000 },
     );
   });

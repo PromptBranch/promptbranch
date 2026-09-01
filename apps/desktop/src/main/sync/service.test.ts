@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary } from "@promptbranch/core";
 import type { SyncPairRequestEvent, SyncStatusDto } from "../../shared/ipc.js";
-import { loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
+import { derivePairingCode, loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
 import { DesktopSync } from "./service.js";
 
 const dirs: string[] = [];
 const syncs: DesktopSync[] = [];
+const hangingServers: Array<{ server: net.Server; sockets: Set<net.Socket> }> = [];
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "pb-sync-desktop-"));
@@ -52,6 +53,32 @@ async function rig(name = "Test Mac"): Promise<Rig> {
   return { lib, db, identity, sync, statuses, pairRequests };
 }
 
+async function hangingTlsServer(): Promise<{ port: number; sockets: Set<net.Socket> }> {
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    socket.resume();
+  });
+  hangingServers.push({ server, sockets });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address !== null ? address.port : 0,
+    sockets,
+  };
+}
+
+async function pendingKnownDial(sync: DesktopSync, port: number, fingerprint: string) {
+  sync.engine.upsertSyncPeer({
+    fingerprint,
+    name: "Delayed peer",
+    address: `127.0.0.1:${port}`,
+  });
+  return sync.pairWithCode("127.0.0.1", port, derivePairingCode(fingerprint));
+}
+
 /** Tests reach the visible listener port for loopback pairing. */
 function listeningPort(sync: DesktopSync): number {
   const status = sync.status();
@@ -63,6 +90,13 @@ function listeningPort(sync: DesktopSync): number {
 
 afterEach(async () => {
   for (const sync of syncs.splice(0)) await sync.stop();
+  for (const { server, sockets } of hangingServers.splice(0)) {
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) {
+      server.close();
+      await once(server, "close");
+    }
+  }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -165,6 +199,82 @@ describe("DesktopSync coordinator", () => {
       blocker.close();
       await once(blocker, "close");
     }
+  });
+
+  it("cancels a pending known-peer dial when sync is disabled", async () => {
+    const { sync } = await rig();
+    await sync.setEnabled(true);
+    const delayed = await hangingTlsServer();
+    const fingerprint = "b".repeat(64);
+    const pending = pendingKnownDial(sync, delayed.port, fingerprint);
+    await vi.waitFor(() => expect(delayed.sockets.size).toBe(1));
+    const originalSocket = [...delayed.sockets][0]!;
+
+    const status = await sync.setEnabled(false);
+    expect(status.enabled).toBe(false);
+    expect(status.listening).toBe(false);
+    await vi.waitFor(() => expect(originalSocket.destroyed).toBe(true));
+    const result = await Promise.race([
+      pending,
+      new Promise<"still pending">((resolve) => setTimeout(() => resolve("still pending"), 250)),
+    ]);
+    expect(result).not.toBe("still pending");
+    expect(result).toMatchObject({ ok: false });
+    expect(sync.engine.getSyncPeer(fingerprint)?.forgotten_at).toBeNull();
+    expect(delayed.sockets.size).toBe(0);
+  });
+
+  it("cancels a pending known-peer dial before restarting on a new port", async () => {
+    const { sync } = await rig();
+    await sync.setEnabled(true);
+    const delayed = await hangingTlsServer();
+    const fingerprint = "c".repeat(64);
+    const pending = pendingKnownDial(sync, delayed.port, fingerprint);
+    await vi.waitFor(() => expect(delayed.sockets.size).toBe(1));
+    const originalSocket = [...delayed.sockets][0]!;
+    const probe = net.createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    probe.close();
+    await once(probe, "close");
+
+    const status = await sync.setListenPort(port);
+    expect(status.listening).toBe(true);
+    expect(status.listenPort).toBe(port);
+    await vi.waitFor(() => expect(originalSocket.destroyed).toBe(true));
+    const result = await Promise.race([
+      pending,
+      new Promise<"still pending">((resolve) => setTimeout(() => resolve("still pending"), 250)),
+    ]);
+    expect(result).not.toBe("still pending");
+    expect(result).toMatchObject({ ok: false });
+    expect(sync.status().peers[0]?.state).toBe("offline");
+  });
+
+  it("cancels a pending dial before forgetting the peer", async () => {
+    const { sync } = await rig();
+    await sync.setEnabled(true);
+    const delayed = await hangingTlsServer();
+    const fingerprint = "d".repeat(64);
+    const pending = pendingKnownDial(sync, delayed.port, fingerprint);
+    await vi.waitFor(() => expect(delayed.sockets.size).toBe(1));
+
+    const status = await sync.forgetDevice(fingerprint);
+    expect(status.peers).toEqual([]);
+    await vi.waitFor(() => expect(delayed.sockets.size).toBe(0));
+    const result = await Promise.race([
+      pending,
+      new Promise<"still pending">((resolve) => setTimeout(() => resolve("still pending"), 250)),
+    ]);
+    expect(result).not.toBe("still pending");
+    expect(result).toMatchObject({ ok: false });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(sync.engine.getSyncPeer(fingerprint)?.forgotten_at).not.toBeNull();
+    expect(sync.status().peers).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(delayed.sockets.size).toBe(0);
   });
 
   it("the background drain refines dirty rows even while sync is disabled", async () => {

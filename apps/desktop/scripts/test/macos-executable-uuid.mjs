@@ -251,8 +251,9 @@ test("validates every slice before writing any UUID", async () => {
   assert.deepEqual(await readFile(fixture.executablePath), executable);
 });
 
-function afterPackContext(appOutDir, electronPlatformName) {
+function afterPackContext(appOutDir, electronPlatformName, arch) {
   return {
+    arch,
     appOutDir,
     electronPlatformName,
     packager: {
@@ -260,6 +261,20 @@ function afterPackContext(appOutDir, electronPlatformName) {
       appInfo: { productFilename: "PromptBranch" },
     },
   };
+}
+
+async function macAppFixture(appOutDir, executable, asar = "promptbranch fixture\n") {
+  const contents = join(appOutDir, "PromptBranch.app", "Contents");
+  const executablePath = join(contents, "MacOS", "PromptBranch");
+  await Promise.all([
+    mkdir(join(contents, "MacOS"), { recursive: true }),
+    mkdir(join(contents, "Resources"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(executablePath, executable),
+    writeFile(join(contents, "Resources", "app.asar"), asar),
+  ]);
+  return executablePath;
 }
 
 test("composite hook preserves the Linux launcher and skips UUID correction", async () => {
@@ -308,4 +323,61 @@ test("composite hook changes only the outer macOS executable", async () => {
 
   assert.notDeepEqual(await readFile(executablePath), outer);
   assert.deepEqual(await readFile(helperPath), helper);
+});
+
+test("universal packaging transforms only the final merged executable once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "promptbranch-after-pack-universal-"));
+  tempDirectories.push(root);
+  const finalAppOutDir = join(root, "mac-universal");
+  const x64TempDir = `${finalAppOutDir}-x64-temp`;
+  const arm64TempDir = `${finalAppOutDir}-arm64-temp`;
+  const x64Original = thinMachO({
+    arch: "x64",
+    uuid: "00112233445566778899aabbccddeeff",
+  });
+  const arm64Original = thinMachO({
+    arch: "arm64",
+    uuid: "ffeeddccbbaa99887766554433221100",
+  });
+  const x64TempExecutable = await macAppFixture(x64TempDir, x64Original);
+  const arm64TempExecutable = await macAppFixture(arm64TempDir, arm64Original);
+
+  await afterPack(afterPackContext(x64TempDir, "darwin", 1));
+  await afterPack(afterPackContext(arm64TempDir, "darwin", 3));
+
+  const x64ForMerge = await readFile(x64TempExecutable);
+  const arm64ForMerge = await readFile(arm64TempExecutable);
+  const mergedExecutable = fatMachO([
+    { arch: "x64", buffer: x64ForMerge },
+    { arch: "arm64", buffer: arm64ForMerge },
+  ]);
+  const finalExecutable = await macAppFixture(finalAppOutDir, mergedExecutable);
+  await afterPack(afterPackContext(finalAppOutDir, "darwin", 4));
+
+  assert.deepEqual(x64ForMerge, x64Original);
+  assert.deepEqual(arm64ForMerge, arm64Original);
+  assert.deepEqual(readMachOUuids(await readFile(finalExecutable)), [
+    { architecture: "x64", uuid: "2DF99D2A-7110-FECC-FDC7-E778B04E022B" },
+    { architecture: "arm64", uuid: "88D65D76-EA90-1C27-7D17-A7F210D9AFE4" },
+  ]);
+});
+
+test("standalone thin x64 and arm64 packaging still transforms each executable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "promptbranch-after-pack-thin-"));
+  tempDirectories.push(root);
+
+  for (const [architecture, arch, directory] of [
+    ["x64", 1, "mac"],
+    ["arm64", 3, "mac-arm64"],
+  ]) {
+    const appOutDir = join(root, directory);
+    const executablePath = await macAppFixture(
+      appOutDir,
+      thinMachO({ arch: architecture }),
+    );
+    await afterPack(afterPackContext(appOutDir, "darwin", arch));
+    assert.deepEqual(readMachOUuids(await readFile(executablePath)), [
+      { architecture, uuid: "2DF99D2A-7110-FECC-FDC7-E778B04E022B" },
+    ]);
+  }
 });

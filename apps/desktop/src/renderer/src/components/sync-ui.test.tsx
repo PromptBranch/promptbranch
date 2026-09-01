@@ -14,6 +14,8 @@ function status(partial: Partial<SyncStatusDto>): SyncStatusDto {
   return {
     enabled: true,
     listening: true,
+    listenPort: 52_100,
+    listenError: null,
     deviceName: "Test Mac",
     fingerprintShort: "a1b2c3d4e5",
     pairingActive: false,
@@ -70,6 +72,8 @@ describe("SyncSection", () => {
     expect(await screen.findByLabelText("Device name")).toHaveValue("Mac Studio");
     expect(screen.getByText("MacBook Pro")).toBeInTheDocument();
     expect(screen.getByText("PromptBranch Mac mini")).toBeInTheDocument();
+    expect(screen.getByLabelText("Listening port")).toHaveValue("52100");
+    expect(screen.getByText("Listening on port 52100")).toBeInTheDocument();
 
     // Typing a code and pressing Pair on the nearby device calls the bridge.
     await userEvent.type(screen.getByLabelText("Pairing code"), "ABCD-2345");
@@ -79,6 +83,37 @@ describe("SyncSection", () => {
       port: 52100,
       code: "ABCD-2345",
     });
+  });
+
+  it("validates and saves a non-privileged listening port", async () => {
+    const bridge = installMockBridge();
+    bridge.sync.getStatus.mockResolvedValue(status({ listenPort: 52_100 }));
+    renderApp(<SyncSection />);
+
+    const input = await screen.findByLabelText("Listening port");
+    await userEvent.clear(input);
+    await userEvent.type(input, "80");
+    expect(screen.getByRole("button", { name: "Save port" })).toBeDisabled();
+    expect(screen.getByText("Use a port from 1024 to 65535.")).toBeInTheDocument();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "53000");
+    await userEvent.click(screen.getByRole("button", { name: "Save port" }));
+    expect(bridge.sync.setListenPort).toHaveBeenCalledWith(53_000);
+  });
+
+  it("shows an actionable listener error without hiding the configured port", async () => {
+    const bridge = installMockBridge();
+    bridge.sync.getStatus.mockResolvedValue(
+      status({
+        listening: false,
+        listenPort: 53_000,
+        listenError: "Port 53000 is already in use. Choose another port.",
+      }),
+    );
+    renderApp(<SyncSection />);
+    expect(await screen.findByLabelText("Listening port")).toHaveValue("53000");
+    expect(screen.getByText("Port 53000 is already in use. Choose another port.")).toBeInTheDocument();
   });
 
   it("opens the pairing window and shows the code", async () => {
@@ -180,26 +215,93 @@ describe("SyncPairRequestDialog", () => {
     const bridge = installMockBridge();
     renderApp(<SyncPairRequestDialog />);
     bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
       fingerprint: "b".repeat(64),
       fingerprintShort: "bbbb111111",
       name: "MacBook Pro",
     });
     expect(await screen.findByText("Pair with this device?")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Accept" }));
-    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({ fingerprint: "b".repeat(64), accept: true });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      accept: true,
+    });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledTimes(1);
   });
 
   it("declines via the overlay close path", async () => {
     const bridge = installMockBridge();
     renderApp(<SyncPairRequestDialog />);
     bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
       fingerprint: "b".repeat(64),
       fingerprintShort: "bbbb111111",
       name: "MacBook Pro",
     });
     await screen.findByText("Pair with this device?");
     await userEvent.click(screen.getByRole("button", { name: "Decline" }));
-    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({ fingerprint: "b".repeat(64), accept: false });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      accept: false,
+    });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues concurrent pairing requests and answers each exact request", async () => {
+    const bridge = installMockBridge();
+    renderApp(<SyncPairRequestDialog />);
+    bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      fingerprint: "a".repeat(64),
+      fingerprintShort: "aaaaaaaaaa",
+      name: "Mac Studio",
+    });
+    bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      fingerprint: "b".repeat(64),
+      fingerprintShort: "bbbbbbbbbb",
+      name: "MacBook Pro",
+    });
+
+    expect(await screen.findByText("Mac Studio")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("MacBook Pro")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Decline" }));
+
+    expect(bridge.sync.respondPairing.mock.calls).toEqual([
+      [{ requestId: "550e8400-e29b-41d4-a716-446655440000", accept: true }],
+      [{ requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57", accept: false }],
+    ]);
+  });
+
+  it("removes only the exact request cancelled by main and advances the queue", async () => {
+    const bridge = installMockBridge();
+    renderApp(<SyncPairRequestDialog />);
+    bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      fingerprint: "a".repeat(64),
+      fingerprintShort: "aaaaaaaaaa",
+      name: "Timed out Mac",
+    });
+    bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      fingerprint: "b".repeat(64),
+      fingerprintShort: "bbbbbbbbbb",
+      name: "Current Mac",
+    });
+
+    expect(await screen.findByText("Timed out Mac")).toBeInTheDocument();
+    bridge.emitSyncPairRequestClosed({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(await screen.findByText("Current Mac")).toBeInTheDocument();
+
+    // A stale duplicate completion must not consume the current request.
+    bridge.emitSyncPairRequestClosed({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(screen.getByText("Current Mac")).toBeInTheDocument();
+    expect(bridge.sync.respondPairing).not.toHaveBeenCalled();
   });
 });
 

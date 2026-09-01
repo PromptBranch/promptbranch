@@ -13,7 +13,11 @@ when paired devices can reach each other.
 3. On the other device, enter that code under **Add a device** and select the
    nearby device.
 4. If the devices are connected through a VPN or do not appear nearby, use
-   **Pair by address** and enter the other device's address and port.
+   **Pair by address** and enter the other device's address and listening port.
+
+PromptBranch chooses a listening port the first time sync starts and keeps
+using it. You can see or change it under **Settings → Sync → This device**.
+Changing the port restarts sync networking; use a port from 1024 to 65535.
 
 Each pairing code confirms the other device's identity. After pairing,
 PromptBranch connects only to that saved device unless you choose to forget it.
@@ -45,3 +49,9 @@ automatic reconnection; pair it again if you want to restore access.
 - Check that both devices can reach each other on the same network or VPN.
 - On macOS, check that PromptBranch has Local Network permission.
 - Use **Pair by address** when network discovery is unavailable.
+- If a firewall is enabled, allow PromptBranch to accept incoming connections
+  on the listening port shown in **Settings → Sync**. Firewall controls vary by
+  operating system and network; allow only the private networks or VPNs you
+  trust.
+- If PromptBranch says the port is unavailable, choose another port in
+  **Settings → Sync** and use that new port for manual pairing.

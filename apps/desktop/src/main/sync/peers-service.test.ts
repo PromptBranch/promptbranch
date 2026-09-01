@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import tls from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/core";
 import type { DiscoveredPeer, Discovery } from "./discovery.js";
@@ -84,6 +85,9 @@ describe("peer service over real TLS (loopback)", () => {
     const handshakeTimeoutMs = 60;
     const transitionsA: string[] = [];
     const transitionsB: string[] = [];
+    let outbound!: tls.TLSSocket;
+    let baseErrorListeners = 0;
+    let baseCloseListeners = 0;
     let a!: ServiceRig;
     let b!: ServiceRig;
     a = await rig("A", {
@@ -92,6 +96,12 @@ describe("peer service over real TLS (loopback)", () => {
     });
     b = await rig("B", {
       handshakeTimeoutMs,
+      connectTls: (options) => {
+        outbound = tls.connect(options);
+        baseErrorListeners = outbound.listenerCount("error");
+        baseCloseListeners = outbound.listenerCount("close");
+        return outbound;
+      },
       onStatusChange: () => transitionsB.push(b.service.status().peers[0]?.state ?? "none"),
     });
     const portA = await start(a);
@@ -103,6 +113,11 @@ describe("peer service over real TLS (loopback)", () => {
       expect(a.service.status().peers[0]?.state).toBe("steady");
       expect(b.service.status().peers[0]?.state).toBe("steady");
     });
+    expect(outbound.timeout).toBe(0);
+    expect(outbound.listenerCount("timeout")).toBe(0);
+    expect(outbound.listenerCount("secureConnect")).toBe(0);
+    expect(outbound.listenerCount("error")).toBe(baseErrorListeners + 1);
+    expect(outbound.listenerCount("close")).toBe(baseCloseListeners + 1);
 
     transitionsA.length = 0;
     transitionsB.length = 0;
@@ -123,6 +138,7 @@ describe("peer service over real TLS (loopback)", () => {
     const server = net.createServer((socket) => {
       sockets.add(socket);
       socket.once("close", () => sockets.delete(socket));
+      socket.resume();
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -146,9 +162,88 @@ describe("peer service over real TLS (loopback)", () => {
       ]);
       expect(result).toEqual({ ok: false, error: "Connection timed out" });
       expect(Date.now() - startedAt).toBeLessThan(750);
+      await vi.waitFor(() => expect(sockets.size).toBe(0));
     } finally {
       if (testDeadline) clearTimeout(testDeadline);
       for (const socket of sockets) socket.destroy();
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("keeps the secure socket guarded while handing it to a live connection", async () => {
+    const serverIdentity = await loadOrCreateIdentity(tempDir());
+    const serverState: { socket: tls.TLSSocket | null } = { socket: null };
+    const server = tls.createServer(
+      {
+        key: serverIdentity.keyPem,
+        cert: serverIdentity.certPem,
+        requestCert: false,
+        rejectUnauthorized: false,
+      },
+      (socket) => {
+        serverState.socket = socket;
+        socket.on("error", () => {});
+        socket.resume();
+        setImmediate(() => socket.destroy());
+      },
+    );
+    server.on("tlsClientError", () => {});
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    expect(address).not.toBeNull();
+    expect(typeof address).toBe("object");
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown) => uncaught.push(error);
+    process.prependListener("uncaughtException", onUncaught);
+    let resolveHandoff!: (guarded: boolean) => void;
+    const handoff = new Promise<boolean>((resolve) => {
+      resolveHandoff = resolve;
+    });
+    const outboundState: { socket: tls.TLSSocket | null } = { socket: null };
+    const client = await rig("Client", {
+      connectTls: (options) => {
+        const socket = tls.connect(options);
+        outboundState.socket = socket;
+        socket.once("secureConnect", () => {
+          queueMicrotask(() => {
+            const guarded =
+              socket.listenerCount("error") > 0 && socket.listenerCount("close") > 0;
+            resolveHandoff(guarded);
+          });
+        });
+        return socket;
+      },
+    });
+    client.engine.upsertSyncPeer({ fingerprint: serverIdentity.fingerprint, name: "Aborter" });
+    let handoffDeadline: NodeJS.Timeout | null = null;
+
+    try {
+      expect(
+        (await client.service.pairWithCode(
+          "127.0.0.1",
+          port,
+          serverIdentity.pairingCode,
+        )).ok,
+      ).toBe(true);
+      expect(
+        await Promise.race([
+          handoff,
+          new Promise<boolean>((resolve) => {
+            handoffDeadline = setTimeout(() => resolve(false), 750);
+          }),
+        ]),
+      ).toBe(true);
+      await vi.waitFor(() => expect(client.service.status().peers[0]?.state).toBe("offline"));
+      expect(outboundState.socket?.destroyed).toBe(true);
+      expect(uncaught).toEqual([]);
+    } finally {
+      if (handoffDeadline) clearTimeout(handoffDeadline);
+      process.off("uncaughtException", onUncaught);
+      serverState.socket?.destroy();
       server.close();
       await once(server, "close");
     }

@@ -26,6 +26,8 @@ export interface PeerServiceDeps {
   pairTimeoutMs?: number;
   /** How long an outbound socket may take to complete its TLS handshake. */
   handshakeTimeoutMs?: number;
+  /** Injectable outbound TLS connector for lifecycle observation. */
+  connectTls?: (options: tls.ConnectionOptions) => tls.TLSSocket;
   log?: (message: string) => void;
   now?: () => number;
 }
@@ -493,13 +495,14 @@ export class PeerService {
     expectedFingerprint: string | null,
   ): Promise<{ ok: true; socket: tls.TLSSocket; fingerprint: string } | { ok: false; error: string }> {
     return new Promise((resolve) => {
-      const socket = tls.connect({
+      const options: tls.ConnectionOptions = {
         host: address,
         port,
         key: this.deps.identity.keyPem,
         cert: this.deps.identity.certPem,
         rejectUnauthorized: false,
-      });
+      };
+      const socket = this.deps.connectTls ? this.deps.connectTls(options) : tls.connect(options);
       let settled = false;
       let timer: NodeJS.Timeout | null = null;
       const cleanup = () => {
@@ -515,9 +518,20 @@ export class PeerService {
       ) => {
         if (settled) return;
         settled = true;
-        cleanup();
-        if (!result.ok) socket.destroy();
-        resolve(result);
+        if (result.ok) {
+          if (timer) clearTimeout(timer);
+          socket.setTimeout(0);
+          socket.off("secureConnect", onSecureConnect);
+          resolve(result);
+          // Resolving queues the awaiting caller before this cleanup. Both
+          // connectSocket callers install Connection's durable error/close
+          // handlers synchronously, so the socket is never left unguarded.
+          queueMicrotask(cleanup);
+        } else {
+          cleanup();
+          socket.destroy();
+          resolve(result);
+        }
       };
       const fail = (error: string) => {
         finish({ ok: false, error });

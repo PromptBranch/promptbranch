@@ -30,6 +30,10 @@ export interface PeerServiceDeps {
   connectTls?: (options: tls.ConnectionOptions) => tls.TLSSocket;
   /** Short grace for Bonjour to provide a fresher endpoint before saved-endpoint redial. */
   startupReconnectDelayMs?: number;
+  /** Injectable heartbeat cadence for deterministic liveness tests. */
+  pingIntervalMs?: number;
+  /** Maximum inbound silence after TLS before a sync connection is retired. */
+  livenessTimeoutMs?: number;
   log?: (message: string) => void;
   now?: () => number;
 }
@@ -63,6 +67,8 @@ export interface SyncServiceStatus {
 const PAIRING_WINDOW_MS = 10 * 60 * 1000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
 const NEARBY_TTL_MS = 5 * 60 * 1000;
+const PING_INTERVAL_MS = 30_000;
+const LIVENESS_TIMEOUT_MS = 180_000;
 /** Consecutive failed sessions/dials before a peer shows as unhealthy. */
 export const UNHEALTHY_FAILURES = 3;
 
@@ -100,6 +106,7 @@ class Connection {
   private closing = false;
   private readonly closed: Promise<void>;
   private resolveClosed: (() => void) | null = null;
+  private lastInboundAt: number;
   /** The socket or session faulted — counts toward peer unhealthiness. */
   failed = false;
 
@@ -110,6 +117,7 @@ class Connection {
     readonly direction: "inbound" | "outbound",
   ) {
     this.phase = phase;
+    this.lastInboundAt = service.currentTime();
     this.closed = new Promise((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -122,6 +130,7 @@ class Connection {
 
   private readonly onData = (chunk: Buffer): void => {
     if (this.closing) return;
+    this.lastInboundAt = this.service.currentTime();
     try {
       this.reader(chunk);
     } catch (err) {
@@ -203,6 +212,7 @@ class Connection {
   upgradeToSync(peerName: string | null): boolean {
     if (this.closing) return false;
     const fingerprint = this.phase.fingerprint;
+    this.lastInboundAt = this.service.currentTime();
     if (peerName) {
       this.service.deps.engine.upsertSyncPeer({ fingerprint, name: peerName });
     }
@@ -219,6 +229,22 @@ class Connection {
 
   ping(): void {
     if (!this.closing && this.phase.kind === "sync") this.phase.session.sendPing();
+  }
+
+  grantLivenessGrace(now: number): void {
+    if (!this.closing) this.lastInboundAt = now;
+  }
+
+  retireIfSilent(now: number, timeoutMs: number): void {
+    if (
+      this.closing ||
+      this.phase.kind !== "sync" ||
+      now - this.lastInboundAt < timeoutMs
+    ) {
+      return;
+    }
+    this.failed = true;
+    void this.close();
   }
 
   close(): Promise<void> {
@@ -261,6 +287,7 @@ export class PeerService {
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private lastSyncedAt: string | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
+  private lastLivenessSweepAt: number | null = null;
   private startupReconnectTimer: NodeJS.Timeout | null = null;
   private readonly nearby = new Map<string, { name: string; address: string; port: number; seenAt: number }>();
   /** Unverified mDNS routes; promoted only after pinned TLS succeeds. */
@@ -343,9 +370,11 @@ export class PeerService {
       }
     }, this.deps.startupReconnectDelayMs ?? 500);
     this.startupReconnectTimer.unref?.();
-    this.pingTimer = setInterval(() => {
-      for (const connection of this.connections.values()) connection.ping();
-    }, 30_000);
+    this.lastLivenessSweepAt = this.now();
+    this.pingTimer = setInterval(
+      () => this.sweepLiveness(),
+      this.deps.pingIntervalMs ?? PING_INTERVAL_MS,
+    );
     this.pingTimer.unref?.();
     this.deps.onStatusChange();
   }
@@ -367,6 +396,7 @@ export class PeerService {
     this.startupReconnectTimer = null;
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    this.lastLivenessSweepAt = null;
     this.connections.clear();
     await Promise.all(connections.map((connection) => connection.close()));
     const server = this.server;
@@ -673,6 +703,25 @@ export class PeerService {
       },
       log: (message) => this.deps.log?.(`[session ${fingerprint.slice(0, 6)}] ${message}`),
     });
+  }
+
+  currentTime(): number {
+    return this.now();
+  }
+
+  private sweepLiveness(): void {
+    if (this.lifecycleState !== "active") return;
+    const now = this.now();
+    const timeoutMs = this.deps.livenessTimeoutMs ?? LIVENESS_TIMEOUT_MS;
+    const previous = this.lastLivenessSweepAt;
+    this.lastLivenessSweepAt = now;
+    const schedulerGap = previous === null ? 0 : now - previous;
+    const grantGrace = schedulerGap < 0 || schedulerGap >= timeoutMs;
+    for (const connection of this.connections.values()) {
+      if (grantGrace) connection.grantLivenessGrace(now);
+      else connection.retireIfSilent(now, timeoutMs);
+      connection.ping();
+    }
   }
 
   private adoptConnection(connection: Connection, fingerprint: string, address?: string): boolean {

@@ -106,12 +106,15 @@ async function connectWithIdentity(
 
 function controlledTlsSocket(fingerprint: string): {
   socket: tls.TLSSocket;
+  writes: Buffer[];
   establish(): void;
   inject(frame: Buffer): void;
 } {
+  const writes: Buffer[] = [];
   const duplex = new Duplex({
     read() {},
-    write(_chunk, _encoding, callback) {
+    write(chunk, _encoding, callback) {
+      writes.push(Buffer.from(chunk));
       callback();
     },
   });
@@ -123,11 +126,74 @@ function controlledTlsSocket(fingerprint: string): {
   })) as tls.TLSSocket["getPeerCertificate"];
   return {
     socket,
+    writes,
     establish: () => queueMicrotask(() => socket.emit("secureConnect")),
     // Emit directly so this also models a data event already queued when
     // shutdown begins, including after destroy() marks the stream unusable.
     inject: (frame) => socket.emit("data", frame),
   };
+}
+
+interface ControlledLivenessRig {
+  local: ServiceRig;
+  remoteIdentity: DeviceIdentity;
+  sockets: Array<ReturnType<typeof controlledTlsSocket>>;
+  clock: { value: number };
+}
+
+async function controlledLivenessRig(
+  options: { productionTimings?: boolean; steady?: boolean } = {},
+): Promise<ControlledLivenessRig> {
+  const remoteIdentity = await loadOrCreateIdentity(tempDir());
+  const sockets: Array<ReturnType<typeof controlledTlsSocket>> = [];
+  const clock = { value: 0 };
+  const local = await rig("Local", {
+    now: () => clock.value,
+    ...(options.productionTimings
+      ? {}
+      : { pingIntervalMs: 10, livenessTimeoutMs: 100 }),
+    connectTls: () => {
+      const controlled = controlledTlsSocket(remoteIdentity.fingerprint);
+      sockets.push(controlled);
+      controlled.establish();
+      return controlled.socket;
+    },
+    startupReconnectDelayMs: 60_000,
+  });
+  await start(local);
+  local.engine.upsertSyncPeer({
+    fingerprint: remoteIdentity.fingerprint,
+    name: "Remote",
+    address: "127.0.0.1:52100",
+  });
+  expect(
+    await local.service.pairWithCode(
+      "127.0.0.1",
+      52_100,
+      remoteIdentity.pairingCode,
+    ),
+  ).toEqual({ ok: true });
+  if (options.steady !== false) {
+    sockets[0]!.inject(encodeFrame({ t: "flush" }));
+    expect(local.service.status().peers[0]?.state).toBe("steady");
+  }
+  return { local, remoteIdentity, sockets, clock };
+}
+
+async function advanceLiveClock(
+  clock: { value: number },
+  milliseconds: number,
+  maxStep = 90,
+): Promise<void> {
+  let remaining = milliseconds;
+  while (remaining > 0) {
+    // Stay below the test timeout so this models a running scheduler rather
+    // than the suspend/clock-jump branch.
+    const step = Math.min(remaining, maxStep);
+    clock.value += step;
+    await vi.advanceTimersByTimeAsync(step);
+    remaining -= step;
+  }
 }
 
 function remotePromptFrame(): { promptId: string; frame: Buffer } {
@@ -1457,6 +1523,246 @@ describe("peer service over real TLS (loopback)", () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     expect(dialer.service.status().peers[0]?.unhealthy).toBe(true);
+  });
+
+  it("uses a 30 second heartbeat and 180 second inbound-silence deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig({
+        productionTimings: true,
+      });
+      const connection = sockets[0]!;
+      connection.writes.length = 0;
+
+      await advanceLiveClock(clock, 29_999, 30_000);
+      expect(connection.writes).toEqual([]);
+      await advanceLiveClock(clock, 1, 30_000);
+      expect(connection.writes).toEqual([encodeFrame({ t: "ping" })]);
+
+      await advanceLiveClock(clock, 149_999, 30_000);
+      expect(connection.socket.destroyed).toBe(false);
+      expect(connection.writes).toHaveLength(5);
+      await advanceLiveClock(clock, 1, 30_000);
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+      expect(connection.socket.destroyed).toBe(true);
+      expect(connection.writes).toHaveLength(5);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the silence deadline when a sync connection is created", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig({ steady: false });
+
+      await advanceLiveClock(clock, 99, 10);
+      expect(sockets[0]?.socket.destroyed).toBe(false);
+      await advanceLiveClock(clock, 1, 10);
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+      expect(sockets[0]?.socket.destroyed).toBe(true);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the silence deadline when inbound pairing upgrades to sync", async () => {
+    vi.useFakeTimers();
+    let remoteSocket: tls.TLSSocket | null = null;
+    try {
+      const clock = { value: 0 };
+      let noteConfirmationStarted!: () => void;
+      let finishConfirmation!: (accepted: boolean) => void;
+      const confirmationStarted = new Promise<void>((resolve) => {
+        noteConfirmationStarted = resolve;
+      });
+      const confirmation = new Promise<boolean>((resolve) => {
+        finishConfirmation = resolve;
+      });
+      const local = await rig("Local", {
+        now: () => clock.value,
+        pingIntervalMs: 10,
+        livenessTimeoutMs: 100,
+        confirmPairing: async () => {
+          noteConfirmationStarted();
+          return confirmation;
+        },
+      });
+      const port = await start(local);
+      const remoteIdentity = await loadOrCreateIdentity(tempDir());
+      local.service.beginPairing();
+      remoteSocket = await connectWithIdentity(port, remoteIdentity);
+      remoteSocket.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+      await confirmationStarted;
+
+      await advanceLiveClock(clock, 50, 10);
+      finishConfirmation(true);
+      await vi.waitFor(() => {
+        expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).not.toBeNull();
+      });
+
+      await advanceLiveClock(clock, 60, 10);
+      expect(local.service.status().peers[0]?.state).toBe("syncing");
+      await advanceLiveClock(clock, 40, 10);
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+    } finally {
+      remoteSocket?.destroy();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fully closes one silent sync connection and schedules one reconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig();
+
+      await advanceLiveClock(clock, 100);
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+      expect(sockets[0]?.socket.destroyed).toBe(true);
+      expect(local.service.status().peers[0]?.unhealthy).toBe(false);
+
+      clock.value += 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+      expect(sockets).toHaveLength(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a sync connection alive when any valid inbound traffic continues", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig();
+      const connection = sockets[0]!;
+
+      for (let i = 0; i < 6; i++) {
+        await advanceLiveClock(clock, 65, 10);
+        connection.inject(encodeFrame(i % 2 === 0 ? { t: "pong" } : { t: "flush" }));
+      }
+
+      expect(local.service.status().peers[0]?.state).toBe("steady");
+      expect(connection.socket.destroyed).toBe(false);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts fragmented inbound protocol bytes as liveness", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig();
+      const connection = sockets[0]!;
+      const frame = encodeFrame({ t: "pong" });
+
+      await advanceLiveClock(clock, 90, 10);
+      connection.inject(frame.subarray(0, 1));
+      await advanceLiveClock(clock, 90, 10);
+      expect(connection.socket.destroyed).toBe(false);
+      connection.inject(frame.subarray(1));
+      await advanceLiveClock(clock, 90, 10);
+
+      expect(local.service.status().peers[0]?.state).toBe("steady");
+      expect(connection.socket.destroyed).toBe(false);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("grants a full liveness grace period after a scheduler jump", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig();
+      const connection = sockets[0]!;
+      connection.writes.length = 0;
+
+      clock.value = -10;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(connection.socket.destroyed).toBe(false);
+      expect(connection.writes).toEqual([encodeFrame({ t: "ping" })]);
+
+      clock.value = 100;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(connection.socket.destroyed).toBe(false);
+      expect(connection.writes).toHaveLength(2);
+
+      await advanceLiveClock(clock, 90);
+      expect(connection.socket.destroyed).toBe(false);
+      const writesBeforeRetirement = connection.writes.length;
+      await advanceLiveClock(clock, 10);
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+      expect(connection.socket.destroyed).toBe(true);
+      await advanceLiveClock(clock, 100);
+      expect(connection.writes).toHaveLength(writesBeforeRetirement);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["stop", "forget"] as const)(
+    "%s prevents a later liveness failure or reconnect",
+    async (action) => {
+      vi.useFakeTimers();
+      try {
+        const { local, remoteIdentity, sockets, clock } = await controlledLivenessRig();
+        await advanceLiveClock(clock, 100);
+        await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("offline"));
+        expect(local.service.status().peers[0]?.unhealthy).toBe(false);
+
+        if (action === "stop") await local.service.stop();
+        else {
+          local.service.forgetPeer(remoteIdentity.fingerprint);
+          local.engine.forgetSyncPeer(remoteIdentity.fingerprint);
+        }
+
+        clock.value += 2_000;
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(sockets).toHaveLength(1);
+        expect(sockets[0]?.socket.destroyed).toBe(true);
+        if (action === "forget") expect(local.service.status().peers).toEqual([]);
+        else expect(local.service.status().peers[0]?.unhealthy).toBe(false);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("counts each liveness retirement once and resets unhealthy after steady", async () => {
+    vi.useFakeTimers();
+    try {
+      const { local, sockets, clock } = await controlledLivenessRig();
+
+      for (let failure = 1; failure <= 3; failure++) {
+        await advanceLiveClock(clock, 100);
+        await vi.waitFor(() => expect(sockets[failure - 1]?.socket.destroyed).toBe(true));
+        expect(local.service.status().peers[0]?.unhealthy).toBe(failure >= 3);
+        if (failure < 3) {
+          clock.value += 1_000;
+          await vi.advanceTimersByTimeAsync(1_000);
+          await vi.waitFor(() => expect(sockets).toHaveLength(failure + 1));
+        }
+      }
+
+      clock.value += 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(sockets).toHaveLength(4));
+      sockets[3]!.inject(encodeFrame({ t: "flush" }));
+      expect(local.service.status().peers[0]?.state).toBe("steady");
+      expect(local.service.status().peers[0]?.unhealthy).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps unpaired strangers out when no pairing window is open", async () => {

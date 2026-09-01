@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { SyncEngine, type Database, type PromptLibrary } from "@promptbranch/core";
 import type { SyncPairRequestEvent, SyncStatusDto } from "../../shared/ipc.js";
 import type { Discovery } from "./discovery.js";
@@ -34,11 +35,18 @@ export interface DesktopSyncDeps {
   now?: () => number;
 }
 
+interface PendingConfirm {
+  resolve(accept: boolean): void;
+  timeout: NodeJS.Timeout;
+}
+
 export class DesktopSync {
   readonly engine: SyncEngine;
   private identity: DeviceIdentity | null = null;
   private service: PeerService | null = null;
-  private readonly pendingConfirms = new Map<string, (accept: boolean) => void>();
+  private readonly pendingConfirms = new Map<string, PendingConfirm>();
+  /** Lifecycle mutations run in call order; commands may still read/use the current service. */
+  private lifecycleTail: Promise<void> = Promise.resolve();
   private emitScheduled = false;
   private emitTimer: NodeJS.Timeout | null = null;
   private lastEmitAt = 0;
@@ -52,14 +60,16 @@ export class DesktopSync {
   // ---------------------------------------------------------------- lifecycle
 
   /** Called once at app start; starts the network service only if enabled. */
-  async ensureStarted(): Promise<void> {
-    if (this.isEnabled()) await this.startService();
-    else this.emitStatus();
+  ensureStarted(): Promise<void> {
+    return this.mutateLifecycle(async () => {
+      if (this.disposed) return;
+      if (this.isEnabled()) await this.startService();
+      else this.emitStatus();
+    });
   }
 
-  async stop(): Promise<void> {
-    await this.service?.stop();
-    this.service = null;
+  stop(): Promise<void> {
+    return this.mutateLifecycle(() => this.stopService());
   }
 
   /**
@@ -69,6 +79,7 @@ export class DesktopSync {
    */
   dispose(): void {
     this.disposed = true;
+    this.rejectPendingConfirms();
     if (this.emitTimer !== null) {
       clearTimeout(this.emitTimer);
       this.emitTimer = null;
@@ -95,10 +106,12 @@ export class DesktopSync {
 
   private async startService(): Promise<void> {
     if (this.service || this.disposed) return;
-    this.identity ??= await loadOrCreateIdentity(this.deps.identityDir);
-    this.service = new PeerService({
+    const identity = this.identity ?? await loadOrCreateIdentity(this.deps.identityDir);
+    if (this.service || this.disposed || !this.isEnabled()) return;
+    this.identity = identity;
+    const service = new PeerService({
       engine: this.engine,
-      identity: this.identity,
+      identity,
       deviceName: () => this.deviceName(),
       confirmPairing: (fingerprint, name) => this.confirmPairing(fingerprint, name),
       onStatusChange: () => this.scheduleEmit(),
@@ -107,32 +120,62 @@ export class DesktopSync {
       log: (message) => this.deps.log?.(message),
       now: this.deps.now,
     });
-    await this.service.start();
-    const started = this.service.status();
+    this.service = service;
+    await service.start();
+    if (this.service !== service) {
+      await service.stop();
+      return;
+    }
+    if (this.disposed || !this.isEnabled()) {
+      this.service = null;
+      await service.stop();
+      return;
+    }
+    const started = service.status();
     if (started.listening && started.port !== null && this.configuredListenPort() === null) {
       this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(started.port));
     }
     this.emitStatus();
   }
 
+  private async stopService(): Promise<void> {
+    this.rejectPendingConfirms();
+    const service = this.service;
+    if (!service) return;
+    // Detach first so commands cannot enter a service that is already stopping.
+    this.service = null;
+    await service.stop();
+  }
+
+  private mutateLifecycle<T>(mutation: () => Promise<T>): Promise<T> {
+    const result = this.lifecycleTail.then(mutation);
+    this.lifecycleTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   // ------------------------------------------------------------------ commands
 
-  async setEnabled(enabled: boolean): Promise<SyncStatusDto> {
-    this.deps.lib.setSetting(ENABLED_SETTING, enabled ? "1" : "0");
-    if (enabled) {
-      // First enable: ship the pre-sync library by marking every row dirty.
-      if (this.engine.getMeta(BOOTSTRAP_MARKER) === null) {
-        this.engine.bootstrapDirty();
-        this.engine.refineDirty();
-        this.engine.setMeta(BOOTSTRAP_MARKER, new Date().toISOString());
-        this.deps.log?.("bootstrapped existing library into op log");
+  setEnabled(enabled: boolean): Promise<SyncStatusDto> {
+    return this.mutateLifecycle(async () => {
+      this.deps.lib.setSetting(ENABLED_SETTING, enabled ? "1" : "0");
+      if (enabled) {
+        // First enable: ship the pre-sync library by marking every row dirty.
+        if (this.engine.getMeta(BOOTSTRAP_MARKER) === null) {
+          this.engine.bootstrapDirty();
+          this.engine.refineDirty();
+          this.engine.setMeta(BOOTSTRAP_MARKER, new Date().toISOString());
+          this.deps.log?.("bootstrapped existing library into op log");
+        }
+        await this.startService();
+      } else {
+        await this.stopService();
       }
-      await this.startService();
-    } else {
-      await this.stop();
-    }
-    this.emitStatus();
-    return this.status();
+      this.emitStatus();
+      return this.status();
+    });
   }
 
   async setDeviceName(name: string): Promise<SyncStatusDto> {
@@ -142,17 +185,19 @@ export class DesktopSync {
     return this.status();
   }
 
-  async setListenPort(port: number): Promise<SyncStatusDto> {
+  setListenPort(port: number): Promise<SyncStatusDto> {
     if (!Number.isInteger(port) || port < 1_024 || port > 65_535) {
-      throw new RangeError("Listening port must be between 1024 and 65535");
+      return Promise.reject(new RangeError("Listening port must be between 1024 and 65535"));
     }
-    this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(port));
-    if (this.isEnabled()) {
-      await this.stop();
-      await this.startService();
-    }
-    this.emitStatus();
-    return this.status();
+    return this.mutateLifecycle(async () => {
+      this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(port));
+      if (this.isEnabled()) {
+        await this.stopService();
+        await this.startService();
+      }
+      this.emitStatus();
+      return this.status();
+    });
   }
 
   async beginPairing(): Promise<SyncStatusDto> {
@@ -175,9 +220,12 @@ export class DesktopSync {
     return result;
   }
 
-  respondPairing(fingerprint: string, accept: boolean): void {
-    this.pendingConfirms.get(fingerprint)?.(accept);
-    this.pendingConfirms.delete(fingerprint);
+  respondPairing(requestId: string, accept: boolean): void {
+    const pending = this.pendingConfirms.get(requestId);
+    if (!pending) return;
+    this.pendingConfirms.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(accept);
   }
 
   forgetDevice(fingerprint: string): Promise<SyncStatusDto> {
@@ -244,22 +292,33 @@ export class DesktopSync {
 
   private confirmPairing(fingerprint: string, name: string): Promise<boolean> {
     // No window (headless start) → decline rather than hang the initiator.
+    const requestId = randomUUID();
     return new Promise<boolean>((resolve) => {
+      let pending!: PendingConfirm;
       const timeout = setTimeout(() => {
-        this.pendingConfirms.delete(fingerprint);
+        if (this.pendingConfirms.get(requestId) !== pending) return;
+        this.pendingConfirms.delete(requestId);
         resolve(false);
       }, CONFIRM_TIMEOUT_MS);
       timeout.unref?.();
-      this.pendingConfirms.set(fingerprint, (accept) => {
-        clearTimeout(timeout);
-        resolve(accept);
-      });
+      pending = { resolve, timeout };
+      this.pendingConfirms.set(requestId, pending);
       this.deps.sendPairRequest({
+        requestId,
         fingerprint,
         fingerprintShort: fingerprintShort(fingerprint),
         name,
       });
     });
+  }
+
+  private rejectPendingConfirms(): void {
+    const pending = [...this.pendingConfirms.values()];
+    this.pendingConfirms.clear();
+    for (const confirm of pending) {
+      clearTimeout(confirm.timeout);
+      confirm.resolve(false);
+    }
   }
 
   /** Coalesces status pushes: at most one per 250ms, always the latest. */

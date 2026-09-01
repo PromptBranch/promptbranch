@@ -4,6 +4,8 @@ import {
   shareImportPreviewSchema,
   sharePortalSetSchema,
   shareScopeSchema,
+  syncPairRequestEventSchema,
+  syncRespondPairingSchema,
   updateOpenDownloadSchema,
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
@@ -51,6 +53,42 @@ describe("shareDeleteSchema / shareImportPreviewSchema", () => {
     expect(shareDeleteSchema.safeParse({ snapshotId: "" }).success).toBe(false);
     expect(shareImportPreviewSchema.safeParse({ url: "" }).success).toBe(false);
     expect(shareImportPreviewSchema.safeParse({ url: "https://x/p/abc" }).success).toBe(true);
+  });
+});
+
+describe("sync pairing IPC schemas", () => {
+  const requestId = "550e8400-e29b-41d4-a716-446655440000";
+  const fingerprint = "a".repeat(64);
+
+  it("binds each pairing event and response to a validated request id", () => {
+    expect(
+      syncPairRequestEventSchema.parse({
+        requestId,
+        fingerprint,
+        fingerprintShort: "aaaaaaaaaa",
+        name: "MacBook Pro",
+      }),
+    ).toEqual({
+      requestId,
+      fingerprint,
+      fingerprintShort: "aaaaaaaaaa",
+      name: "MacBook Pro",
+    });
+    expect(syncRespondPairingSchema.parse({ requestId, accept: true })).toEqual({
+      requestId,
+      accept: true,
+    });
+  });
+
+  it("rejects legacy fingerprint-only events and responses", () => {
+    expect(
+      syncPairRequestEventSchema.safeParse({
+        fingerprint,
+        fingerprintShort: "aaaaaaaaaa",
+        name: "MacBook Pro",
+      }).success,
+    ).toBe(false);
+    expect(syncRespondPairingSchema.safeParse({ fingerprint, accept: true }).success).toBe(false);
   });
 });
 

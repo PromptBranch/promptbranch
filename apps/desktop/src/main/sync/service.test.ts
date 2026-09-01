@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary } from "@promptbranch/core";
 import type { SyncPairRequestEvent, SyncStatusDto } from "../../shared/ipc.js";
+import type { Discovery } from "./discovery.js";
 import { derivePairingCode, loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
 import { DesktopSync } from "./service.js";
 
@@ -28,7 +29,13 @@ interface Rig {
   pairRequests: SyncPairRequestEvent[];
 }
 
-async function rig(name = "Test Mac"): Promise<Rig> {
+async function rig(
+  name = "Test Mac",
+  discoveryFactory: () => Discovery = () => ({
+    start: () => {},
+    stop: async () => {},
+  }),
+): Promise<Rig> {
   const db = openMemoryDatabase();
   const lib = new PromptLibrary(db);
   const statuses: SyncStatusDto[] = [];
@@ -43,14 +50,31 @@ async function rig(name = "Test Mac"): Promise<Rig> {
     deviceNameFallback: () => name,
     sendStatus: (status) => statuses.push(status),
     sendPairRequest: (event) => pairRequests.push(event),
-    discoveryFactory: () => ({
-      start: () => {},
-      stop: async () => {},
-    }),
+    discoveryFactory,
     log: () => {},
   });
   syncs.push(sync);
   return { lib, db, identity, sync, statuses, pairRequests };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function requestConfirmation(
+  sync: DesktopSync,
+  fingerprint: string,
+  name = "MacBook Pro",
+): Promise<boolean> {
+  return (
+    sync as unknown as {
+      confirmPairing(candidateFingerprint: string, candidateName: string): Promise<boolean>;
+    }
+  ).confirmPairing(fingerprint, name);
 }
 
 async function hangingTlsServer(): Promise<{ port: number; sockets: Set<net.Socket> }> {
@@ -201,6 +225,140 @@ describe("DesktopSync coordinator", () => {
     }
   });
 
+  it("does not restart networking when a port save overlaps disabling sync", async () => {
+    const stopEntered = deferred();
+    const releaseStop = deferred();
+    const { sync } = await rig("Test Mac", () => ({
+      start: () => {},
+      stop: async () => {
+        stopEntered.resolve();
+        await releaseStop.promise;
+      },
+    }));
+    await sync.setEnabled(true);
+    const probe = net.createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    probe.close();
+    await once(probe, "close");
+
+    const changingPort = sync.setListenPort(port);
+    await stopEntered.promise;
+    const disabling = sync.setEnabled(false);
+    releaseStop.resolve();
+    await Promise.all([changingPort, disabling]);
+
+    expect(sync.status().enabled).toBe(false);
+    expect(sync.status().listening).toBe(false);
+  });
+
+  it("does not let an in-flight startup outlive a requested stop", async () => {
+    const { lib, sync } = await rig();
+    lib.setSetting("sync.enabled", "1");
+
+    await Promise.all([sync.ensureStarted(), sync.stop()]);
+
+    expect(sync.status().enabled).toBe(true);
+    expect(sync.status().listening).toBe(false);
+  });
+
+  it("gives same-fingerprint confirmations distinct request ownership", async () => {
+    const { sync, pairRequests } = await rig();
+    vi.useFakeTimers();
+    try {
+      const fingerprint = "e".repeat(64);
+      const first = requestConfirmation(sync, fingerprint);
+      const second = requestConfirmation(sync, fingerprint);
+      expect(pairRequests[0]?.requestId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(pairRequests[1]?.requestId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(pairRequests[1]?.requestId).not.toBe(pairRequests[0]?.requestId);
+
+      sync.respondPairing(pairRequests[0]!.requestId, true);
+      sync.respondPairing(pairRequests[1]!.requestId, false);
+      expect(await Promise.all([first, second])).toEqual([true, false]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let an old timeout or stale response consume a newer request", async () => {
+    const { sync, pairRequests } = await rig();
+    vi.useFakeTimers();
+    try {
+      const fingerprint = "f".repeat(64);
+      const first = requestConfirmation(sync, fingerprint);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const second = requestConfirmation(sync, fingerprint);
+      const firstRequest = pairRequests[0]!;
+      const secondRequest = pairRequests[1]!;
+
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(await first).toBe(false);
+      sync.respondPairing(firstRequest.requestId, true);
+      sync.respondPairing(secondRequest.requestId, true);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(await second).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["stop", "dispose"] as const)(
+    "%s rejects pending confirmations and clears their timers",
+    async (action) => {
+      const { sync } = await rig();
+      vi.useFakeTimers();
+      try {
+        let outcome: boolean | undefined;
+        void requestConfirmation(sync, "1".repeat(64)).then((accepted) => {
+          outcome = accepted;
+        });
+
+        if (action === "stop") await sync.stop();
+        else sync.dispose();
+        await Promise.resolve();
+
+        expect(outcome).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("rejects pending confirmations before a listener-port restart", async () => {
+    const { sync } = await rig();
+    await sync.setEnabled(true);
+    const probe = net.createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    probe.close();
+    await once(probe, "close");
+    let outcome: boolean | undefined;
+    void requestConfirmation(sync, "2".repeat(64)).then((accepted) => {
+      outcome = accepted;
+    });
+
+    await sync.setListenPort(port);
+    await Promise.resolve();
+
+    expect(outcome).toBe(false);
+  });
+
   it("cancels a pending known-peer dial when sync is disabled", async () => {
     const { sync } = await rig();
     await sync.setEnabled(true);
@@ -305,7 +463,7 @@ describe("DesktopSync coordinator", () => {
     const pairing = b.sync.pairWithCode("127.0.0.1", listeningPort(a.sync), code!);
     // A's renderer receives the request and accepts.
     await vi.waitFor(() => expect(a.pairRequests.length).toBe(1));
-    a.sync.respondPairing(a.pairRequests[0]!.fingerprint, true);
+    a.sync.respondPairing(a.pairRequests[0]!.requestId, true);
     const result = await pairing;
     expect(result.ok).toBe(true);
 
@@ -328,7 +486,7 @@ describe("DesktopSync coordinator", () => {
     const code = (await a.sync.beginPairing()).pairingCode!;
     const pairing = b.sync.pairWithCode("127.0.0.1", listeningPort(a.sync), code);
     await vi.waitFor(() => expect(a.pairRequests.length).toBe(1));
-    a.sync.respondPairing(a.pairRequests[0]!.fingerprint, true);
+    a.sync.respondPairing(a.pairRequests[0]!.requestId, true);
     await pairing;
     expect(a.sync.status().peers.length).toBe(1);
 
@@ -353,7 +511,7 @@ describe("DesktopSync coordinator", () => {
     const pairing = b.sync.pairWithCode("127.0.0.1", listeningPort(a.sync), code);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(a.pairRequests.length).toBe(1);
-    a.sync.respondPairing(a.pairRequests[0]!.fingerprint, false);
+    a.sync.respondPairing(a.pairRequests[0]!.requestId, false);
     const result = await pairing;
     expect(result.ok).toBe(false);
     expect(a.sync.status().peers).toEqual([]);

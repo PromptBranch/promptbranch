@@ -21,7 +21,7 @@ export function SyncPairRequestDialog() {
   }, []);
 
   const respond = (accept: boolean) => {
-    if (request) void window.promptBuilder.sync.respondPairing({ fingerprint: request.fingerprint, accept });
+    if (request) void window.promptBuilder.sync.respondPairing({ requestId: request.requestId, accept });
     setRequest(null);
   };
 

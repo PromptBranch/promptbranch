@@ -182,6 +182,7 @@ export const shareImportPreviewSchema = z.object({ url: z.string().trim().min(1)
 // Sync
 
 const fingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/, "fingerprint");
+const syncPairRequestIdSchema = z.string().uuid();
 
 export const syncSetEnabledSchema = z.object({ enabled: z.boolean() });
 
@@ -198,13 +199,14 @@ export const syncPairWithCodeSchema = z.object({
 });
 
 export const syncRespondPairingSchema = z.object({
-  fingerprint: fingerprintSchema,
+  requestId: syncPairRequestIdSchema,
   accept: z.boolean(),
 });
 
 export const syncForgetDeviceSchema = z.object({ fingerprint: fingerprintSchema });
 
 export const syncPairRequestEventSchema = z.object({
+  requestId: syncPairRequestIdSchema,
   fingerprint: fingerprintSchema,
   fingerprintShort: z.string().min(1),
   name: z.string().min(1).max(100),
@@ -903,6 +905,7 @@ export interface SyncStatusDto {
 
 /** Main → renderer: another device wants to pair with this library. */
 export interface SyncPairRequestEvent {
+  requestId: string;
   fingerprint: string;
   fingerprintShort: string;
   name: string;
@@ -1016,7 +1019,7 @@ export interface PromptBuilderApi {
     /** Connects to a nearby/manual device using the code shown there. */
     pairWithCode(input: { address: string; port: number; code: string }): Promise<SyncPairResult>;
     /** Renderer's answer to an onPairRequest event. */
-    respondPairing(input: { fingerprint: string; accept: boolean }): Promise<void>;
+    respondPairing(input: { requestId: string; accept: boolean }): Promise<void>;
     /** Unpins a device permanently. */
     forgetDevice(fingerprint: string): Promise<SyncStatusDto>;
     /** Refines local changes and nudges connected peers now. */

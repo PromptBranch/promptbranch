@@ -693,8 +693,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.syncRespondPairing, (_e, payload: unknown) => {
-    const { fingerprint, accept } = syncRespondPairingSchema.parse(payload);
-    sync.respondPairing(fingerprint, accept);
+    const { requestId, accept } = syncRespondPairingSchema.parse(payload);
+    sync.respondPairing(requestId, accept);
   });
 
   ipcMain.handle(IPC_CHANNELS.syncForgetDevice, (_e, payload: unknown) => {

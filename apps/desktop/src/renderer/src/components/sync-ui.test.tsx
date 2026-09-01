@@ -215,26 +215,34 @@ describe("SyncPairRequestDialog", () => {
     const bridge = installMockBridge();
     renderApp(<SyncPairRequestDialog />);
     bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
       fingerprint: "b".repeat(64),
       fingerprintShort: "bbbb111111",
       name: "MacBook Pro",
     });
     expect(await screen.findByText("Pair with this device?")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Accept" }));
-    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({ fingerprint: "b".repeat(64), accept: true });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      accept: true,
+    });
   });
 
   it("declines via the overlay close path", async () => {
     const bridge = installMockBridge();
     renderApp(<SyncPairRequestDialog />);
     bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
       fingerprint: "b".repeat(64),
       fingerprintShort: "bbbb111111",
       name: "MacBook Pro",
     });
     await screen.findByText("Pair with this device?");
     await userEvent.click(screen.getByRole("button", { name: "Decline" }));
-    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({ fingerprint: "b".repeat(64), accept: false });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledWith({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      accept: false,
+    });
   });
 });
 

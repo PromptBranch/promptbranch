@@ -127,7 +127,8 @@ export function createBonjourDiscovery(): Discovery {
           return true;
         };
         try {
-          instance = new Bonjour();
+          // Its default async error callback throws, which can crash Electron.
+          instance = new Bonjour({}, () => {});
           bonjour = instance;
           instance.publish({
             name: `PromptBranch ${advertise.deviceName}`,

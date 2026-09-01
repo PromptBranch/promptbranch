@@ -51,6 +51,56 @@ describe("Bonjour discovery", () => {
     await expect(discovery.stop()).resolves.toBeUndefined();
   });
 
+  it("contains an asynchronous mDNS error without disabling discovery", async () => {
+    vi.useFakeTimers();
+    const browser = new FakeBrowser();
+    let mdnsErrorCallback!: (error: Error) => void;
+    class FakeBonjour {
+      constructor(_options?: unknown, errorCallback?: (error: Error) => void) {
+        mdnsErrorCallback = errorCallback ?? ((error) => {
+          throw error;
+        });
+      }
+      publish(): void {}
+      find(): FakeBrowser {
+        return browser;
+      }
+      async unpublishAll(): Promise<void> {}
+      destroy(): void {}
+    }
+    vi.doMock("bonjour-service", () => ({ Bonjour: FakeBonjour }));
+    const discovery = createBonjourDiscovery();
+    const peers: DiscoveredPeer[] = [];
+
+    discovery.start(
+      { port: 52_100, fingerprint: "a".repeat(64), deviceName: "Local" },
+      (peer) => peers.push(peer),
+      () => {},
+    );
+    await vi.dynamicImportSettled();
+
+    const thrown: unknown[] = [];
+    setTimeout(() => {
+      try {
+        mdnsErrorCallback(new Error("network interface disappeared"));
+      } catch (error) {
+        thrown.push(error);
+      }
+    }, 0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(thrown).toEqual([]);
+    browser.emit("up", {
+      name: "Remote",
+      port: 52_101,
+      addresses: ["192.0.2.10"],
+      txt: { fp: "b".repeat(64) },
+    });
+    expect(peers.map((peer) => peer.name)).toEqual(["Remote"]);
+
+    await discovery.stop();
+  });
+
   it("cleans up a Bonjour instance when publishing fails and permits a retry", async () => {
     vi.useFakeTimers();
     const unpublishAll = vi.fn();

@@ -255,6 +255,8 @@ export class PeerService {
   private pingTimer: NodeJS.Timeout | null = null;
   private startupReconnectTimer: NodeJS.Timeout | null = null;
   private readonly nearby = new Map<string, { name: string; address: string; port: number; seenAt: number }>();
+  /** Unverified mDNS routes; promoted only after pinned TLS succeeds. */
+  private readonly discoveredEndpoints = new Map<string, PeerEndpoint>();
   private readonly endpoints = new Map<string, PeerEndpoint>();
   private readonly manualEndpointClaims = new Map<string, PeerEndpoint>();
   /** Consecutive failed sessions/dials per fingerprint; resets on success. */
@@ -275,6 +277,7 @@ export class PeerService {
     this.cancelPendingPairings("Sync networking restarted");
     this.inFlightDials.clear();
     this.manualEndpointClaims.clear();
+    this.discoveredEndpoints.clear();
     this.listenError = null;
     const server = tls.createServer(
       {
@@ -347,6 +350,7 @@ export class PeerService {
     this.cancelPendingPairings("Sync networking stopped");
     this.inFlightDials.clear();
     this.manualEndpointClaims.clear();
+    this.discoveredEndpoints.clear();
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
     if (this.startupReconnectTimer) clearTimeout(this.startupReconnectTimer);
@@ -415,7 +419,7 @@ export class PeerService {
       .filter((peer) => derivePairingCode(peer.fingerprint) === formattedCode);
     const known = knownMatches.length === 1 ? knownMatches[0] : undefined;
     if (known) {
-      const endpoint = this.rememberEndpoint(known.fingerprint, address, port, true);
+      const endpoint = this.rememberEndpoint(known.fingerprint, address, port);
       this.manualEndpointClaims.set(known.fingerprint, endpoint);
       try {
         return await this.connectKnownPeer(known.fingerprint, endpoint, true, true, generation);
@@ -550,6 +554,7 @@ export class PeerService {
       this.reconnectTimers.delete(fingerprint);
     }
     this.reconnectAttempts.delete(fingerprint);
+    this.discoveredEndpoints.delete(fingerprint);
     this.endpoints.delete(fingerprint);
     this.manualEndpointClaims.delete(fingerprint);
     this.failures.delete(fingerprint);
@@ -829,15 +834,20 @@ export class PeerService {
     // A user-selected route owns this short handoff window. Discovery can
     // offer another candidate after the manual attempt settles.
     if (this.manualEndpointClaims.has(peer.fingerprint)) return;
-    const endpoint = this.rememberEndpoint(peer.fingerprint, peer.address, peer.port, false);
+    const endpoint = { address: peer.address, port: peer.port };
+    this.discoveredEndpoints.set(peer.fingerprint, endpoint);
     if (this.connections.has(peer.fingerprint)) return;
     // Only one side dials: the lexicographically smaller fingerprint.
     if (this.deps.identity.fingerprint > peer.fingerprint) return;
     void this.dial(peer.fingerprint, endpoint);
   }
 
-  private async dial(fingerprint: string, endpoint: PeerEndpoint): Promise<void> {
-    await this.connectKnownPeer(fingerprint, endpoint);
+  private async dial(
+    fingerprint: string,
+    endpoint: PeerEndpoint,
+    generation = this.lifecycleGeneration,
+  ): Promise<void> {
+    await this.connectKnownPeer(fingerprint, endpoint, false, false, generation);
   }
 
   private async connectKnownPeer(
@@ -909,6 +919,9 @@ export class PeerService {
     const result = await this.connectSocket(endpoint.address, endpoint.port, fingerprint);
     if (!result.ok) {
       if (state.superseded) return result;
+      if (this.discoveredEndpoints.get(fingerprint) === endpoint) {
+        this.discoveredEndpoints.delete(fingerprint);
+      }
       const peer = this.deps.engine.getSyncPeer(fingerprint);
       if (
         !this.canAdopt(generation, allowWithoutListener) ||
@@ -945,9 +958,17 @@ export class PeerService {
       { kind: "sync", fingerprint, session },
       "outbound",
     );
-    const durableAddress = this.endpoints.get(fingerprint) === endpoint
-      ? `${endpoint.address}:${endpoint.port}`
-      : undefined;
+    let durableAddress: string | undefined;
+    if (
+      this.discoveredEndpoints.get(fingerprint) === endpoint &&
+      !this.manualEndpointClaims.has(fingerprint)
+    ) {
+      this.discoveredEndpoints.delete(fingerprint);
+      this.endpoints.set(fingerprint, endpoint);
+      durableAddress = `${endpoint.address}:${endpoint.port}`;
+    } else if (this.endpoints.get(fingerprint) === endpoint) {
+      durableAddress = `${endpoint.address}:${endpoint.port}`;
+    }
     if (this.adoptConnection(connection, fingerprint, durableAddress)) session.start();
     this.deps.onStatusChange();
     return { ok: true };
@@ -994,12 +1015,12 @@ export class PeerService {
     fingerprint: string,
     address: string,
     port: number,
-    durable: boolean,
   ): PeerEndpoint {
     const endpoint = { address, port };
+    this.discoveredEndpoints.delete(fingerprint);
     this.endpoints.set(fingerprint, endpoint);
     const peer = this.deps.engine.getSyncPeer(fingerprint);
-    if (durable && peer && !peer.forgotten_at) {
+    if (peer && !peer.forgotten_at) {
       this.deps.engine.upsertSyncPeer({
         fingerprint,
         name: peer.name,
@@ -1010,6 +1031,8 @@ export class PeerService {
   }
 
   private endpointFor(fingerprint: string): PeerEndpoint | null {
+    const discovered = this.discoveredEndpoints.get(fingerprint);
+    if (discovered) return discovered;
     const current = this.endpoints.get(fingerprint);
     if (current) return current;
     const saved = this.deps.engine.getSyncPeer(fingerprint)?.address;
@@ -1025,6 +1048,33 @@ export class PeerService {
   }
 
   private onDiscoveryDown(fingerprint: string): void {
+    const endpoint = this.discoveredEndpoints.get(fingerprint);
+    if (endpoint) {
+      this.discoveredEndpoints.delete(fingerprint);
+      const generation = this.lifecycleGeneration;
+      const attempt = this.inFlightDials.get(fingerprint);
+      if (attempt?.endpoint === endpoint) {
+        attempt.state.superseded = true;
+        this.cancelPendingSocket(fingerprint, "Discovered endpoint was withdrawn");
+        void attempt.promise.then(() => {
+          if (
+            !this.canAdopt(generation, false) ||
+            this.connections.has(fingerprint) ||
+            this.deps.identity.fingerprint > fingerprint
+          ) {
+            return;
+          }
+          const fallback = this.endpointFor(fingerprint);
+          if (fallback) void this.dial(fingerprint, fallback, generation);
+        });
+      } else if (
+        !this.connections.has(fingerprint) &&
+        this.deps.identity.fingerprint < fingerprint
+      ) {
+        const fallback = this.endpointFor(fingerprint);
+        if (fallback) void this.dial(fingerprint, fallback, generation);
+      }
+    }
     if (this.nearby.delete(fingerprint)) this.deps.onStatusChange();
   }
 

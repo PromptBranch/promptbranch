@@ -720,6 +720,165 @@ describe("peer service over real TLS (loopback)", () => {
     expect(local.engine.getSyncPeer(fingerprint)?.address).toBe("vpn.example.test:52100");
   });
 
+  it("falls back to a saved manual route after a discovered endpoint fails pinning", async () => {
+    const discoveryA = fakeDiscovery();
+    const discoveryB = fakeDiscovery();
+    const attemptedPorts: number[] = [];
+    const connectTls = (options: tls.ConnectionOptions): tls.TLSSocket => {
+      attemptedPorts.push(Number(options.port));
+      return tls.connect(options);
+    };
+    const a = await rig("A", {
+      discovery: discoveryA.impl,
+      connectTls,
+      startupReconnectDelayMs: 60_000,
+    });
+    const b = await rig("B", {
+      discovery: discoveryB.impl,
+      connectTls,
+      startupReconnectDelayMs: 60_000,
+    });
+    const hostile = await rig("Hostile", { startupReconnectDelayMs: 60_000 });
+    const portA = await start(a);
+    const portB = await start(b);
+    const hostilePort = await start(hostile);
+    const aDials = a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    const dialer = aDials ? a : b;
+    const listener = aDials ? b : a;
+    const dialerDiscovery = aDials ? discoveryA : discoveryB;
+    const listenerPort = aDials ? portB : portA;
+    const listenerFingerprint = listener.service.deps.identity.fingerprint;
+
+    expect(
+      (await dialer.service.pairWithCode(
+        "127.0.0.1",
+        listenerPort,
+        listener.service.beginPairing(),
+      )).ok,
+    ).toBe(true);
+    await vi.waitFor(() => expect(dialer.service.status().peers[0]?.state).toBe("steady"));
+    expect(dialer.engine.getSyncPeer(listenerFingerprint)?.address)
+      .toBe(`127.0.0.1:${listenerPort}`);
+
+    await dialer.service.stop();
+    await dialer.service.start();
+    attemptedPorts.length = 0;
+    dialerDiscovery.fire({
+      fingerprint: listenerFingerprint,
+      name: "Hostile advertisement",
+      address: "127.0.0.1",
+      port: hostilePort,
+    });
+
+    await vi.waitFor(
+      () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 5_000 },
+    );
+    expect(attemptedPorts).toEqual([hostilePort, listenerPort]);
+    expect(dialer.engine.getSyncPeer(listenerFingerprint)?.address)
+      .toBe(`127.0.0.1:${listenerPort}`);
+  });
+
+  it("falls back to a saved manual route when discovery withdraws a pending endpoint", async () => {
+    const discoveryA = fakeDiscovery();
+    const discoveryB = fakeDiscovery();
+    let markCandidateStarted!: () => void;
+    const candidateStarted = new Promise<void>((resolve) => {
+      markCandidateStarted = resolve;
+    });
+    const connectTls = (options: tls.ConnectionOptions): tls.TLSSocket => {
+      if (options.host !== "withdrawn-mdns.invalid") return tls.connect(options);
+      markCandidateStarted();
+      return tls.connect({ ...options, lookup: () => {} });
+    };
+    const a = await rig("A", {
+      discovery: discoveryA.impl,
+      connectTls,
+      handshakeTimeoutMs: 5_000,
+      startupReconnectDelayMs: 60_000,
+    });
+    const b = await rig("B", {
+      discovery: discoveryB.impl,
+      connectTls,
+      handshakeTimeoutMs: 5_000,
+      startupReconnectDelayMs: 60_000,
+    });
+    const portA = await start(a);
+    const portB = await start(b);
+    const aDials = a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    const dialer = aDials ? a : b;
+    const listener = aDials ? b : a;
+    const dialerDiscovery = aDials ? discoveryA : discoveryB;
+    const listenerPort = aDials ? portB : portA;
+    const listenerFingerprint = listener.service.deps.identity.fingerprint;
+
+    expect(
+      (await dialer.service.pairWithCode(
+        "127.0.0.1",
+        listenerPort,
+        listener.service.beginPairing(),
+      )).ok,
+    ).toBe(true);
+    await vi.waitFor(() => expect(dialer.service.status().peers[0]?.state).toBe("steady"));
+
+    await dialer.service.stop();
+    await dialer.service.start();
+    dialerDiscovery.fire({
+      fingerprint: listenerFingerprint,
+      name: "Withdrawn route",
+      address: "withdrawn-mdns.invalid",
+      port: listenerPort,
+    });
+    await candidateStarted;
+    dialerDiscovery.down(listenerFingerprint);
+
+    await vi.waitFor(
+      () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 2_500 },
+    );
+    expect(dialer.engine.getSyncPeer(listenerFingerprint)?.address)
+      .toBe(`127.0.0.1:${listenerPort}`);
+  });
+
+  it("promotes a discovery-only route after pinning and reuses it on restart", async () => {
+    const discoveryA = fakeDiscovery();
+    const discoveryB = fakeDiscovery();
+    const a = await rig("A", { discovery: discoveryA.impl, startupReconnectDelayMs: 60_000 });
+    const b = await rig("B", { discovery: discoveryB.impl, startupReconnectDelayMs: 60_000 });
+    const portA = await start(a);
+    const portB = await start(b);
+    const aDials = a.service.deps.identity.fingerprint < b.service.deps.identity.fingerprint;
+    const dialer = aDials ? a : b;
+    const listener = aDials ? b : a;
+    const dialerDiscovery = aDials ? discoveryA : discoveryB;
+    const listenerPort = aDials ? portB : portA;
+    const listenerFingerprint = listener.service.deps.identity.fingerprint;
+
+    dialer.engine.upsertSyncPeer({ fingerprint: listenerFingerprint, name: "Listener" });
+    listener.engine.upsertSyncPeer({
+      fingerprint: dialer.service.deps.identity.fingerprint,
+      name: "Dialer",
+    });
+    dialerDiscovery.fire({
+      fingerprint: listenerFingerprint,
+      name: "Listener",
+      address: "127.0.0.1",
+      port: listenerPort,
+    });
+
+    await vi.waitFor(() => expect(dialer.service.status().peers[0]?.state).toBe("steady"));
+    expect(dialer.engine.getSyncPeer(listenerFingerprint)?.address)
+      .toBe(`127.0.0.1:${listenerPort}`);
+
+    await dialer.service.stop();
+    dialer.service.deps.startupReconnectDelayMs = 25;
+    await dialer.service.start();
+    await vi.waitFor(
+      () => expect(dialer.service.status().peers[0]?.state).toBe("steady"),
+      { timeout: 5_000 },
+    );
+  });
+
   it("cancels an older dial before it can overwrite a newer manual endpoint", async () => {
     let resolveLookupStarted!: () => void;
     const lookupStarted = new Promise<void>((resolve) => {

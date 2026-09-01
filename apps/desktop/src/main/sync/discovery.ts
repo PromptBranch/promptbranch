@@ -27,6 +27,12 @@ export const SYNC_SERVICE_TYPE = "promptbranch";
 // A/AAAA records change. A fresh browser periodically drops that cache so a
 // peer that kept the same service name and port after DHCP can be rediscovered.
 const ADDRESS_REFRESH_MS = 60_000;
+const CERT_FINGERPRINT = /^[0-9a-f]{64}$/;
+
+interface MdnsErrorEmitter {
+  on(event: "error", listener: () => void): unknown;
+  removeListener(event: "error", listener: () => void): unknown;
+}
 
 export function createBonjourDiscovery(): Discovery {
   let bonjour: import("bonjour-service").Bonjour | null = null;
@@ -34,6 +40,31 @@ export function createBonjourDiscovery(): Discovery {
   let refreshTimer: NodeJS.Timeout | null = null;
   let lifecycleGeneration = 0;
   let activeGeneration: number | null = null;
+  const mdnsErrorListeners = new WeakMap<
+    import("bonjour-service").Bonjour,
+    { emitter: MdnsErrorEmitter; listener: () => void }
+  >();
+
+  const containMdnsErrors = (instance: import("bonjour-service").Bonjour) => {
+    const candidate = (instance as unknown as { server?: { mdns?: Partial<MdnsErrorEmitter> } })
+      .server?.mdns;
+    if (typeof candidate?.on !== "function" || typeof candidate.removeListener !== "function") {
+      return;
+    }
+    const emitter = candidate as MdnsErrorEmitter;
+    const listener = () => {};
+    emitter.on("error", listener);
+    mdnsErrorListeners.set(instance, { emitter, listener });
+  };
+
+  const detachMdnsErrorListener = (instance: import("bonjour-service").Bonjour) => {
+    const registration = mdnsErrorListeners.get(instance);
+    if (!registration) return;
+    mdnsErrorListeners.delete(instance);
+    try {
+      registration.emitter.removeListener("error", registration.listener);
+    } catch {}
+  };
 
   const disposeResources = async (
     ownedBonjour: import("bonjour-service").Bonjour | null,
@@ -47,8 +78,12 @@ export function createBonjourDiscovery(): Discovery {
       await ownedBonjour?.unpublishAll();
     } catch {}
     try {
-      ownedBonjour?.destroy();
-    } catch {}
+      ownedBonjour?.destroy(() => {
+        if (ownedBonjour) detachMdnsErrorListener(ownedBonjour);
+      });
+    } catch {
+      if (ownedBonjour) detachMdnsErrorListener(ownedBonjour);
+    }
   };
 
   return {
@@ -66,10 +101,16 @@ export function createBonjourDiscovery(): Discovery {
             port?: number;
             addresses?: string[];
             host?: string;
-            txt?: Record<string, string>;
+            txt?: Record<string, unknown>;
           };
           const fingerprint = svc.txt?.["fp"];
-          if (!fingerprint || fingerprint === advertise.fingerprint) return null;
+          if (
+            typeof fingerprint !== "string" ||
+            !CERT_FINGERPRINT.test(fingerprint) ||
+            fingerprint === advertise.fingerprint
+          ) {
+            return null;
+          }
           const address = svc.addresses?.find((a) => !a.includes(":")) ?? svc.host ?? "";
           if (!address || !svc.port) return null;
           return { fingerprint, name: svc.name ?? "Unknown device", address, port: svc.port };
@@ -111,9 +152,15 @@ export function createBonjourDiscovery(): Discovery {
             nextBrowser.on("srv-update", refreshPeer);
             nextBrowser.on("down", (service: unknown) => {
               if (!ownsBrowser()) return;
-              const svc = service as { txt?: Record<string, string> };
+              const svc = service as { txt?: Record<string, unknown> };
               const fingerprint = svc.txt?.["fp"];
-              if (fingerprint && fingerprint !== advertise.fingerprint) onPeerDown(fingerprint);
+              if (
+                typeof fingerprint === "string" &&
+                CERT_FINGERPRINT.test(fingerprint) &&
+                fingerprint !== advertise.fingerprint
+              ) {
+                onPeerDown(fingerprint);
+              }
             });
           } catch {
             if (browser === nextBrowser) browser = null;
@@ -129,6 +176,7 @@ export function createBonjourDiscovery(): Discovery {
         try {
           // Its default async error callback throws, which can crash Electron.
           instance = new Bonjour({}, () => {});
+          containMdnsErrors(instance);
           bonjour = instance;
           instance.publish({
             name: `PromptBranch ${advertise.deviceName}`,

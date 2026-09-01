@@ -66,7 +66,9 @@ describe("Bonjour discovery", () => {
         return browser;
       }
       async unpublishAll(): Promise<void> {}
-      destroy(): void {}
+      destroy(callback?: () => void): void {
+        callback?.();
+      }
     }
     vi.doMock("bonjour-service", () => ({ Bonjour: FakeBonjour }));
     const discovery = createBonjourDiscovery();
@@ -97,6 +99,112 @@ describe("Bonjour discovery", () => {
       txt: { fp: "b".repeat(64) },
     });
     expect(peers.map((peer) => peer.name)).toEqual(["Remote"]);
+
+    await discovery.stop();
+  });
+
+  it("contains emitted mDNS socket errors and removes its listener on stop", async () => {
+    vi.useFakeTimers();
+    const mdns = new EventEmitter();
+    const browser = new FakeBrowser();
+    let listenersDuringPublish = 0;
+    class FakeBonjour {
+      server = { mdns };
+      publish(): void {
+        listenersDuringPublish = mdns.listenerCount("error");
+      }
+      find(): FakeBrowser {
+        return browser;
+      }
+      async unpublishAll(): Promise<void> {}
+      destroy(callback?: () => void): void {
+        callback?.();
+      }
+    }
+    vi.doMock("bonjour-service", () => ({ Bonjour: FakeBonjour }));
+    const discovery = createBonjourDiscovery();
+    const peers: DiscoveredPeer[] = [];
+
+    discovery.start(
+      { port: 52_100, fingerprint: "a".repeat(64), deviceName: "Local" },
+      (peer) => peers.push(peer),
+      () => {},
+    );
+    await vi.dynamicImportSettled();
+
+    expect(listenersDuringPublish).toBe(1);
+    const thrown: unknown[] = [];
+    setTimeout(() => {
+      try {
+        mdns.emit("error", new Error("mDNS port unavailable"));
+      } catch (error) {
+        thrown.push(error);
+      }
+    }, 0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(thrown).toEqual([]);
+    browser.emit("up", {
+      name: "Remote",
+      port: 52_101,
+      addresses: ["192.0.2.10"],
+      txt: { fp: "b".repeat(64) },
+    });
+    expect(peers.map((peer) => peer.name)).toEqual(["Remote"]);
+
+    await discovery.stop();
+    expect(mdns.listenerCount("error")).toBe(0);
+  });
+
+  it("rejects malformed advertised fingerprints before peer callbacks", async () => {
+    const browser = new FakeBrowser();
+    class FakeBonjour {
+      server = { mdns: new EventEmitter() };
+      publish(): void {}
+      find(): FakeBrowser {
+        return browser;
+      }
+      async unpublishAll(): Promise<void> {}
+      destroy(callback?: () => void): void {
+        callback?.();
+      }
+    }
+    vi.doMock("bonjour-service", () => ({ Bonjour: FakeBonjour }));
+    const discovery = createBonjourDiscovery();
+    const peers: DiscoveredPeer[] = [];
+    const peersDown: string[] = [];
+
+    discovery.start(
+      { port: 52_100, fingerprint: "a".repeat(64), deviceName: "Local" },
+      (peer) => peers.push(peer),
+      (fingerprint) => peersDown.push(fingerprint),
+    );
+    await vi.dynamicImportSettled();
+
+    for (const fingerprint of ["short", "B".repeat(64), "g".repeat(64), 42]) {
+      const service = {
+        name: "Malformed",
+        port: 52_101,
+        addresses: ["192.0.2.10"],
+        txt: { fp: fingerprint },
+      };
+      browser.emit("up", service);
+      browser.emit("down", service);
+    }
+    expect(peers).toEqual([]);
+    expect(peersDown).toEqual([]);
+
+    const validFingerprint = "b".repeat(64);
+    const validService = {
+      name: "Valid",
+      port: 52_101,
+      addresses: ["192.0.2.11"],
+      txt: { fp: validFingerprint },
+    };
+    browser.emit("up", validService);
+    browser.emit("down", validService);
+    expect(peers.map((peer) => peer.fingerprint)).toEqual([validFingerprint]);
+    expect(peersDown).toEqual([validFingerprint]);
 
     await discovery.stop();
   });

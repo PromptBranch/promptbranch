@@ -92,6 +92,9 @@ interface DialAttempt {
 class Connection {
   private phase: Phase;
   private readonly reader = createFrameReader((message) => this.dispatch(message));
+  private closing = false;
+  private readonly closed: Promise<void>;
+  private resolveClosed: (() => void) | null = null;
   /** The socket or session faulted — counts toward peer unhealthiness. */
   failed = false;
 
@@ -102,28 +105,49 @@ class Connection {
     readonly direction: "inbound" | "outbound",
   ) {
     this.phase = phase;
+    this.closed = new Promise((resolve) => {
+      this.resolveClosed = resolve;
+    });
     socket.setNoDelay(true);
-    socket.on("data", (chunk: Buffer) => {
-      try {
-        this.reader(chunk);
-      } catch (err) {
-        service.deps.log?.(`frame error from peer: ${String(err)}`);
-        this.failed = true;
-        socket.destroy(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-    socket.on("close", () => service.connectionClosed(this));
-    socket.on("end", () => {
-      // The peer half-closed; a sync peer that stops talking is gone. Close
-      // our side too so the connection map frees up for re-dialing.
-      socket.end();
-    });
-    socket.on("error", (err) => {
-      this.failed = true;
-      if (this.phase.kind === "sync") this.phase.session.markClosed("error");
-      service.deps.log?.(`peer socket error: ${String(err)}`);
-    });
+    socket.on("data", this.onData);
+    socket.on("close", this.onClose);
+    socket.on("end", this.onEnd);
+    socket.on("error", this.onError);
   }
+
+  private readonly onData = (chunk: Buffer): void => {
+    if (this.closing) return;
+    try {
+      this.reader(chunk);
+    } catch (err) {
+      this.service.deps.log?.(`frame error from peer: ${String(err)}`);
+      this.failed = true;
+      this.socket.destroy(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  private readonly onClose = (): void => {
+    this.closing = true;
+    this.detachHandlers();
+    if (this.phase.kind === "sync") {
+      this.phase.session.markClosed(this.failed ? "error" : "closed");
+    }
+    this.service.connectionClosed(this);
+    this.resolveClosed?.();
+    this.resolveClosed = null;
+  };
+
+  private readonly onEnd = (): void => {
+    // A peer half-close ends the full-duplex sync session. Destroy our side
+    // so no late frames can outlive the connection owner's bookkeeping.
+    void this.close();
+  };
+
+  private readonly onError = (err: Error): void => {
+    this.failed = true;
+    if (this.phase.kind === "sync") this.phase.session.markClosed("error", err);
+    this.service.deps.log?.(`peer socket error: ${String(err)}`);
+  };
 
   get fingerprint(): string {
     return this.phase.fingerprint;
@@ -131,6 +155,10 @@ class Connection {
 
   get phaseKind(): Phase["kind"] {
     return this.phase.kind;
+  }
+
+  get isClosing(): boolean {
+    return this.closing;
   }
 
   get peerName(): string | null {
@@ -155,6 +183,7 @@ class Connection {
   }
 
   private dispatch(message: unknown): void {
+    if (this.closing) return;
     if (this.phase.kind === "pairing-in") {
       this.service.feedPairingAcceptor(this.phase.fingerprint, message);
     } else if (this.phase.kind === "pairing-out") {
@@ -165,7 +194,8 @@ class Connection {
   }
 
   /** Hands the live socket from a completed handshake to a sync session. */
-  upgradeToSync(peerName: string | null): void {
+  upgradeToSync(peerName: string | null): boolean {
+    if (this.closing) return false;
     const fingerprint = this.phase.fingerprint;
     if (peerName) {
       this.service.deps.engine.upsertSyncPeer({ fingerprint, name: peerName });
@@ -174,18 +204,34 @@ class Connection {
     this.phase = { kind: "sync", fingerprint, session };
     session.start();
     this.service.deps.onStatusChange();
+    return true;
   }
 
   notify(): void {
-    if (this.phase.kind === "sync") this.phase.session.notify();
+    if (!this.closing && this.phase.kind === "sync") this.phase.session.notify();
   }
 
   ping(): void {
-    if (this.phase.kind === "sync") this.phase.session.sendPing();
+    if (!this.closing && this.phase.kind === "sync") this.phase.session.sendPing();
   }
 
-  end(): void {
-    this.socket.end();
+  close(): Promise<void> {
+    if (this.closing) return this.closed;
+    this.closing = true;
+    // Detach synchronously before destroy(): a data event already queued by
+    // the stream must not reach pairing or sync after ownership is dropped.
+    this.socket.off("data", this.onData);
+    this.socket.off("end", this.onEnd);
+    if (this.phase.kind === "sync") this.phase.session.markClosed("closed");
+    this.socket.destroy();
+    return this.closed;
+  }
+
+  private detachHandlers(): void {
+    this.socket.off("data", this.onData);
+    this.socket.off("close", this.onClose);
+    this.socket.off("end", this.onEnd);
+    this.socket.off("error", this.onError);
   }
 }
 
@@ -296,6 +342,7 @@ export class PeerService {
     this.lifecycleGeneration += 1;
     this.lifecycleState = "stopped";
     this.pairingUntil = 0;
+    const connections = [...this.connections.values()];
     this.cancelPendingSockets("Sync networking stopped");
     this.cancelPendingPairings("Sync networking stopped");
     this.inFlightDials.clear();
@@ -306,8 +353,8 @@ export class PeerService {
     this.startupReconnectTimer = null;
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
-    for (const connection of this.connections.values()) connection.end();
     this.connections.clear();
+    await Promise.all(connections.map((connection) => connection.close()));
     this.pairingAcceptors.clear();
     const server = this.server;
     this.server = null;
@@ -336,7 +383,7 @@ export class PeerService {
       if (connection.phaseKind === "pairing-in") {
         this.connections.delete(fingerprint);
         this.pairingAcceptors.delete(fingerprint);
-        connection.end();
+        void connection.close();
       }
     }
     this.deps.onStatusChange();
@@ -418,8 +465,8 @@ export class PeerService {
         resolve(result);
       };
       const timer = setTimeout(() => {
-        socket.destroy();
         this.connections.delete(fingerprint);
+        void connection.close();
         finish({ ok: false, error: "Timed out waiting for the other device to accept" });
       }, this.deps.pairTimeoutMs ?? 60_000);
       timer.unref?.();
@@ -429,24 +476,28 @@ export class PeerService {
         onConfirmed: () => {
           if (
             !this.canAdopt(generation, true) ||
+            connection.isClosing ||
             this.connections.get(fingerprint) !== connection
           ) {
-            socket.destroy();
+            void connection.close();
             finish({ ok: false, error: "Sync networking changed during pairing" });
             return;
           }
           // Pin eagerly so a dropped connection can still reconnect; the
           // peer's hello refreshs the name.
           this.deps.engine.upsertSyncPeer({ fingerprint, name: "Paired device" });
-          connection.upgradeToSync(null);
+          if (!connection.upgradeToSync(null)) {
+            finish({ ok: false, error: "Connection closed during pairing" });
+            return;
+          }
           this.deps.engine.touchSyncPeer(fingerprint, `${address}:${port}`);
           finish({ ok: true });
         },
         onRejected: () => {
-          socket.destroy();
           if (this.connections.get(fingerprint) === connection) {
             this.connections.delete(fingerprint);
           }
+          void connection.close();
           finish({ ok: false, error: "The other device declined" });
         },
         log: (message) => this.deps.log?.(`[pairing] ${message}`),
@@ -462,7 +513,7 @@ export class PeerService {
         if (this.connections.get(fingerprint) === connection) {
           this.connections.delete(fingerprint);
         }
-        socket.destroy();
+        void connection.close();
         finish({ ok: false, error: reason });
       });
       initiator.start();
@@ -490,7 +541,7 @@ export class PeerService {
     const connection = this.connections.get(fingerprint);
     if (connection) {
       this.connections.delete(fingerprint);
-      connection.end();
+      void connection.close();
     }
     this.pairingAcceptors.delete(fingerprint);
     const timer = this.reconnectTimers.get(fingerprint);
@@ -575,8 +626,8 @@ export class PeerService {
 
   private adoptConnection(connection: Connection, fingerprint: string, address?: string): boolean {
     const peer = this.deps.engine.getSyncPeer(fingerprint);
-    if (!peer || peer.forgotten_at) {
-      connection.end();
+    if (connection.isClosing || !peer || peer.forgotten_at) {
+      void connection.close();
       return false;
     }
     const existing = this.connections.get(fingerprint);
@@ -588,11 +639,11 @@ export class PeerService {
         existing.direction !== preferred &&
         connection.direction === preferred;
       if (!replace) {
-        connection.end();
+        void connection.close();
         return false;
       }
       this.connections.set(fingerprint, connection);
-      existing.end();
+      void existing.close();
     } else {
       this.connections.set(fingerprint, connection);
     }
@@ -638,9 +689,10 @@ export class PeerService {
           this.pairingAcceptors.delete(fingerprint);
           if (
             !this.canAdopt(generation, false) ||
+            connection.isClosing ||
             this.connections.get(fingerprint) !== connection
           ) {
-            socket.destroy();
+            void connection.close();
             return;
           }
           socket.write(encodeFrame({ t: "pair-confirmed", name: this.deps.deviceName() }));
@@ -649,12 +701,10 @@ export class PeerService {
         onRejected: () => {
           this.pairingAcceptors.delete(fingerprint);
           if (this.connections.get(fingerprint) !== connection) {
-            socket.destroy();
+            void connection.close();
             return;
           }
-          socket.write(encodeFrame({ t: "pair-rejected" }));
-          socket.end();
-          this.connections.delete(fingerprint);
+          socket.end(encodeFrame({ t: "pair-rejected" }), () => void connection.close());
         },
         log: (message) => this.deps.log?.(`[pairing] ${message}`),
       });

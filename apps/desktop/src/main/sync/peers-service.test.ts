@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Duplex } from "node:stream";
 import tls from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/core";
 import { createBonjourDiscovery, type DiscoveredPeer, type Discovery } from "./discovery.js";
+import { encodeFrame } from "./frames.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { PeerService, type PeerServiceDeps } from "./peers-service.js";
 
@@ -87,7 +89,99 @@ async function start(rig: ServiceRig): Promise<number> {
   return port!;
 }
 
+function controlledTlsSocket(fingerprint: string): {
+  socket: tls.TLSSocket;
+  establish(): void;
+  inject(frame: Buffer): void;
+} {
+  const duplex = new Duplex({
+    read() {},
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+  const socket = duplex as unknown as tls.TLSSocket;
+  socket.setNoDelay = () => socket;
+  socket.setTimeout = () => socket;
+  socket.getPeerCertificate = (() => ({
+    fingerprint256: fingerprint,
+  })) as tls.TLSSocket["getPeerCertificate"];
+  return {
+    socket,
+    establish: () => queueMicrotask(() => socket.emit("secureConnect")),
+    // Emit directly so this also models a data event already queued when
+    // shutdown begins, including after destroy() marks the stream unusable.
+    inject: (frame) => socket.emit("data", frame),
+  };
+}
+
+function remotePromptFrame(): { promptId: string; frame: Buffer } {
+  const db = openMemoryDatabase();
+  const lib = new PromptLibrary(db);
+  const engine = new SyncEngine(db);
+  const prompt = lib.createPrompt({ title: "Late remote frame", content: "must be ignored" });
+  engine.refineDirty();
+  const { ops } = engine.opsSince({}, 1_000_000);
+  return { promptId: prompt.id, frame: encodeFrame({ t: "ops", ops, more: false }) };
+}
+
 describe("peer service over real TLS (loopback)", () => {
+  it("fully closes a live session before stop returns", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const controlled = controlledTlsSocket(remoteIdentity.fingerprint);
+    const local = await rig("Local", {
+      connectTls: () => {
+        controlled.establish();
+        return controlled.socket;
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    local.engine.upsertSyncPeer({ fingerprint: remoteIdentity.fingerprint, name: "Remote" });
+    expect(
+      await local.service.pairWithCode(
+        "127.0.0.1",
+        52_100,
+        remoteIdentity.pairingCode,
+      ),
+    ).toEqual({ ok: true });
+    const late = remotePromptFrame();
+
+    await local.service.stop();
+
+    controlled.inject(late.frame);
+    expect(local.lib.getPrompt(late.promptId)).toBeNull();
+    expect(controlled.socket.destroyed).toBe(true);
+  });
+
+  it("fully closes a live session before forgetting its peer", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const controlled = controlledTlsSocket(remoteIdentity.fingerprint);
+    const local = await rig("Local", {
+      connectTls: () => {
+        controlled.establish();
+        return controlled.socket;
+      },
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    local.engine.upsertSyncPeer({ fingerprint: remoteIdentity.fingerprint, name: "Remote" });
+    expect(
+      await local.service.pairWithCode(
+        "127.0.0.1",
+        52_100,
+        remoteIdentity.pairingCode,
+      ),
+    ).toEqual({ ok: true });
+    const late = remotePromptFrame();
+
+    local.service.forgetPeer(remoteIdentity.fingerprint);
+
+    controlled.inject(late.frame);
+    expect(local.lib.getPrompt(late.promptId)).toBeNull();
+    expect(controlled.socket.destroyed).toBe(true);
+  });
+
   it("refreshes Bonjour endpoints on srv-update and removes down services", async () => {
     const browser = new EventEmitter() as EventEmitter & { stop(): void };
     browser.stop = () => {};

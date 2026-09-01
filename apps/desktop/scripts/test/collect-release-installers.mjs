@@ -138,6 +138,6 @@ test("Debian packages declare every required Electron runtime library", async ()
     "libuuid1",
     "libsecret-1-0",
     "libgbm1",
-    "libasound2",
+    "libasound2t64 | libasound2",
   ]);
 });

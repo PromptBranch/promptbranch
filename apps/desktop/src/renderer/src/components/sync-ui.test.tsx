@@ -226,6 +226,7 @@ describe("SyncPairRequestDialog", () => {
       requestId: "550e8400-e29b-41d4-a716-446655440000",
       accept: true,
     });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledTimes(1);
   });
 
   it("declines via the overlay close path", async () => {
@@ -243,6 +244,34 @@ describe("SyncPairRequestDialog", () => {
       requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
       accept: false,
     });
+    expect(bridge.sync.respondPairing).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues concurrent pairing requests and answers each exact request", async () => {
+    const bridge = installMockBridge();
+    renderApp(<SyncPairRequestDialog />);
+    bridge.emitSyncPairRequest({
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+      fingerprint: "a".repeat(64),
+      fingerprintShort: "aaaaaaaaaa",
+      name: "Mac Studio",
+    });
+    bridge.emitSyncPairRequest({
+      requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57",
+      fingerprint: "b".repeat(64),
+      fingerprintShort: "bbbbbbbbbb",
+      name: "MacBook Pro",
+    });
+
+    expect(await screen.findByText("Mac Studio")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("MacBook Pro")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Decline" }));
+
+    expect(bridge.sync.respondPairing.mock.calls).toEqual([
+      [{ requestId: "550e8400-e29b-41d4-a716-446655440000", accept: true }],
+      [{ requestId: "b6d1eb44-ae93-4aa7-870d-332ccb1a2b57", accept: false }],
+    ]);
   });
 });
 

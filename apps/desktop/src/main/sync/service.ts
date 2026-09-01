@@ -50,7 +50,7 @@ export class DesktopSync {
   private emitScheduled = false;
   private emitTimer: NodeJS.Timeout | null = null;
   private lastEmitAt = 0;
-  /** Set by stop(): before-quit closes the database shortly after. */
+  /** Set by dispose(): before-quit closes the database after queued stop work. */
   private disposed = false;
 
   constructor(private readonly deps: DesktopSyncDeps) {
@@ -160,6 +160,7 @@ export class DesktopSync {
 
   setEnabled(enabled: boolean): Promise<SyncStatusDto> {
     return this.mutateLifecycle(async () => {
+      this.assertActive();
       this.deps.lib.setSetting(ENABLED_SETTING, enabled ? "1" : "0");
       if (enabled) {
         // First enable: ship the pre-sync library by marking every row dirty.
@@ -179,6 +180,7 @@ export class DesktopSync {
   }
 
   async setDeviceName(name: string): Promise<SyncStatusDto> {
+    this.assertActive();
     this.deps.lib.setSetting(DEVICE_NAME_SETTING, name);
     // The name rides in every hello; re-run anti-entropy so peers see it.
     this.poke();
@@ -190,6 +192,7 @@ export class DesktopSync {
       return Promise.reject(new RangeError("Listening port must be between 1024 and 65535"));
     }
     return this.mutateLifecycle(async () => {
+      this.assertActive();
       this.deps.lib.setSetting(LISTEN_PORT_SETTING, String(port));
       if (this.isEnabled()) {
         await this.stopService();
@@ -201,18 +204,21 @@ export class DesktopSync {
   }
 
   async beginPairing(): Promise<SyncStatusDto> {
+    this.assertActive();
     this.requireService().beginPairing();
     this.emitStatus();
     return this.status();
   }
 
   async cancelPairing(): Promise<SyncStatusDto> {
+    this.assertActive();
     this.service?.cancelPairing();
     this.emitStatus();
     return this.status();
   }
 
   async pairWithCode(address: string, port: number, code: string) {
+    this.assertActive();
     const service = this.service;
     if (!service) return { ok: false, error: "Sync is not enabled" };
     const result = await service.pairWithCode(address, port, code);
@@ -229,6 +235,7 @@ export class DesktopSync {
   }
 
   forgetDevice(fingerprint: string): Promise<SyncStatusDto> {
+    if (this.disposed) return Promise.reject(this.disposedError());
     // End the live connection before unpinning, or the peer would keep
     // syncing until its socket happens to die.
     this.service?.forgetPeer(fingerprint);
@@ -244,17 +251,20 @@ export class DesktopSync {
    * the local log where they will ship from whenever sync comes on.
    */
   poke(): void {
+    if (this.disposed) return;
     this.engine.refineDirty();
     this.service?.notifyPeers();
   }
 
   now(): Promise<SyncStatusDto> {
+    if (this.disposed) return Promise.reject(this.disposedError());
     this.poke();
     this.emitStatus();
     return Promise.resolve(this.status());
   }
 
   status(): SyncStatusDto {
+    this.assertActive();
     const raw = this.service?.status() ?? null;
     return this.toDto(raw);
   }
@@ -264,6 +274,14 @@ export class DesktopSync {
   private requireService(): PeerService {
     if (!this.service) throw new Error("Sync is not enabled");
     return this.service;
+  }
+
+  private assertActive(): void {
+    if (this.disposed) throw this.disposedError();
+  }
+
+  private disposedError(): Error {
+    return new Error("Sync coordinator is disposed");
   }
 
   private toDto(raw: SyncServiceStatus | null): SyncStatusDto {

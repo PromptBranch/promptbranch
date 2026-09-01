@@ -225,7 +225,7 @@ describe("DesktopSync coordinator", () => {
     }
   });
 
-  it("does not restart networking when a port save overlaps disabling sync", async () => {
+  it("finishes disabled with no listener when a port save overlaps disabling sync", async () => {
     const stopEntered = deferred();
     const releaseStop = deferred();
     const { sync } = await rig("Test Mac", () => ({
@@ -528,15 +528,40 @@ describe("DesktopSync coordinator", () => {
     expect(again.listening).toBe(true);
   });
 
-  it("never reads the database after quit closes it (trailing status emit)", async () => {
-    // Reproduces the quit crash: stopping the peer service fires status
-    // changes, before-quit disposes + closes the database immediately after,
-    // and the throttled emit timer must not fire against the closed handle.
-    const { sync, db } = await rig();
+  it("never touches the database after a queued restart drains during quit", async () => {
+    const stopEntered = deferred();
+    const releaseStop = deferred();
+    const { sync, db } = await rig("Test Mac", () => ({
+      start: () => {},
+      stop: async () => {
+        stopEntered.resolve();
+        await releaseStop.promise;
+      },
+    }));
     await sync.setEnabled(true);
+    const probe = net.createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    probe.close();
+    await once(probe, "close");
+
+    const changingPort = sync.setListenPort(port);
+    await stopEntered.promise;
     sync.dispose();
-    await sync.stop();
+    const stopping = sync.stop();
+    releaseStop.resolve();
+    const [portResult, stopResult] = await Promise.allSettled([changingPort, stopping]);
+    expect(portResult).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({ message: "Sync coordinator is disposed" }),
+    });
+    expect(stopResult).toEqual({ status: "fulfilled", value: undefined });
     db.close();
-    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(() => sync.poke()).not.toThrow();
+    expect(() => sync.status()).toThrow("Sync coordinator is disposed");
+    await expect(sync.setEnabled(true)).rejects.toThrow("Sync coordinator is disposed");
   });
 });

@@ -69,6 +69,7 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000]
 const NEARBY_TTL_MS = 5 * 60 * 1000;
 const PING_INTERVAL_MS = 30_000;
 const LIVENESS_TIMEOUT_MS = 180_000;
+const PEER_ROUTE_SOURCE_PREFIX = "peer-route-source:";
 /** Consecutive failed sessions/dials before a peer shows as unhealthy. */
 export const UNHEALTHY_FAILURES = 3;
 
@@ -507,6 +508,7 @@ export class PeerService {
 
     const pinned = this.deps.engine.getSyncPeer(fingerprint);
     if (pinned && !pinned.forgotten_at) {
+      this.rememberEndpoint(fingerprint, address, port);
       const session = this.makeSession(socket, fingerprint);
       const connection = new Connection(
         socket,
@@ -568,7 +570,7 @@ export class PeerService {
             finish({ ok: false, error: "Connection closed during pairing" });
             return;
           }
-          this.deps.engine.touchSyncPeer(fingerprint, `${address}:${port}`);
+          this.rememberEndpoint(fingerprint, address, port);
           finish({ ok: true });
         },
         onRejected: () => {
@@ -634,6 +636,7 @@ export class PeerService {
     this.endpoints.delete(fingerprint);
     this.manualEndpointClaims.delete(fingerprint);
     this.failures.delete(fingerprint);
+    this.setRouteSource(fingerprint, "none");
   }
 
   status(): SyncServiceStatus {
@@ -1050,17 +1053,25 @@ export class PeerService {
       "outbound",
     );
     let durableAddress: string | undefined;
-    if (
+    const consumeDiscovery =
       this.discoveredEndpoints.get(fingerprint) === endpoint &&
-      !this.manualEndpointClaims.has(fingerprint)
-    ) {
-      this.discoveredEndpoints.delete(fingerprint);
-      this.endpoints.set(fingerprint, endpoint);
-      durableAddress = `${endpoint.address}:${endpoint.port}`;
-    } else if (this.endpoints.get(fingerprint) === endpoint) {
+      !this.manualEndpointClaims.has(fingerprint);
+    const promoteDiscovery =
+      consumeDiscovery &&
+      this.routeSource(fingerprint) !== "manual";
+    if (promoteDiscovery || this.endpoints.get(fingerprint) === endpoint) {
       durableAddress = `${endpoint.address}:${endpoint.port}`;
     }
-    if (this.adoptConnection(connection, fingerprint, durableAddress)) session.start();
+    if (this.adoptConnection(connection, fingerprint, durableAddress)) {
+      if (consumeDiscovery && this.discoveredEndpoints.get(fingerprint) === endpoint) {
+        this.discoveredEndpoints.delete(fingerprint);
+        if (promoteDiscovery) {
+          this.endpoints.set(fingerprint, endpoint);
+          this.setRouteSource(fingerprint, "discovery");
+        }
+      }
+      session.start();
+    }
     this.deps.onStatusChange();
     return { ok: true };
   }
@@ -1112,6 +1123,7 @@ export class PeerService {
     const endpoint = { address, port };
     this.discoveredEndpoints.delete(fingerprint);
     this.endpoints.set(fingerprint, endpoint);
+    this.setRouteSource(fingerprint, "manual");
     const peer = this.deps.engine.getSyncPeer(fingerprint);
     if (peer && !peer.forgotten_at) {
       this.deps.engine.upsertSyncPeer({
@@ -1123,11 +1135,27 @@ export class PeerService {
     return endpoint;
   }
 
+  private routeSource(fingerprint: string): "manual" | "discovery" | "none" | null {
+    const stored = this.deps.engine.getMeta(`${PEER_ROUTE_SOURCE_PREFIX}${fingerprint}`);
+    if (stored === "manual" || stored === "discovery" || stored === "none") return stored;
+    // Addresses saved before route provenance existed are conservatively
+    // treated as user-owned so an mDNS advertisement cannot displace them.
+    return this.deps.engine.getSyncPeer(fingerprint)?.address ? "manual" : null;
+  }
+
+  private setRouteSource(
+    fingerprint: string,
+    source: "manual" | "discovery" | "none",
+  ): void {
+    this.deps.engine.setMeta(`${PEER_ROUTE_SOURCE_PREFIX}${fingerprint}`, source);
+  }
+
   private endpointFor(fingerprint: string): PeerEndpoint | null {
     const discovered = this.discoveredEndpoints.get(fingerprint);
     if (discovered) return discovered;
     const current = this.endpoints.get(fingerprint);
     if (current) return current;
+    if (this.routeSource(fingerprint) === "none") return null;
     const saved = this.deps.engine.getSyncPeer(fingerprint)?.address;
     if (!saved) return null;
     const separator = saved.lastIndexOf(":");

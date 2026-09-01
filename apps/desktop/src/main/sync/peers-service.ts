@@ -83,6 +83,12 @@ interface PeerEndpoint {
   port: number;
 }
 
+interface DialAttempt {
+  endpoint: PeerEndpoint;
+  state: { superseded: boolean };
+  promise: Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
 class Connection {
   private phase: Phase;
   private readonly reader = createFrameReader((message) => this.dispatch(message));
@@ -189,10 +195,7 @@ export class PeerService {
   private port: number | null = null;
   private listenError: string | null = null;
   private readonly connections = new Map<string, Connection>();
-  private readonly inFlightDials = new Map<
-    string,
-    Promise<{ ok: true } | { ok: false; error: string }>
-  >();
+  private readonly inFlightDials = new Map<string, DialAttempt>();
   private readonly pendingSockets = new Set<PendingSocket>();
   private readonly pendingPairings = new Map<string, (reason: string) => void>();
   private lifecycleState: LifecycleState = "new";
@@ -207,6 +210,7 @@ export class PeerService {
   private startupReconnectTimer: NodeJS.Timeout | null = null;
   private readonly nearby = new Map<string, { name: string; address: string; port: number; seenAt: number }>();
   private readonly endpoints = new Map<string, PeerEndpoint>();
+  private readonly manualEndpointClaims = new Map<string, PeerEndpoint>();
   /** Consecutive failed sessions/dials per fingerprint; resets on success. */
   private readonly failures = new Map<string, number>();
   private readonly now: () => number;
@@ -224,6 +228,7 @@ export class PeerService {
     this.cancelPendingSockets("Sync networking restarted");
     this.cancelPendingPairings("Sync networking restarted");
     this.inFlightDials.clear();
+    this.manualEndpointClaims.clear();
     this.listenError = null;
     const server = tls.createServer(
       {
@@ -294,6 +299,7 @@ export class PeerService {
     this.cancelPendingSockets("Sync networking stopped");
     this.cancelPendingPairings("Sync networking stopped");
     this.inFlightDials.clear();
+    this.manualEndpointClaims.clear();
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
     if (this.startupReconnectTimer) clearTimeout(this.startupReconnectTimer);
@@ -363,7 +369,14 @@ export class PeerService {
     const known = knownMatches.length === 1 ? knownMatches[0] : undefined;
     if (known) {
       const endpoint = this.rememberEndpoint(known.fingerprint, address, port, true);
-      return this.connectKnownPeer(known.fingerprint, endpoint, true);
+      this.manualEndpointClaims.set(known.fingerprint, endpoint);
+      try {
+        return await this.connectKnownPeer(known.fingerprint, endpoint, true, true, generation);
+      } finally {
+        if (this.manualEndpointClaims.get(known.fingerprint) === endpoint) {
+          this.manualEndpointClaims.delete(known.fingerprint);
+        }
+      }
     }
 
     if (!this.canAdopt(generation, true)) {
@@ -487,6 +500,7 @@ export class PeerService {
     }
     this.reconnectAttempts.delete(fingerprint);
     this.endpoints.delete(fingerprint);
+    this.manualEndpointClaims.delete(fingerprint);
     this.failures.delete(fingerprint);
   }
 
@@ -762,6 +776,9 @@ export class PeerService {
       this.deps.onStatusChange();
       return;
     }
+    // A user-selected route owns this short handoff window. Discovery can
+    // offer another candidate after the manual attempt settles.
+    if (this.manualEndpointClaims.has(peer.fingerprint)) return;
     const endpoint = this.rememberEndpoint(peer.fingerprint, peer.address, peer.port, false);
     if (this.connections.has(peer.fingerprint)) return;
     // Only one side dials: the lexicographically smaller fingerprint.
@@ -777,8 +794,10 @@ export class PeerService {
     fingerprint: string,
     endpoint: PeerEndpoint,
     allowWithoutListener = false,
+    supersedeInFlight = false,
+    generation = this.lifecycleGeneration,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (!this.canAdopt(this.lifecycleGeneration, allowWithoutListener)) {
+    if (!this.canAdopt(generation, allowWithoutListener)) {
       return { ok: false, error: "Sync networking is stopped" };
     }
     if (this.connections.has(fingerprint)) return { ok: true };
@@ -786,15 +805,42 @@ export class PeerService {
       return { ok: false, error: "Sync listener is not running" };
     }
     const current = this.inFlightDials.get(fingerprint);
-    if (current) return current;
-    const attempt = this.runKnownPeerDial(
+    if (current) {
+      if (!supersedeInFlight || sameEndpoint(current.endpoint, endpoint)) {
+        return current.promise;
+      }
+      current.state.superseded = true;
+      this.cancelPendingSocket(
+        fingerprint,
+        "Connection superseded by a newer manual endpoint",
+      );
+      await current.promise;
+      if (this.endpoints.get(fingerprint) !== endpoint) {
+        return { ok: false, error: "Connection superseded by a newer manual endpoint" };
+      }
+      if (this.inFlightDials.get(fingerprint) === current) {
+        this.inFlightDials.delete(fingerprint);
+      }
+      return this.connectKnownPeer(
+        fingerprint,
+        endpoint,
+        allowWithoutListener,
+        supersedeInFlight,
+        generation,
+      );
+    }
+    const state = { superseded: false };
+    const promise = this.runKnownPeerDial(
       fingerprint,
       endpoint,
       allowWithoutListener,
+      state,
+      generation,
     );
+    const attempt = { endpoint, state, promise };
     this.inFlightDials.set(fingerprint, attempt);
     try {
-      return await attempt;
+      return await promise;
     } finally {
       if (this.inFlightDials.get(fingerprint) === attempt) {
         this.inFlightDials.delete(fingerprint);
@@ -806,11 +852,13 @@ export class PeerService {
     fingerprint: string,
     endpoint: PeerEndpoint,
     allowWithoutListener: boolean,
+    state: { superseded: boolean },
+    generation: number,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const generation = this.lifecycleGeneration;
     const invalidation = this.peerInvalidation(fingerprint);
     const result = await this.connectSocket(endpoint.address, endpoint.port, fingerprint);
     if (!result.ok) {
+      if (state.superseded) return result;
       const peer = this.deps.engine.getSyncPeer(fingerprint);
       if (
         !this.canAdopt(generation, allowWithoutListener) ||
@@ -826,13 +874,19 @@ export class PeerService {
     }
     const peer = this.deps.engine.getSyncPeer(fingerprint);
     if (
+      state.superseded ||
       !this.canAdopt(generation, allowWithoutListener) ||
       invalidation !== this.peerInvalidation(fingerprint) ||
       !peer ||
       peer.forgotten_at
     ) {
       result.socket.destroy();
-      return { ok: false, error: "Sync networking changed during connection" };
+      return {
+        ok: false,
+        error: state.superseded
+          ? "Connection superseded by a newer manual endpoint"
+          : "Sync networking changed during connection",
+      };
     }
     const session = this.makeSession(result.socket, fingerprint);
     const connection = new Connection(
@@ -939,10 +993,20 @@ export class PeerService {
     for (const pending of [...this.pendingSockets]) pending.cancel(reason);
   }
 
+  private cancelPendingSocket(fingerprint: string, reason: string): void {
+    for (const pending of [...this.pendingSockets]) {
+      if (pending.expectedFingerprint === fingerprint) pending.cancel(reason);
+    }
+  }
+
   private cancelPendingPairings(reason: string): void {
     for (const cancel of [...this.pendingPairings.values()]) cancel(reason);
     this.pendingPairings.clear();
   }
+}
+
+function sameEndpoint(left: PeerEndpoint, right: PeerEndpoint): boolean {
+  return left.address === right.address && left.port === right.port;
 }
 
 function peerFingerprint(socket: tls.TLSSocket): string | null {

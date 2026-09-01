@@ -626,7 +626,7 @@ describe("peer service over real TLS (loopback)", () => {
     expect(local.engine.getSyncPeer(fingerprint)?.address).toBe("vpn.example.test:52100");
   });
 
-  it("does not let an older successful dial overwrite a newer manual endpoint", async () => {
+  it("cancels an older dial before it can overwrite a newer manual endpoint", async () => {
     let resolveLookupStarted!: () => void;
     const lookupStarted = new Promise<void>((resolve) => {
       resolveLookupStarted = resolve;
@@ -672,12 +672,183 @@ describe("peer service over real TLS (loopback)", () => {
         .toBe(`127.0.0.1:${remotePort}`);
 
       releaseLookup();
-      expect((await olderDial).ok).toBe(true);
+      expect(await olderDial).toEqual({
+        ok: false,
+        error: "Connection superseded by a newer manual endpoint",
+      });
       expect((await newerManualDial).ok).toBe(true);
       expect(local.engine.getSyncPeer(remote.service.deps.identity.fingerprint)?.address)
         .toBe(`127.0.0.1:${remotePort}`);
     } finally {
       releaseLookup();
+    }
+  });
+
+  it("supersedes a hanging dial with a newer manual endpoint", async () => {
+    let resolveLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      resolveLookupStarted = resolve;
+    });
+    const attemptedHosts: string[] = [];
+    const remote = await rig("Remote", { startupReconnectDelayMs: 60_000 });
+    const remotePort = await start(remote);
+    const local = await rig("Local", {
+      connectTls: (options) => {
+        attemptedHosts.push(String(options.host));
+        if (options.host !== "stale.peer.invalid") return tls.connect(options);
+        return tls.connect({
+          ...options,
+          lookup: () => resolveLookupStarted(),
+        });
+      },
+      handshakeTimeoutMs: 5_000,
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    local.engine.upsertSyncPeer({
+      fingerprint: remote.service.deps.identity.fingerprint,
+      name: "Remote",
+    });
+    remote.engine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    const code = remote.service.deps.identity.pairingCode;
+    const olderDial = local.service.pairWithCode("stale.peer.invalid", remotePort, code);
+    let deadline: NodeJS.Timeout | null = null;
+
+    try {
+      await lookupStarted;
+      const newerDial = local.service.pairWithCode("127.0.0.1", remotePort, code);
+      const newerResult = await Promise.race([
+        newerDial,
+        new Promise<"deadline">((resolve) => {
+          deadline = setTimeout(() => resolve("deadline"), 750);
+        }),
+      ]);
+
+      expect(newerResult).not.toBe("deadline");
+      expect(newerResult).toEqual({ ok: true });
+      expect(await olderDial).toEqual({
+        ok: false,
+        error: "Connection superseded by a newer manual endpoint",
+      });
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("steady"));
+      expect(attemptedHosts).toEqual(["stale.peer.invalid", "127.0.0.1"]);
+      expect(local.engine.getSyncPeer(remote.service.deps.identity.fingerprint)?.address)
+        .toBe(`127.0.0.1:${remotePort}`);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      await local.service.stop();
+      await olderDial;
+    }
+  });
+
+  it("keeps discovery from displacing a manual endpoint during supersession", async () => {
+    let resolveLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      resolveLookupStarted = resolve;
+    });
+    const attemptedHosts: string[] = [];
+    const discovery = fakeDiscovery();
+    const remote = await rig("Remote", { startupReconnectDelayMs: 60_000 });
+    const remotePort = await start(remote);
+    const local = await rig("Local", {
+      discovery: discovery.impl,
+      connectTls: (options) => {
+        attemptedHosts.push(String(options.host));
+        if (options.host !== "stale.peer.invalid") return tls.connect(options);
+        return tls.connect({
+          ...options,
+          lookup: () => resolveLookupStarted(),
+        });
+      },
+      handshakeTimeoutMs: 5_000,
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    const fingerprint = remote.service.deps.identity.fingerprint;
+    local.engine.upsertSyncPeer({ fingerprint, name: "Remote" });
+    remote.engine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    const code = remote.service.deps.identity.pairingCode;
+    const olderDial = local.service.pairWithCode("stale.peer.invalid", remotePort, code);
+
+    try {
+      await lookupStarted;
+      const manualDial = local.service.pairWithCode("127.0.0.1", remotePort, code);
+      discovery.fire({
+        fingerprint,
+        name: "Unverified LAN route",
+        address: "192.0.2.55",
+        port: 52_155,
+      });
+
+      expect(await manualDial).toEqual({ ok: true });
+      expect(await olderDial).toEqual({
+        ok: false,
+        error: "Connection superseded by a newer manual endpoint",
+      });
+      await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("steady"));
+      expect(attemptedHosts).toEqual(["stale.peer.invalid", "127.0.0.1"]);
+      expect(local.engine.getSyncPeer(fingerprint)?.address).toBe(`127.0.0.1:${remotePort}`);
+    } finally {
+      await local.service.stop();
+      await olderDial;
+    }
+  });
+
+  it("lets the latest manual endpoint supersede an earlier queued manual claim", async () => {
+    let resolveLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      resolveLookupStarted = resolve;
+    });
+    const attemptedHosts: string[] = [];
+    const remote = await rig("Remote", { startupReconnectDelayMs: 60_000 });
+    const remotePort = await start(remote);
+    const local = await rig("Local", {
+      connectTls: (options) => {
+        attemptedHosts.push(String(options.host));
+        if (options.host !== "stale.peer.invalid") return tls.connect(options);
+        return tls.connect({
+          ...options,
+          lookup: () => resolveLookupStarted(),
+        });
+      },
+      handshakeTimeoutMs: 5_000,
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    const fingerprint = remote.service.deps.identity.fingerprint;
+    local.engine.upsertSyncPeer({ fingerprint, name: "Remote" });
+    remote.engine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    const code = remote.service.deps.identity.pairingCode;
+    const olderDial = local.service.pairWithCode("stale.peer.invalid", remotePort, code);
+
+    try {
+      await lookupStarted;
+      const middleDial = local.service.pairWithCode("middle.peer.invalid", remotePort, code);
+      const latestDial = local.service.pairWithCode("127.0.0.1", remotePort, code);
+
+      expect(await latestDial).toEqual({ ok: true });
+      expect(await olderDial).toEqual({
+        ok: false,
+        error: "Connection superseded by a newer manual endpoint",
+      });
+      expect(await middleDial).toEqual({
+        ok: false,
+        error: "Connection superseded by a newer manual endpoint",
+      });
+      expect(attemptedHosts).toEqual(["stale.peer.invalid", "127.0.0.1"]);
+      expect(local.engine.getSyncPeer(fingerprint)?.address).toBe(`127.0.0.1:${remotePort}`);
+    } finally {
+      await local.service.stop();
+      await olderDial;
     }
   });
 

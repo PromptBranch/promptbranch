@@ -24,6 +24,8 @@ export interface PeerServiceDeps {
   listen?: { host?: string; port?: number };
   /** How long pairWithCode waits for the acceptor's verdict. */
   pairTimeoutMs?: number;
+  /** How long an outbound socket may take to complete its TLS handshake. */
+  handshakeTimeoutMs?: number;
   log?: (message: string) => void;
   now?: () => number;
 }
@@ -497,22 +499,51 @@ export class PeerService {
         key: this.deps.identity.keyPem,
         cert: this.deps.identity.certPem,
         rejectUnauthorized: false,
-        timeout: 10_000,
       });
-      const fail = (error: string) => {
-        socket.destroy();
-        resolve({ ok: false, error });
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        socket.off("secureConnect", onSecureConnect);
       };
-      socket.once("error", (err) => fail(`Could not connect: ${String(err.message ?? err)}`));
-      socket.once("timeout", () => fail("Connection timed out"));
-      socket.once("secureConnect", () => {
+      const finish = (
+        result:
+          | { ok: true; socket: tls.TLSSocket; fingerprint: string }
+          | { ok: false; error: string },
+      ) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (!result.ok) socket.destroy();
+        resolve(result);
+      };
+      const fail = (error: string) => {
+        finish({ ok: false, error });
+      };
+      const onError = (err: Error) => {
+        fail(`Could not connect: ${String(err.message ?? err)}`);
+      };
+      const onClose = () => {
+        fail("Connection closed during TLS handshake");
+      };
+      const onSecureConnect = () => {
         const fingerprint = peerFingerprint(socket);
         if (!fingerprint) return fail("The other device did not identify itself");
         if (expectedFingerprint !== null && fingerprint !== expectedFingerprint) {
           return fail("The device at that address does not match its pinned identity");
         }
-        resolve({ ok: true, socket, fingerprint });
-      });
+        finish({ ok: true, socket, fingerprint });
+      };
+      socket.once("error", onError);
+      socket.once("close", onClose);
+      socket.once("secureConnect", onSecureConnect);
+      timer = setTimeout(
+        () => fail("Connection timed out"),
+        this.deps.handshakeTimeoutMs ?? 10_000,
+      );
+      timer.unref?.();
     });
   }
 

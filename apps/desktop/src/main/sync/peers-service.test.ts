@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -78,6 +80,80 @@ async function start(rig: ServiceRig): Promise<number> {
 }
 
 describe("peer service over real TLS (loopback)", () => {
+  it("keeps an established session alive beyond the TLS handshake deadline", async () => {
+    const handshakeTimeoutMs = 60;
+    const transitionsA: string[] = [];
+    const transitionsB: string[] = [];
+    let a!: ServiceRig;
+    let b!: ServiceRig;
+    a = await rig("A", {
+      handshakeTimeoutMs,
+      onStatusChange: () => transitionsA.push(a.service.status().peers[0]?.state ?? "none"),
+    });
+    b = await rig("B", {
+      handshakeTimeoutMs,
+      onStatusChange: () => transitionsB.push(b.service.status().peers[0]?.state ?? "none"),
+    });
+    const portA = await start(a);
+    await start(b);
+
+    const code = a.service.beginPairing();
+    expect((await b.service.pairWithCode("127.0.0.1", portA, code)).ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(a.service.status().peers[0]?.state).toBe("steady");
+      expect(b.service.status().peers[0]?.state).toBe("steady");
+    });
+
+    transitionsA.length = 0;
+    transitionsB.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    expect(a.service.status().peers[0]?.state).toBe("steady");
+    expect(b.service.status().peers[0]?.state).toBe("steady");
+    expect(transitionsA).toEqual([]);
+    expect(transitionsB).toEqual([]);
+
+    const prompt = a.lib.createPrompt({ title: "After idle", content: "still connected" });
+    a.engine.refineDirty();
+    a.service.notifyPeers();
+    await vi.waitFor(() => expect(b.lib.getPrompt(prompt.id)?.title).toBe("After idle"));
+  });
+
+  it("bounds the TLS handshake when a TCP peer never speaks TLS", async () => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    expect(address).not.toBeNull();
+    expect(typeof address).toBe("object");
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const client = await rig("Client", { handshakeTimeoutMs: 75 });
+    let testDeadline: NodeJS.Timeout | null = null;
+
+    try {
+      const startedAt = Date.now();
+      const result = await Promise.race([
+        client.service.pairWithCode("127.0.0.1", port, "AAAA-AAAA"),
+        new Promise<{ ok: false; error: string }>((resolve) => {
+          testDeadline = setTimeout(
+            () => resolve({ ok: false, error: "Test deadline exceeded" }),
+            750,
+          );
+        }),
+      ]);
+      expect(result).toEqual({ ok: false, error: "Connection timed out" });
+      expect(Date.now() - startedAt).toBeLessThan(750);
+    } finally {
+      if (testDeadline) clearTimeout(testDeadline);
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      await once(server, "close");
+    }
+  });
+
   it("pairs with a code and syncs both directions", async () => {
     const a = await rig("Mac Studio");
     const b = await rig("MacBook Pro");

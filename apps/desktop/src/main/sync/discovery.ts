@@ -35,6 +35,22 @@ export function createBonjourDiscovery(): Discovery {
   let lifecycleGeneration = 0;
   let activeGeneration: number | null = null;
 
+  const disposeResources = async (
+    ownedBonjour: import("bonjour-service").Bonjour | null,
+    ownedBrowser: import("bonjour-service").Browser | null,
+  ) => {
+    // A broken mDNS stack must not prevent manual sync or the remaining cleanup.
+    try {
+      ownedBrowser?.stop();
+    } catch {}
+    try {
+      await ownedBonjour?.unpublishAll();
+    } catch {}
+    try {
+      ownedBonjour?.destroy();
+    } catch {}
+  };
+
   return {
     start(advertise, onPeer, onPeerDown) {
       if (activeGeneration !== null) return;
@@ -43,14 +59,7 @@ export function createBonjourDiscovery(): Discovery {
       activeGeneration = generation;
       void import("bonjour-service").then(({ Bonjour }) => {
         if (activeGeneration !== generation) return;
-        const instance = new Bonjour();
-        bonjour = instance;
-        instance.publish({
-          name: `PromptBranch ${advertise.deviceName}`,
-          type: SYNC_SERVICE_TYPE,
-          port: advertise.port,
-          txt: { fp: advertise.fingerprint, v: "1" },
-        });
+        let instance: import("bonjour-service").Bonjour | null = null;
         const readPeer = (service: unknown): DiscoveredPeer | null => {
           const svc = service as {
             name?: string;
@@ -65,10 +74,28 @@ export function createBonjourDiscovery(): Discovery {
           if (!address || !svc.port) return null;
           return { fingerprint, name: svc.name ?? "Unknown device", address, port: svc.port };
         };
-        const browse = () => {
-          if (activeGeneration !== generation || bonjour !== instance) return;
-          browser?.stop();
-          const nextBrowser = instance.find({ type: SYNC_SERVICE_TYPE });
+        const browse = (): boolean => {
+          const ownedInstance = instance;
+          if (
+            !ownedInstance ||
+            activeGeneration !== generation ||
+            bonjour !== ownedInstance
+          ) {
+            return false;
+          }
+          const previousBrowser = browser;
+          try {
+            previousBrowser?.stop();
+          } catch {
+            return false;
+          }
+          if (browser === previousBrowser) browser = null;
+          let nextBrowser: import("bonjour-service").Browser;
+          try {
+            nextBrowser = ownedInstance.find({ type: SYNC_SERVICE_TYPE });
+          } catch {
+            return false;
+          }
           browser = nextBrowser;
           const ownsBrowser = () =>
             activeGeneration === generation &&
@@ -79,18 +106,54 @@ export function createBonjourDiscovery(): Discovery {
             const peer = readPeer(service);
             if (peer) onPeer(peer);
           };
-          nextBrowser.on("up", refreshPeer);
-          nextBrowser.on("srv-update", refreshPeer);
-          nextBrowser.on("down", (service: unknown) => {
-            if (!ownsBrowser()) return;
-            const svc = service as { txt?: Record<string, string> };
-            const fingerprint = svc.txt?.["fp"];
-            if (fingerprint && fingerprint !== advertise.fingerprint) onPeerDown(fingerprint);
-          });
+          try {
+            nextBrowser.on("up", refreshPeer);
+            nextBrowser.on("srv-update", refreshPeer);
+            nextBrowser.on("down", (service: unknown) => {
+              if (!ownsBrowser()) return;
+              const svc = service as { txt?: Record<string, string> };
+              const fingerprint = svc.txt?.["fp"];
+              if (fingerprint && fingerprint !== advertise.fingerprint) onPeerDown(fingerprint);
+            });
+          } catch {
+            if (browser === nextBrowser) browser = null;
+            try {
+              nextBrowser.stop();
+            } catch {
+              // Discovery is optional; cleanup remains best-effort.
+            }
+            return false;
+          }
+          return true;
         };
-        browse();
-        refreshTimer = setInterval(browse, ADDRESS_REFRESH_MS);
-        refreshTimer.unref?.();
+        try {
+          instance = new Bonjour();
+          bonjour = instance;
+          instance.publish({
+            name: `PromptBranch ${advertise.deviceName}`,
+            type: SYNC_SERVICE_TYPE,
+            port: advertise.port,
+            txt: { fp: advertise.fingerprint, v: "1" },
+          });
+          if (!browse()) throw new Error("Failed to start Bonjour browser");
+          refreshTimer = setInterval(browse, ADDRESS_REFRESH_MS);
+          refreshTimer.unref?.();
+        } catch {
+          if (activeGeneration === generation) {
+            activeGeneration = null;
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = null;
+          }
+          const ownsInstance = instance !== null && bonjour === instance;
+          const failedBrowser = ownsInstance ? browser : null;
+          if (ownsInstance) {
+            bonjour = null;
+            browser = null;
+          }
+          void disposeResources(instance, failedBrowser);
+        }
+      }).catch(() => {
+        if (activeGeneration === generation) activeGeneration = null;
       });
     },
     async stop() {
@@ -102,13 +165,7 @@ export function createBonjourDiscovery(): Discovery {
       const ownedBonjour = bonjour;
       browser = null;
       bonjour = null;
-      try {
-        ownedBrowser?.stop();
-        await ownedBonjour?.unpublishAll();
-        ownedBonjour?.destroy();
-      } catch {
-        // Shutdown best-effort.
-      }
+      await disposeResources(ownedBonjour, ownedBrowser);
     },
   };
 }

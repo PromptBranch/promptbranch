@@ -602,6 +602,85 @@ describe("peer service over real TLS (loopback)", () => {
       .toBe(`127.0.0.1:${currentPort}`);
   });
 
+  it("keeps an unverified discovered endpoint out of durable peer state", async () => {
+    const discovery = fakeDiscovery();
+    const local = await rig("Local", {
+      discovery: discovery.impl,
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    const fingerprint = "0".repeat(64);
+    local.engine.upsertSyncPeer({
+      fingerprint,
+      name: "VPN peer",
+      address: "vpn.example.test:52100",
+    });
+
+    discovery.fire({
+      fingerprint,
+      name: "Spoofed LAN peer",
+      address: "192.0.2.99",
+      port: 52_199,
+    });
+
+    expect(local.engine.getSyncPeer(fingerprint)?.address).toBe("vpn.example.test:52100");
+  });
+
+  it("does not let an older successful dial overwrite a newer manual endpoint", async () => {
+    let resolveLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      resolveLookupStarted = resolve;
+    });
+    let releaseLookup!: () => void;
+    const lookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    const remote = await rig("Remote", { startupReconnectDelayMs: 60_000 });
+    const remotePort = await start(remote);
+    const local = await rig("Local", {
+      connectTls: (options) => tls.connect({
+        ...options,
+        lookup: (_hostname, lookupOptions, callback) => {
+          resolveLookupStarted();
+          void lookupGate.then(() => {
+            if (lookupOptions.all) {
+              callback(null, [{ address: "127.0.0.1", family: 4 }]);
+            } else {
+              callback(null, "127.0.0.1", 4);
+            }
+          });
+        },
+      }),
+      startupReconnectDelayMs: 60_000,
+    });
+    await start(local);
+    local.engine.upsertSyncPeer({
+      fingerprint: remote.service.deps.identity.fingerprint,
+      name: "Remote",
+    });
+    remote.engine.upsertSyncPeer({
+      fingerprint: local.service.deps.identity.fingerprint,
+      name: "Local",
+    });
+    const code = remote.service.deps.identity.pairingCode;
+
+    try {
+      const olderDial = local.service.pairWithCode("stale.peer.invalid", remotePort, code);
+      await lookupStarted;
+      const newerManualDial = local.service.pairWithCode("127.0.0.1", remotePort, code);
+      expect(local.engine.getSyncPeer(remote.service.deps.identity.fingerprint)?.address)
+        .toBe(`127.0.0.1:${remotePort}`);
+
+      releaseLookup();
+      expect((await olderDial).ok).toBe(true);
+      expect((await newerManualDial).ok).toBe(true);
+      expect(local.engine.getSyncPeer(remote.service.deps.identity.fingerprint)?.address)
+        .toBe(`127.0.0.1:${remotePort}`);
+    } finally {
+      releaseLookup();
+    }
+  });
+
   it("removes a down nearby device without forgetting a paired peer", async () => {
     const discovery = fakeDiscovery();
     const local = await rig("Local", { discovery: discovery.impl });

@@ -23,25 +23,34 @@ export interface Discovery {
 
 export const SYNC_SERVICE_TYPE = "promptbranch";
 
+// bonjour-service 1.4.4 does not replace a cached service when only its
+// A/AAAA records change. A fresh browser periodically drops that cache so a
+// peer that kept the same service name and port after DHCP can be rediscovered.
+const ADDRESS_REFRESH_MS = 60_000;
+
 export function createBonjourDiscovery(): Discovery {
   let bonjour: import("bonjour-service").Bonjour | null = null;
   let browser: import("bonjour-service").Browser | null = null;
-  let stopped = true;
+  let refreshTimer: NodeJS.Timeout | null = null;
+  let lifecycleGeneration = 0;
+  let activeGeneration: number | null = null;
 
   return {
     start(advertise, onPeer, onPeerDown) {
-      if (!stopped) return;
-      stopped = false;
+      if (activeGeneration !== null) return;
+      lifecycleGeneration += 1;
+      const generation = lifecycleGeneration;
+      activeGeneration = generation;
       void import("bonjour-service").then(({ Bonjour }) => {
-        if (stopped) return;
-        bonjour = new Bonjour();
-        bonjour.publish({
+        if (activeGeneration !== generation) return;
+        const instance = new Bonjour();
+        bonjour = instance;
+        instance.publish({
           name: `PromptBranch ${advertise.deviceName}`,
           type: SYNC_SERVICE_TYPE,
           port: advertise.port,
           txt: { fp: advertise.fingerprint, v: "1" },
         });
-        browser = bonjour.find({ type: SYNC_SERVICE_TYPE });
         const readPeer = (service: unknown): DiscoveredPeer | null => {
           const svc = service as {
             name?: string;
@@ -56,30 +65,50 @@ export function createBonjourDiscovery(): Discovery {
           if (!address || !svc.port) return null;
           return { fingerprint, name: svc.name ?? "Unknown device", address, port: svc.port };
         };
-        const refreshPeer = (service: unknown) => {
-          const peer = readPeer(service);
-          if (peer) onPeer(peer);
+        const browse = () => {
+          if (activeGeneration !== generation || bonjour !== instance) return;
+          browser?.stop();
+          const nextBrowser = instance.find({ type: SYNC_SERVICE_TYPE });
+          browser = nextBrowser;
+          const ownsBrowser = () =>
+            activeGeneration === generation &&
+            bonjour === instance &&
+            browser === nextBrowser;
+          const refreshPeer = (service: unknown) => {
+            if (!ownsBrowser()) return;
+            const peer = readPeer(service);
+            if (peer) onPeer(peer);
+          };
+          nextBrowser.on("up", refreshPeer);
+          nextBrowser.on("srv-update", refreshPeer);
+          nextBrowser.on("down", (service: unknown) => {
+            if (!ownsBrowser()) return;
+            const svc = service as { txt?: Record<string, string> };
+            const fingerprint = svc.txt?.["fp"];
+            if (fingerprint && fingerprint !== advertise.fingerprint) onPeerDown(fingerprint);
+          });
         };
-        browser.on("up", refreshPeer);
-        browser.on("srv-update", refreshPeer);
-        browser.on("down", (service: unknown) => {
-          const svc = service as { txt?: Record<string, string> };
-          const fingerprint = svc.txt?.["fp"];
-          if (fingerprint && fingerprint !== advertise.fingerprint) onPeerDown(fingerprint);
-        });
+        browse();
+        refreshTimer = setInterval(browse, ADDRESS_REFRESH_MS);
+        refreshTimer.unref?.();
       });
     },
     async stop() {
-      stopped = true;
+      activeGeneration = null;
+      lifecycleGeneration += 1;
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = null;
+      const ownedBrowser = browser;
+      const ownedBonjour = bonjour;
+      browser = null;
+      bonjour = null;
       try {
-        browser?.stop();
-        await bonjour?.unpublishAll();
-        bonjour?.destroy();
+        ownedBrowser?.stop();
+        await ownedBonjour?.unpublishAll();
+        ownedBonjour?.destroy();
       } catch {
         // Shutdown best-effort.
       }
-      bonjour = null;
-      browser = null;
     },
   };
 }

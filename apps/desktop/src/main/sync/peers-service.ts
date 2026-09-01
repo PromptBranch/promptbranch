@@ -78,6 +78,11 @@ interface PendingSocket {
   cancel(reason: string): void;
 }
 
+interface PeerEndpoint {
+  address: string;
+  port: number;
+}
+
 class Connection {
   private phase: Phase;
   private readonly reader = createFrameReader((message) => this.dispatch(message));
@@ -201,7 +206,7 @@ export class PeerService {
   private pingTimer: NodeJS.Timeout | null = null;
   private startupReconnectTimer: NodeJS.Timeout | null = null;
   private readonly nearby = new Map<string, { name: string; address: string; port: number; seenAt: number }>();
-  private readonly endpoints = new Map<string, { address: string; port: number }>();
+  private readonly endpoints = new Map<string, PeerEndpoint>();
   /** Consecutive failed sessions/dials per fingerprint; resets on success. */
   private readonly failures = new Map<string, number>();
   private readonly now: () => number;
@@ -271,7 +276,7 @@ export class PeerService {
       this.startupReconnectTimer = null;
       for (const peer of this.deps.engine.listSyncPeers()) {
         const endpoint = this.endpointFor(peer.fingerprint);
-        if (endpoint) void this.dial(peer.fingerprint, endpoint.address, endpoint.port);
+        if (endpoint) void this.dial(peer.fingerprint, endpoint);
       }
     }, this.deps.startupReconnectDelayMs ?? 500);
     this.startupReconnectTimer.unref?.();
@@ -357,8 +362,8 @@ export class PeerService {
       .filter((peer) => derivePairingCode(peer.fingerprint) === formattedCode);
     const known = knownMatches.length === 1 ? knownMatches[0] : undefined;
     if (known) {
-      this.rememberEndpoint(known.fingerprint, address, port);
-      return this.connectKnownPeer(known.fingerprint, address, port, true);
+      const endpoint = this.rememberEndpoint(known.fingerprint, address, port, true);
+      return this.connectKnownPeer(known.fingerprint, endpoint, true);
     }
 
     if (!this.canAdopt(generation, true)) {
@@ -757,21 +762,20 @@ export class PeerService {
       this.deps.onStatusChange();
       return;
     }
-    this.rememberEndpoint(peer.fingerprint, peer.address, peer.port);
+    const endpoint = this.rememberEndpoint(peer.fingerprint, peer.address, peer.port, false);
     if (this.connections.has(peer.fingerprint)) return;
     // Only one side dials: the lexicographically smaller fingerprint.
     if (this.deps.identity.fingerprint > peer.fingerprint) return;
-    void this.dial(peer.fingerprint, peer.address, peer.port);
+    void this.dial(peer.fingerprint, endpoint);
   }
 
-  private async dial(fingerprint: string, address: string, port: number): Promise<void> {
-    await this.connectKnownPeer(fingerprint, address, port);
+  private async dial(fingerprint: string, endpoint: PeerEndpoint): Promise<void> {
+    await this.connectKnownPeer(fingerprint, endpoint);
   }
 
   private async connectKnownPeer(
     fingerprint: string,
-    address: string,
-    port: number,
+    endpoint: PeerEndpoint,
     allowWithoutListener = false,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!this.canAdopt(this.lifecycleGeneration, allowWithoutListener)) {
@@ -785,8 +789,7 @@ export class PeerService {
     if (current) return current;
     const attempt = this.runKnownPeerDial(
       fingerprint,
-      address,
-      port,
+      endpoint,
       allowWithoutListener,
     );
     this.inFlightDials.set(fingerprint, attempt);
@@ -801,13 +804,12 @@ export class PeerService {
 
   private async runKnownPeerDial(
     fingerprint: string,
-    address: string,
-    port: number,
+    endpoint: PeerEndpoint,
     allowWithoutListener: boolean,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const generation = this.lifecycleGeneration;
     const invalidation = this.peerInvalidation(fingerprint);
-    const result = await this.connectSocket(address, port, fingerprint);
+    const result = await this.connectSocket(endpoint.address, endpoint.port, fingerprint);
     if (!result.ok) {
       const peer = this.deps.engine.getSyncPeer(fingerprint);
       if (
@@ -839,7 +841,10 @@ export class PeerService {
       { kind: "sync", fingerprint, session },
       "outbound",
     );
-    if (this.adoptConnection(connection, fingerprint, `${address}:${port}`)) session.start();
+    const durableAddress = this.endpoints.get(fingerprint) === endpoint
+      ? `${endpoint.address}:${endpoint.port}`
+      : undefined;
+    if (this.adoptConnection(connection, fingerprint, durableAddress)) session.start();
     this.deps.onStatusChange();
     return { ok: true };
   }
@@ -859,7 +864,7 @@ export class PeerService {
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(fingerprint);
       const endpoint = this.endpointFor(fingerprint);
-      if (endpoint) void this.dial(fingerprint, endpoint.address, endpoint.port);
+      if (endpoint) void this.dial(fingerprint, endpoint);
     }, delay);
     timer.unref?.();
     this.reconnectTimers.set(fingerprint, timer);
@@ -877,33 +882,30 @@ export class PeerService {
     this.pairingAcceptors.delete(fingerprint);
     if (connection.failed) this.recordFailure(fingerprint);
     const peer = this.deps.engine.getSyncPeer(fingerprint);
-    if (peer && !peer.forgotten_at && peer.address !== null) {
-      const separator = peer.address.lastIndexOf(":");
-      if (separator > 0) {
-        const address = peer.address.slice(0, separator);
-        const port = Number(peer.address.slice(separator + 1));
-        if (Number.isFinite(port) && port > 0) {
-          this.endpoints.set(fingerprint, { address, port });
-          this.scheduleReconnect(fingerprint);
-        }
-      }
-    }
+    if (peer && !peer.forgotten_at) this.scheduleReconnect(fingerprint);
     this.deps.onStatusChange();
   }
 
-  private rememberEndpoint(fingerprint: string, address: string, port: number): void {
-    this.endpoints.set(fingerprint, { address, port });
+  private rememberEndpoint(
+    fingerprint: string,
+    address: string,
+    port: number,
+    durable: boolean,
+  ): PeerEndpoint {
+    const endpoint = { address, port };
+    this.endpoints.set(fingerprint, endpoint);
     const peer = this.deps.engine.getSyncPeer(fingerprint);
-    if (peer && !peer.forgotten_at) {
+    if (durable && peer && !peer.forgotten_at) {
       this.deps.engine.upsertSyncPeer({
         fingerprint,
         name: peer.name,
         address: `${address}:${port}`,
       });
     }
+    return endpoint;
   }
 
-  private endpointFor(fingerprint: string): { address: string; port: number } | null {
+  private endpointFor(fingerprint: string): PeerEndpoint | null {
     const current = this.endpoints.get(fingerprint);
     if (current) return current;
     const saved = this.deps.engine.getSyncPeer(fingerprint)?.address;

@@ -213,6 +213,9 @@ export interface ImportTableSummary {
 
 export type ImportSummary = Record<string, ImportTableSummary>;
 
+const MODEL_CATALOG_SETTING = "model_catalog";
+const MODEL_CATALOG_CREDENTIAL_TRUST_SETTING = "model_catalog_credential_trusted";
+
 /**
  * Cohesive domain API over an open database handle. Obtain a handle via
  * `openDatabase` / `openMemoryDatabase` (see `db.ts`), then:
@@ -1394,7 +1397,7 @@ export class PromptLibrary {
    * caller's job (packages/ai).
    */
   getCatalogCache(): { fetchedAt: string; json: string } | null {
-    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", "model_catalog");
+    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", MODEL_CATALOG_SETTING);
     if (!row) return null;
     try {
       const parsed = JSON.parse(row.value) as { fetchedAt?: unknown; json?: unknown };
@@ -1407,12 +1410,28 @@ export class PromptLibrary {
     return null;
   }
 
-  /** Stores the stringified parsed models.dev catalog in the settings table. */
-  setCatalogCache(json: string): void {
-    this.run(
-      "INSERT INTO settings (key, value) VALUES ('model_catalog', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      JSON.stringify({ fetchedAt: now(), json }),
-    );
+  /** Whether the current cache came from a models.dev refresh in this build. */
+  isCatalogCacheCredentialTrusted(): boolean {
+    return this.getSetting(MODEL_CATALOG_CREDENTIAL_TRUST_SETTING) === "1";
+  }
+
+  /** Stores the parsed catalog and its narrower authority over environment-key lookup. */
+  setCatalogCache(json: string, options: { credentialTrusted?: boolean } = {}): void {
+    this.db.transaction(() => {
+      this.run(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        MODEL_CATALOG_SETTING,
+        JSON.stringify({ fetchedAt: now(), json }),
+      );
+      if (options.credentialTrusted === true) {
+        this.run(
+          "INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          MODEL_CATALOG_CREDENTIAL_TRUST_SETTING,
+        );
+      } else {
+        this.run("DELETE FROM settings WHERE key = ?", MODEL_CATALOG_CREDENTIAL_TRUST_SETTING);
+      }
+    })();
   }
 
   // ----------------------------------------------------------------- search
@@ -1487,7 +1506,9 @@ export class PromptLibrary {
    * excluded entirely: share records hold plaintext delete tokens that should
    * not travel in export files, so migrating to a new library loses revoke
    * capability — revoke shares before migrating, or re-publish afterwards.
-   * Everything else round-trips losslessly.
+   * Device-local settings and derived caches are also excluded; importing a
+   * library must not change this device's network routes or runtime behavior.
+   * All portable library data round-trips losslessly.
    */
   exportLibrary(): LibraryExport {
     return {
@@ -1503,7 +1524,7 @@ export class PromptLibrary {
         collection_prompts: this.all<CollectionPromptRow>("SELECT * FROM collection_prompts"),
         ratings: this.all<RatingRow>("SELECT * FROM ratings ORDER BY created_at"),
         runs: this.all<RunRow>("SELECT * FROM runs ORDER BY created_at"),
-        settings: this.all<SettingRow>("SELECT * FROM settings ORDER BY key"),
+        settings: [],
         providers: this.all<ProviderRow>("SELECT * FROM providers ORDER BY created_at").map((row) => ({
           ...row,
           api_key_enc: null,
@@ -1778,12 +1799,9 @@ export class PromptLibrary {
       }
 
       for (const setting of data.tables.settings) {
-        this.run(
-          "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-          setting.key,
-          setting.value,
-        );
-        bump("settings", "inserted");
+        // Settings are device-local. Default-deny imported keys so future
+        // endpoint or cache settings cannot silently become portable.
+        bump("settings", "skipped");
       }
 
       // Rebuild search rows for every prompt we touched.

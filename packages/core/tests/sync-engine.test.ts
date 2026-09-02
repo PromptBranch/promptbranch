@@ -1782,7 +1782,7 @@ describe("sync engine", () => {
     expect(b.lib.getVersion(final.current_version_id!)?.content).toBe("v2");
   });
 
-  it("never ships provider API keys and never clobbers a local key", () => {
+  it("keeps local provider keys only while the synced execution route is unchanged", () => {
     const a = rig();
     const b = rig();
     const provider = a.lib.createProvider({ type: "openai", name: "OpenAI", apiKeyEnc: "secret-blob" });
@@ -1803,6 +1803,45 @@ describe("sync engine", () => {
     expect(b.lib.getProvider(provider.id)?.api_key_enc).toBe("b-local-key");
     expect(a.lib.getProvider(provider.id)?.api_key_enc).toBe("secret-blob");
     expect(a.lib.getProvider(provider.id)?.name).toBe("OpenAI (renamed)");
+
+    // A route change is different from a display-name edit: B must confirm
+    // credentials for the new destination instead of silently reusing its key.
+    a.lib.updateProvider(provider.id, { baseUrl: "https://gateway.example/v1" });
+    a.engine.refineDirty(Date.now() + 4_000);
+    drain(a.engine, b.engine);
+    expect(b.lib.getProvider(provider.id)).toMatchObject({
+      base_url: "https://gateway.example/v1",
+      api_key_enc: null,
+    });
+  });
+
+  it("clears a local provider key when any synced route field changes", () => {
+    const cases = [
+      { column: "type", value: "anthropic" },
+      { column: "driver", value: "anthropic" },
+      { column: "base_url", value: "https://gateway.example/v1" },
+    ] as const;
+
+    for (const route of cases) {
+      const a = rig();
+      const b = rig();
+      const provider = a.lib.createProvider({
+        type: "openai",
+        driver: "openai",
+        name: "OpenAI",
+        apiKeyEnc: "a-local-key",
+      });
+      a.engine.refineDirty(1_000);
+      drain(a.engine, b.engine);
+      b.lib.updateProvider(provider.id, { apiKeyEnc: "b-local-key" });
+
+      a.db.prepare(`UPDATE providers SET ${route.column} = ? WHERE id = ?`).run(route.value, provider.id);
+      a.engine.refineDirty(3_000);
+      b.engine.refineDirty(2_000);
+      drain(a.engine, b.engine);
+
+      expect(b.lib.getProvider(provider.id)?.api_key_enc, route.column).toBeNull();
+    }
   });
 
   it("truncates oversized run outputs before they leave the device", () => {

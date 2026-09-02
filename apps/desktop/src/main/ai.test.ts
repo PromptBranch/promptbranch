@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PromptLibrary, openMemoryDatabase } from "@promptbranch/core";
 import { parseCatalog } from "@promptbranch/ai";
 import { aiRunSchema, type AiRunProgressEvent } from "../shared/ipc.js";
@@ -279,6 +279,10 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 function makeDeps(): AiServiceDeps & { lib: PromptLibrary } {
   const lib = new PromptLibrary(openMemoryDatabase());
   return { lib, cipher: stubCipher };
@@ -448,6 +452,28 @@ describe("catalog get/refresh", () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/ENOTFOUND/);
     expect(failed.catalog?.models.openai!).toHaveLength(1);
+  });
+
+  it("keeps an unprovenanced legacy cache usable for offline model execution", async () => {
+    const deps = makeDeps();
+    deps.lib.setCatalogCache(JSON.stringify(catalogFixture));
+    expect(getCatalog(deps.lib)?.models.openai).toHaveLength(1);
+    const provider = createProvider(deps, {
+      type: "openai",
+      name: "OpenAI through local stub",
+      apiKey: "explicitly-stored-key",
+      baseUrl,
+    });
+    const prompt = deps.lib.createPrompt({ title: "Offline catalog", content: "Hello" });
+
+    const group = await runModelGroup(deps, {
+      promptId: prompt.id,
+      content: "Hello",
+      variables: {},
+      modelRefs: [{ providerId: provider.id, modelId: "gpt-4o-mini" }],
+    });
+
+    expect(group.runs[0]?.status).toBe("completed");
   });
 });
 
@@ -1200,6 +1226,101 @@ describe("environment key detection", () => {
 });
 
 describe("connectEnvProvider", () => {
+  it("does not trust environment names or endpoints supplied by a library import", async () => {
+    const deps = makeDeps();
+    const crafted = deps.lib.exportLibrary();
+    const poisonedCatalog = parseCatalog({
+      imported: {
+        id: "imported",
+        name: "Imported provider",
+        env: ["AWS_SECRET_ACCESS_KEY"],
+        npm: "@ai-sdk/openai-compatible",
+        api: baseUrl,
+        models: { "model-a": { id: "model-a", name: "Model A" } },
+      },
+    });
+    crafted.tables.settings.push({
+      key: "model_catalog",
+      value: JSON.stringify({
+        fetchedAt: "2026-09-03T00:00:00.000Z",
+        json: JSON.stringify(poisonedCatalog),
+      }),
+    });
+    deps.lib.importLibrary(crafted);
+    const requestCount = seenUrls.length;
+
+    await expect(
+      connectEnvProvider(
+        { ...deps, env: { AWS_SECRET_ACCESS_KEY: "high-value-secret" } },
+        { catalogId: "imported", modelId: "model-a" },
+      ),
+    ).rejects.toThrow(/no environment variable convention/);
+
+    expect(deps.lib.listProviders()).toEqual([]);
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
+  it("does not give a legacy unprovenanced catalog authority over environment keys", async () => {
+    const deps = makeDeps();
+    const poisonedCatalog = parseCatalog({
+      imported: {
+        id: "imported",
+        name: "Imported provider",
+        env: ["AWS_SECRET_ACCESS_KEY"],
+        npm: "@ai-sdk/openai-compatible",
+        api: baseUrl,
+        models: { "model-a": { id: "model-a", name: "Model A" } },
+      },
+    });
+    deps.lib.setCatalogCache(JSON.stringify(poisonedCatalog));
+    const requestCount = seenUrls.length;
+
+    await expect(
+      connectEnvProvider(
+        { ...deps, env: { AWS_SECRET_ACCESS_KEY: "high-value-secret" } },
+        { catalogId: "imported", modelId: "model-a" },
+      ),
+    ).rejects.toThrow(/no environment variable convention/);
+
+    expect(deps.lib.listProviders()).toEqual([]);
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
+  it("does not let imported native drivers fall back to process environment keys", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "process-fallback-secret");
+    vi.stubEnv("ANTHROPIC_API_KEY", "process-fallback-secret");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "process-fallback-secret");
+    const deps = makeDeps();
+    const crafted = deps.lib.exportLibrary();
+    const nativeDrivers = ["openai", "anthropic", "google"] as const;
+    crafted.tables.providers = nativeDrivers.map((driver) => ({
+      id: `imported-${driver}`,
+      type: "openai-compatible",
+      driver,
+      name: `Imported ${driver} route`,
+      api_key_enc: null,
+      base_url: baseUrl,
+      enabled: 1,
+      created_at: "2026-09-03T00:00:00.000Z",
+    }));
+    crafted.tables.provider_models = nativeDrivers.map((driver) => ({
+      provider_id: `imported-${driver}`,
+      model_id: "model-a",
+      display_name: "Model A",
+      enabled: 1,
+    }));
+    deps.lib.importLibrary(crafted);
+    const requestCount = seenUrls.length;
+
+    for (const driver of nativeDrivers) {
+      expect(await testProvider(deps, `imported-${driver}`, "model-a")).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/stored API key/),
+      });
+    }
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
   it("creates a provider from the env key and auto-tests it", async () => {
     const deps = makeDeps();
     const testImpl = vi.fn(async () => ({ ok: true }));

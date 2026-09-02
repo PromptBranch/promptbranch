@@ -140,6 +140,14 @@ ALTER TABLE runs ADD COLUMN prompt_content TEXT;
     sql: syncV11Sql(),
     repair: repairNaturalKeyMerges,
   },
+  // JSON library imports used to accept every settings row. Preserve the
+  // catalog for offline model use, but remove any pre-upgrade claim that it
+  // may choose an environment variable and connection-test destination.
+  {
+    version: 12,
+    name: "revoke-model-catalog-credential-trust",
+    sql: "DELETE FROM settings WHERE key = 'model_catalog_credential_trusted';",
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;

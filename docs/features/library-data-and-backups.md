@@ -24,6 +24,8 @@ To move or copy your whole library:
 
 Import merges the export into the current library. It is separate from
 multi-device sync, which keeps paired devices up to date automatically.
+Prompt data and provider configuration transfer, but API keys, app settings,
+and derived caches stay on the destination device.
 
 You can also export one prompt from **More actions → Export prompt JSON**. That
 file contains the prompt and its versions, notes, and run history.

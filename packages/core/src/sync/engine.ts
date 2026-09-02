@@ -1478,8 +1478,25 @@ export class SyncEngine {
         return;
       }
       case "providers": {
-        // API keys never travel; never let a remote (null) key erase one.
+        const local = this.db
+          .prepare("SELECT type, driver, base_url FROM providers WHERE id = ?")
+          .get(String(payload["id"])) as
+          | { type: string; driver: string; base_url: string | null }
+          | undefined;
+        const routeChanged =
+          local !== undefined &&
+          (local.type !== payload["type"] ||
+            local.driver !== payload["driver"] ||
+            local.base_url !== (payload["base_url"] ?? null));
+        // API keys never travel. Preserve the local key for metadata edits,
+        // but clear it when a synced execution route changes so the old
+        // credential cannot be silently sent to a new destination.
         this.upsertRow(def, payload, ["api_key_enc"]);
+        if (routeChanged) {
+          this.db
+            .prepare("UPDATE providers SET api_key_enc = NULL WHERE id = ?")
+            .run(String(payload["id"]));
+        }
         return;
       }
       case "prompts": {

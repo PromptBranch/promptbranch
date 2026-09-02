@@ -83,6 +83,36 @@ describe("migrations", () => {
     second.db.close();
   });
 
+  it("migration 12 preserves offline catalog data but revokes old credential provenance", () => {
+    const dbPath = tmpDbPath();
+    const seeded = openDatabase(dbPath).db;
+    seeded
+      .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog', 'offline-cache')")
+      .run();
+    seeded
+      .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog_credential_trusted', '1')")
+      .run();
+    seeded.prepare("INSERT INTO settings (key, value) VALUES ('portable', 'keep-me')").run();
+    seeded.pragma("user_version = 11");
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(12);
+    expect(
+      migrated.db.prepare("SELECT value FROM settings WHERE key = 'model_catalog'").get(),
+    ).toEqual({ value: "offline-cache" });
+    expect(
+      migrated.db
+        .prepare("SELECT value FROM settings WHERE key = 'model_catalog_credential_trusted'")
+        .get(),
+    ).toBeUndefined();
+    expect(
+      migrated.db.prepare("SELECT value FROM settings WHERE key = 'portable'").get(),
+    ).toEqual({ value: "keep-me" });
+    migrated.db.close();
+  });
+
   it("migration 2 adds status/source to versions and defaults existing rows to active/user", () => {
     const dbPath = tmpDbPath();
     // Build an old-shape (schema v1) database by hand.
@@ -536,7 +566,7 @@ describe("migrations", () => {
       const expectedOps = verbatimOps[index]!;
       expect(backupPath).not.toBeNull();
       expect(fs.existsSync(backupPath!)).toBe(true);
-      expect(db.pragma("user_version", { simple: true })).toBe(11);
+      expect(db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
       expect(db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([
         { prompt_id: "prompt-1", tag_id: "tag-a" },
       ]);
@@ -585,7 +615,7 @@ describe("migrations", () => {
 
       const reopened = openDatabase(index === 0 ? aPath : bPath);
       expect(reopened.backupPath).toBeNull();
-      expect(reopened.db.pragma("user_version", { simple: true })).toBe(11);
+      expect(reopened.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
       expect({
         tags: reopened.db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
         promptTags: reopened.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
@@ -617,7 +647,7 @@ describe("migrations", () => {
     seeded.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(
       migrated.db
         .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'tags' ORDER BY remote_id")
@@ -684,7 +714,7 @@ describe("migrations", () => {
     seeded.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(migrated.db.prepare("SELECT 1 FROM prompts WHERE id = ?").get(prompt.id)).toBeUndefined();
     expect(migrated.db.prepare("SELECT 1 FROM branches WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
     expect(migrated.db.prepare("SELECT 1 FROM versions WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();

@@ -259,6 +259,40 @@ describe("export/import", () => {
     expect(group.runs[0]!.providerName).toBe("Groq");
   });
 
+  it("keeps device-local settings out of library files", () => {
+    lib.setCatalogCache('{"providers":[],"models":{}}');
+    lib.setSetting("portal_base_url", "https://source.example");
+    lib.setSetting("sync.enabled", "1");
+
+    const exported = lib.exportLibrary();
+    expect(exported.tables.settings).toEqual([]);
+
+    const destination = new PromptLibrary(openMemoryDatabase());
+    destination.setCatalogCache('{"providers":[{"id":"trusted"}],"models":{}}');
+    destination.setSetting("portal_base_url", "https://destination.example");
+    destination.setSetting("sync.enabled", "0");
+    const trustedCache = destination.getCatalogCache();
+    const crafted = JSON.parse(JSON.stringify(exported)) as LibraryExport;
+    crafted.tables.settings.push({
+      key: "model_catalog",
+      value: JSON.stringify({
+        fetchedAt: "2026-09-03T00:00:00.000Z",
+        json: '{"providers":[{"id":"attacker"}],"models":{}}',
+      }),
+    });
+    crafted.tables.settings.push(
+      { key: "portal_base_url", value: "https://attacker.example" },
+      { key: "sync.enabled", value: "1" },
+    );
+
+    const summary = destination.importLibrary(crafted);
+
+    expect(destination.getCatalogCache()).toEqual(trustedCache);
+    expect(destination.getSetting("portal_base_url")).toBe("https://destination.example");
+    expect(destination.getSetting("sync.enabled")).toBe("0");
+    expect(summary.settings?.skipped).toBe(3);
+  });
+
   it("remaps provider ids on collision, keeping runs wired to the clone", () => {
     const { prompt } = populate(lib);
     const provider = lib.createProvider({ type: "openai", name: "My OpenAI" });

@@ -750,6 +750,10 @@ export class PromptLibrary {
     return this.all<NoteRow>("SELECT * FROM notes WHERE prompt_id = ? ORDER BY created_at ASC", promptId);
   }
 
+  /**
+   * Permanently deletes one note. The prompt/version remain, search is
+   * reindexed, and the sync trigger records a tombstone for paired devices.
+   */
   deleteNote(noteId: string): void {
     const note = this.get<NoteRow>("SELECT * FROM notes WHERE id = ?", noteId);
     if (!note) throw new Error(`Note not found: ${noteId}`);
@@ -1165,6 +1169,11 @@ export class PromptLibrary {
     );
   }
 
+  /**
+   * Permanently deletes one run result, including its rating and metrics.
+   * Run groups are implicit: the group disappears after its last row is
+   * deleted. Notes previously saved from an output are independent rows.
+   */
   deleteRun(runId: string): void {
     const result = this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
     if (result.changes === 0) throw new Error(`Run not found: ${runId}`);

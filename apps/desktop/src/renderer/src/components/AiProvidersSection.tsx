@@ -41,6 +41,7 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 type TestState = {
   status: "idle" | "running" | "ok" | "error";
   error?: string;
+  hint?: string;
   /** Replacement model named by the provider, for one-click recovery. */
   suggestedModel?: string;
 };
@@ -270,6 +271,7 @@ function ProviderRow({ provider }: { provider: AiProviderDto }) {
             : {
                 status: "error",
                 ...(result.error ? { error: result.error } : {}),
+                ...(result.hint ? { hint: result.hint } : {}),
                 ...(result.suggestedModel ? { suggestedModel: result.suggestedModel } : {}),
               },
         ),
@@ -355,9 +357,14 @@ function ProviderRow({ provider }: { provider: AiProviderDto }) {
       </div>
       {testState.status === "error" && (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t border-danger/20 bg-danger-soft px-3 py-1.5">
-          <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-danger">
-            {testState.error ?? "Connection test failed"}
-          </p>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] leading-relaxed text-danger">
+              {testState.error ?? "Connection test failed"}
+            </p>
+            {testState.hint && (
+              <p className="mt-0.5 text-[10px] leading-relaxed text-ink-dim">{testState.hint}</p>
+            )}
+          </div>
           {testState.suggestedModel && (
             <button
               type="button"

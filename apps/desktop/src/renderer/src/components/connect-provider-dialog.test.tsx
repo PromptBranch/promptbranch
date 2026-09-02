@@ -110,6 +110,26 @@ async function openGoogleForm(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("ConnectProviderDialog test model choice", () => {
+  it("requires and forwards the chosen model when using an environment key", async () => {
+    bridge.ai.envDetect.mockResolvedValue({ google: true });
+    bridge.ai.providers.connectEnv.mockResolvedValue({ provider: googleProvider, test: { ok: true } });
+    const user = userEvent.setup();
+    renderApp(<ConnectProviderDialog open onOpenChange={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: /Google/ }));
+    const useEnvButton = screen.getByRole("button", { name: "Use environment key" });
+    expect(useEnvButton).toBeDisabled();
+
+    await user.selectOptions(screen.getByLabelText("Test model"), "gemini-3.5-flash-lite");
+    expect(useEnvButton).toBeEnabled();
+    await user.click(useEnvButton);
+
+    expect(bridge.ai.providers.connectEnv).toHaveBeenCalledWith({
+      catalogId: "google",
+      modelId: "gemini-3.5-flash-lite",
+    });
+  });
+
   it("does not claim a provider was saved when creation fails", async () => {
     bridge.ai.providers.create.mockRejectedValue(
       new Error("Base URL must use https:// (http:// is only allowed for localhost)"),
@@ -175,7 +195,11 @@ describe("ConnectProviderDialog test model choice", () => {
   });
 
   it("shows no model-unavailable hint for auth failures", async () => {
-    bridge.ai.providers.test.mockResolvedValue({ ok: false, error: "Provider request failed (HTTP 401): bad key" });
+    bridge.ai.providers.test.mockResolvedValue({
+      ok: false,
+      error: "Provider request failed (HTTP 401): bad key",
+      hint: "Check the API key and confirm this account has access to the selected model.",
+    });
     const user = userEvent.setup();
     await openGoogleForm(user);
 
@@ -183,6 +207,7 @@ describe("ConnectProviderDialog test model choice", () => {
     await user.click(screen.getByRole("button", { name: "Connect" }));
 
     expect(await screen.findByText(/HTTP 401/)).toBeInTheDocument();
+    expect(screen.getByText(/confirm this account has access/i)).toBeInTheDocument();
     expect(screen.queryByText(/this is not a key problem/i)).not.toBeInTheDocument();
   });
 });

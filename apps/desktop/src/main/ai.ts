@@ -22,6 +22,7 @@ import {
   getProviderDescriptor,
   isProviderDriver,
   listCatalogProviders,
+  normalizeError,
   runPrompt,
   streamPrompt,
   stripWrappingFences,
@@ -72,7 +73,6 @@ export interface AiServiceDeps {
 }
 
 const RUN_TIMEOUT_MS = 120_000;
-const TEST_TIMEOUT_MS = 30_000;
 const JUDGE_TIMEOUT_MS = 60_000;
 /** Max concurrent judge calls — sequential judging of a 6-run group would take ~6× the per-call timeout. */
 const JUDGE_CONCURRENCY = 3;
@@ -262,26 +262,53 @@ export async function testProvider(
       );
     }
     testedModel = model;
-    await runPrompt({
-      model: createProviderModel(configForProvider(deps.cipher, provider), model),
+    const runnableProvider = requireRunnableProvider(deps, providerId, model);
+    await streamPrompt({
+      model: createProviderModel(configForProvider(deps.cipher, runnableProvider), model),
       prompt: "Reply with: ok",
-      // OpenAI's Responses API rejects max_output_tokens below 16.
-      maxOutputTokens: 16,
-      signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(RUN_TIMEOUT_MS),
     });
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!isModelUnavailableError(message)) return { ok: false, error: message };
+    const hint = testedModel ? connectionTestHint(error, message) : undefined;
+    if (!isModelUnavailableError(message)) {
+      return { ok: false, error: message, ...(hint ? { hint } : {}) };
+    }
     return {
       ok: false,
       error: message,
+      ...(hint ? { hint } : {}),
       modelUnavailable: true,
       // Providers name their replacement in retirement notices ("use
       // models/gemini-3.5-flash-lite") — surface it for one-click retry.
       suggestedModel: suggestedModelFrom(message, testedModel),
     };
   }
+}
+
+function connectionTestHint(error: unknown, message: string): string {
+  const code = normalizeError(error).code;
+  if (code === "http-401" || code === "http-403") {
+    return "Check the API key and confirm this account has access to the selected model.";
+  }
+  if (code === "http-404" || /no longer available|retired|does not exist/i.test(message)) {
+    return "Choose a model that exists and is enabled for this provider account.";
+  }
+  if (code === "http-429" || /quota|rate.?limit/i.test(message)) {
+    return "Check provider quota or billing, or wait before retrying.";
+  }
+  if (code === "aborted") {
+    return "The test timed out after 120 seconds; check the endpoint and retry.";
+  }
+  if (
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    /fetch failed|network|connection refused/i.test(message)
+  ) {
+    return "Check the provider base URL and network connection, then retry.";
+  }
+  return "Review the provider response, selected model, and endpoint before retrying.";
 }
 
 /** Extracts a models/<id> mention that differs from the failed model. */
@@ -386,7 +413,10 @@ async function connectEnvProviderInner(
     apiKey: key,
     ...(baseUrl !== null ? { baseUrl } : {}),
   });
-  const test = await (deps.testImpl ?? ((id, modelId) => testProvider(deps, id, modelId)))(provider.id);
+  const testConnection = deps.testImpl ?? ((id, modelId) => testProvider(deps, id, modelId));
+  const test = input.modelId
+    ? await testConnection(provider.id, input.modelId)
+    : await testConnection(provider.id);
   return { provider, test };
 }
 
@@ -529,7 +559,17 @@ function requireRunnableProvider(deps: AiServiceDeps, providerId: string, modelI
   const catalogBacked = provider.type !== "openai-compatible";
   if (catalogBacked) {
     if (catalog) {
-      if (findCatalogModel(catalog, provider.type, modelId)) return provider;
+      const catalogModel = findCatalogModel(catalog, provider.type, modelId);
+      if (catalogModel) {
+        const acceptsText = catalogModel.inputModalities.length === 0 || catalogModel.inputModalities.includes("text");
+        const returnsText = catalogModel.outputModalities.length === 0 || catalogModel.outputModalities.includes("text");
+        if (!acceptsText || !returnsText) {
+          throw new Error(
+            `Model "${modelId}" is not a text generation model — choose one with text input and output`,
+          );
+        }
+        return provider;
+      }
       throw new Error(`Unknown ${provider.name} model: "${modelId}" is not in the model catalog`);
     }
     throw new Error(

@@ -56,6 +56,7 @@ function ConnectForm({
   const [baseUrl, setBaseUrl] = useState(provider?.api ?? "");
   const [phase, setPhase] = useState<Phase>("form");
   const [error, setError] = useState<string | null>(null);
+  const [errorHint, setErrorHint] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [modelUnavailable, setModelUnavailable] = useState(false);
   // Replacement model named by the provider in a retirement notice.
@@ -108,6 +109,7 @@ function ConnectForm({
     if (result.ok) {
       setModelUnavailable(false);
       setSuggestedModel(undefined);
+      setErrorHint(null);
       setPhase("connected");
       refreshCatalogQuiet();
       scheduleDone();
@@ -116,6 +118,7 @@ function ConnectForm({
       setSuggestedModel(result.suggestedModel);
       setPhase("error");
       setError(result.error ?? "Connection test failed");
+      setErrorHint(result.hint ?? null);
       refreshCatalogQuiet();
     }
   };
@@ -123,6 +126,7 @@ function ConnectForm({
   const connect = async (modelId: string) => {
     setPhase("working");
     setError(null);
+    setErrorHint(null);
     try {
       let providerId = createdId;
       if (providerId === null) {
@@ -148,6 +152,7 @@ function ConnectForm({
     } catch (err) {
       setPhase("error");
       setError(userErrorMessage(err));
+      setErrorHint(null);
     }
   };
 
@@ -167,8 +172,12 @@ function ConnectForm({
     if (!provider) return;
     setPhase("working");
     setError(null);
+    setErrorHint(null);
     try {
-      const result = await window.promptBuilder.ai.providers.connectEnv({ catalogId: provider.id });
+      const result = await window.promptBuilder.ai.providers.connectEnv({
+        catalogId: provider.id,
+        ...(testModelId ? { modelId: testModelId } : {}),
+      });
       await queryClient.invalidateQueries();
       if (result.test.ok) {
         setPhase("connected");
@@ -180,12 +189,14 @@ function ConnectForm({
         setModelUnavailable(result.test.modelUnavailable === true);
         setSuggestedModel(result.test.suggestedModel);
         setError(result.test.error ?? "Connection test failed");
+        setErrorHint(result.test.hint ?? null);
         setCreatedId(result.provider.id);
         refreshCatalogQuiet();
       }
     } catch (err) {
       setPhase("error");
       setError(userErrorMessage(err));
+      setErrorHint(null);
     }
   };
 
@@ -229,7 +240,9 @@ function ConnectForm({
             <button
               type="button"
               onClick={() => void connectEnv()}
-              disabled={phase === "working"}
+              disabled={
+                phase === "working" || (testModelOptions.length > 0 && testModelId === "")
+              }
               className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-success transition-colors hover:bg-success/10 disabled:opacity-40"
             >
               {phase === "working" ? <Loader2 size={10} className="animate-spin" /> : <Zap size={10} />}
@@ -315,6 +328,9 @@ function ConnectForm({
         {phase === "error" && (
           <div className="rounded-md border border-danger/20 bg-danger-soft px-2.5 py-2">
             <p className="text-[11px] leading-relaxed text-danger">{error}</p>
+            {errorHint && (
+              <p className="mt-1 text-[11px] leading-relaxed text-ink-dim">{errorHint}</p>
+            )}
             {modelUnavailable && testModelOptions.length > 0 && (
               <p className="mt-1 text-[11px] leading-relaxed text-ink-dim">
                 The tested model isn't available on this account — this is not a key problem. Pick a

@@ -360,6 +360,37 @@ describe("model runs", () => {
     expect(g1.runs[1]).toMatchObject({ model: "b", providerName: null, status: "error", error: "x" });
   });
 
+  it("deletes one result at a time and drops an empty group without deleting saved notes", () => {
+    const { lib } = makeLibrary();
+    const { promptId, versionId } = seedPrompt(lib);
+    const first = lib.recordModelRun({
+      promptId,
+      versionId,
+      provider: "p",
+      model: "a",
+      status: "completed",
+      output: "1",
+      runGroupId: "g1",
+    });
+    const second = lib.recordModelRun({
+      promptId,
+      versionId,
+      provider: "p",
+      model: "b",
+      status: "completed",
+      output: "2",
+      runGroupId: "g1",
+    });
+    const note = lib.addNote({ promptId, versionId, body: "Saved model output" });
+
+    lib.deleteRun(first.id);
+    expect(lib.listRunGroups(promptId)[0]?.runs.map((run) => run.id)).toEqual([second.id]);
+
+    lib.deleteRun(second.id);
+    expect(lib.listRunGroups(promptId)).toEqual([]);
+    expect(lib.listNotes(promptId).map((row) => row.id)).toEqual([note.id]);
+  });
+
   it("listRunGroups parses usage and cost back out of metrics_json", () => {
     const { lib } = makeLibrary();
     const { promptId, versionId } = seedPrompt(lib);

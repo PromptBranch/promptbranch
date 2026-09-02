@@ -94,7 +94,7 @@ export function NotesTab({
               <button
                 type="button"
                 onClick={() => setDeleteTarget(note)}
-                className="rounded p-1 text-ink-faint opacity-0 transition-opacity hover:bg-hover hover:text-danger group-hover:opacity-100"
+                className="rounded p-1 text-ink-faint transition-colors hover:bg-hover hover:text-danger"
                 aria-label="Delete note"
               >
                 <Trash2 size={12} />

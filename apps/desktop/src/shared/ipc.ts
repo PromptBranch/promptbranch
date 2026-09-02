@@ -164,6 +164,8 @@ export const shareScopeSchema = z.object({
   promptId: id,
   includeHistory: z.boolean(),
   description: z.string().max(2_000).optional(),
+  /** Current renderer content, including an unsaved draft. */
+  content: z.string().optional(),
 });
 export type ShareScopeInput = z.infer<typeof shareScopeSchema>;
 
@@ -315,7 +317,10 @@ export type AiProviderUpdateInput = z.infer<typeof aiProviderUpdateSchema>;
 
 export const aiProviderTestSchema = z.object({ providerId: id, modelId: z.string().trim().min(1).max(200).optional() });
 
-export const aiProviderConnectEnvSchema = z.object({ catalogId: aiCatalogProviderIdSchema });
+export const aiProviderConnectEnvSchema = z.object({
+  catalogId: aiCatalogProviderIdSchema,
+  modelId: z.string().trim().min(1).max(200).optional(),
+});
 export type AiProviderConnectEnvInput = z.infer<typeof aiProviderConnectEnvSchema>;
 
 export const aiModelsSetSchema = z.object({
@@ -616,6 +621,8 @@ export interface AiProviderTypeInfo {
 export interface AiProviderTestResult {
   ok: boolean;
   error?: string;
+  /** Concrete next step derived from the normalized provider failure. */
+  hint?: string;
   /**
    * True when the failure looks like a retired/unavailable test model (the
    * key itself authenticated) — the renderer offers a model picker to retry
@@ -955,6 +962,7 @@ export interface PromptBuilderApi {
   notes: {
     add(input: NoteAddInput): Promise<NoteDto>;
     list(promptId: string): Promise<NoteDto[]>;
+    /** Permanently deletes one note; its prompt and version remain. */
     delete(noteId: string): Promise<void>;
   };
   tags: {
@@ -981,6 +989,7 @@ export interface PromptBuilderApi {
   runs: {
     add(input: RunAddInput): Promise<RunDto>;
     list(promptId: string): Promise<RunDto[]>;
+    /** Permanently deletes one result; an empty run group disappears. */
     delete(runId: string): Promise<void>;
     /** Sets (or clears) a run's outcome rating — used by the compare view. */
     updateOutcome(input: RunUpdateOutcomeInput): Promise<RunDto>;

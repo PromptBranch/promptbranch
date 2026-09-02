@@ -123,6 +123,12 @@ beforeAll(async () => {
           res.end(JSON.stringify({ error: { message: "bad key" } }));
           return;
         }
+        if (parsed.model === "model-stream-only" && !parsed.stream) {
+          res.setHeader("content-type", "application/json");
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: "This model requires streaming" } }));
+          return;
+        }
         // Judge stubs: structured verdict JSON, a flaky one that answers with
         // malformed JSON on its first call (retry path), and one always broken.
         if (parsed.model.startsWith("model-judge")) {
@@ -443,6 +449,13 @@ describe("catalog get/refresh", () => {
 });
 
 describe("testProvider", () => {
+  it("uses the same streaming request path as model runs", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-stream-only"]);
+
+    expect(await testProvider(deps, providerId, "model-stream-only")).toEqual({ ok: true });
+  });
+
   it("verifies connectivity with a tiny generation", async () => {
     const deps = makeDeps();
     const providerId = addStubProvider(deps);
@@ -452,10 +465,32 @@ describe("testProvider", () => {
   it("returns a normalized error instead of throwing", async () => {
     const deps = makeDeps();
     expect(await testProvider(deps, "nope")).toEqual({ ok: false, error: "Unknown provider: nope" });
-    const providerId = addStubProvider(deps);
+    const providerId = addStubProvider(deps, ["model-a", "model-b"]);
     const result = await testProvider(deps, providerId, "model-b");
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/HTTP 401/);
+    expect(result.hint).toMatch(/API key.*access/i);
+  });
+
+  it("applies the same provider and model availability gates as execution", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps);
+    const requestsBefore = seenUrls.length;
+
+    setModelHidden(deps, { providerId, modelId: "model-a", hidden: true });
+    expect(await testProvider(deps, providerId, "model-a")).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/hidden/),
+    });
+    expect(seenUrls).toHaveLength(requestsBefore);
+
+    setModelHidden(deps, { providerId, modelId: "model-a", hidden: false });
+    updateProvider(deps, { id: providerId, patch: { enabled: false } });
+    expect(await testProvider(deps, providerId, "model-a")).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/disabled/),
+    });
+    expect(seenUrls).toHaveLength(requestsBefore);
   });
 });
 
@@ -483,6 +518,13 @@ describe("test model selection", () => {
           limit: { context: 1_048_576, output: 65_536 },
           cost: { input: 0.05, output: 0.2 },
         },
+        "lyria-audio-only": {
+          id: "lyria-audio-only",
+          name: "Lyria audio-only",
+          modalities: { input: ["text"], output: ["audio"] },
+          limit: { context: 8_192, output: 8_192 },
+          cost: { input: 0.1, output: 0.2 },
+        },
       },
     },
   });
@@ -500,12 +542,13 @@ describe("test model selection", () => {
     const deps = makeDeps();
     await refreshCatalog({ ...deps, fetchCatalogImpl: async () => googleCatalog });
     const providerId = connectGoogle(deps);
-    await testProvider(deps, providerId, "gemini-explicit");
-    expect(seenUrls.at(-1)).toContain("gemini-explicit");
+    await testProvider(deps, providerId, "gemini-3.5-flash-lite");
+    expect(seenUrls.at(-1)).toContain("gemini-3.5-flash-lite");
   });
 
   it("remembers the explicit choice: later tests without an id reuse it", async () => {
     const deps = makeDeps();
+    await refreshCatalog({ ...deps, fetchCatalogImpl: async () => googleCatalog });
     const providerId = connectGoogle(deps);
     // The choice is remembered even when the test itself fails (retired
     // model etc.) — it stays the user's pick until changed.
@@ -516,9 +559,9 @@ describe("test model selection", () => {
     expect(seenUrls.at(-1)).toContain("gemini-3.5-flash-lite");
 
     // A new explicit choice replaces the remembered one.
-    await testProvider(deps, providerId, "gemini-explicit");
+    await testProvider(deps, providerId, "gemini-2.5-flash-lite");
     await testProvider(deps, providerId);
-    expect(seenUrls.at(-1)).toContain("gemini-explicit");
+    expect(seenUrls.at(-1)).toContain("gemini-2.5-flash-lite");
   });
 
   it("uses the provider's declared models when no explicit id is given", async () => {
@@ -534,6 +577,7 @@ describe("test model selection", () => {
 
   it("surfaces the provider-named replacement for one-click retry", async () => {
     const deps = makeDeps();
+    await refreshCatalog({ ...deps, fetchCatalogImpl: async () => googleCatalog });
     const providerId = connectGoogle(deps);
     // The stub's retirement notice names models/gemini-3.5-flash-lite as
     // the replacement for whatever was tested.
@@ -559,9 +603,21 @@ describe("test model selection", () => {
     expect(seenUrls.length).toBe(urlsBefore);
   });
 
+  it("rejects catalog models that cannot produce text before making a request", async () => {
+    const deps = makeDeps();
+    await refreshCatalog({ ...deps, fetchCatalogImpl: async () => googleCatalog });
+    const providerId = connectGoogle(deps);
+    const urlsBefore = seenUrls.length;
+
+    const result = await testProvider(deps, providerId, "lyria-audio-only");
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/not a text generation model/) });
+    expect(seenUrls).toHaveLength(urlsBefore);
+  });
+
   it("does not flag non-model failures (bad key 401) as unavailable", async () => {
     const deps = makeDeps();
-    const providerId = addStubProvider(deps);
+    const providerId = addStubProvider(deps, ["model-a", "model-b"]);
     const result = await testProvider(deps, providerId, "model-b");
     expect(result.ok).toBe(false);
     expect(result.modelUnavailable).toBeUndefined();
@@ -1079,6 +1135,17 @@ describe("connectEnvProvider", () => {
     expect(stubCipher.decrypt(row.api_key_enc!)).toBe("sk-env");
     // No key material crosses the DTO boundary.
     expect(JSON.stringify(result)).not.toContain("sk-env");
+  });
+
+  it("auto-tests an environment key with the user's chosen model", async () => {
+    const deps = makeDeps();
+    const testImpl = vi.fn(async () => ({ ok: true }));
+    const result = await connectEnvProvider(
+      { ...deps, env: { OPENAI_API_KEY: "sk-env" }, testImpl },
+      { catalogId: "openai", modelId: "gpt-5-mini" },
+    );
+
+    expect(testImpl).toHaveBeenCalledWith(result.provider.id, "gpt-5-mini");
   });
 
   it("connects a long-tail catalog provider from the env key, with catalog base URL", async () => {

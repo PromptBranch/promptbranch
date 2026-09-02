@@ -27,10 +27,13 @@ export function ShareDialog({
   open,
   onOpenChange,
   prompt,
+  content,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   prompt: PromptDetail;
+  /** Current editor content; omitted when the current version is not loaded. */
+  content?: string;
 }) {
   const [includeHistory, setIncludeHistory] = useState(false);
   const [result, setResult] = useState<SharePublishResult | null>(null);
@@ -44,13 +47,23 @@ export function ShareDialog({
   }, [open]);
 
   const preview = useQuery({
-    queryKey: ["share-preview", prompt.id, includeHistory],
-    queryFn: () => window.promptBuilder.share.preview({ promptId: prompt.id, includeHistory }),
+    queryKey: ["share-preview", prompt.id, includeHistory, content],
+    queryFn: () =>
+      window.promptBuilder.share.preview({
+        promptId: prompt.id,
+        includeHistory,
+        ...(content !== undefined ? { content } : {}),
+      }),
     enabled: open && result === null,
   });
 
   const publish = useAppMutation(
-    () => window.promptBuilder.share.publish({ promptId: prompt.id, includeHistory }),
+    () =>
+      window.promptBuilder.share.publish({
+        promptId: prompt.id,
+        includeHistory,
+        ...(content !== undefined ? { content } : {}),
+      }),
     { quiet: true, onSuccess: (r) => setResult(r) },
   );
 
@@ -104,13 +117,13 @@ export function ShareDialog({
                 [
                   {
                     value: false,
-                    label: "Current version only",
-                    hint: "Just the prompt as it is now.",
+                    label: "Current content only",
+                    hint: "What is currently in the editor, including unsaved edits.",
                   },
                   {
                     value: true,
                     label: "Include full history",
-                    hint: "Every version on the main branch, with change notes.",
+                    hint: "Saved main-branch versions, plus the current editor content as the shared snapshot.",
                   },
                 ] as const
               ).map((option) => (

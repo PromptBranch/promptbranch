@@ -21,39 +21,54 @@ function matchesToolFilter(run: RunDto, filter: RunToolFilter): boolean {
 }
 
 /** One run-group row: timestamp, model chips, success count, avg outcome. */
-function RunGroupRow({ group, onOpen }: { group: RunGroupDto; onOpen: () => void }) {
+function RunGroupRow({
+  group,
+  onOpen,
+  onDelete,
+}: {
+  group: RunGroupDto;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
   const ok = group.runs.filter((run) => run.status === "completed").length;
   const rated = group.runs.filter((run) => run.outcomeRating !== null);
   const avgOutcome =
     rated.length > 0 ? rated.reduce((sum, run) => sum + run.outcomeRating!, 0) / rated.length : null;
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-lg border border-line bg-panel px-3 py-2.5 text-left transition-colors hover:border-line-strong hover:bg-hover"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1">
-          {group.runs.slice(0, 4).map((run) => (
-            <span
-              key={run.id}
-              className="inline-flex max-w-40 items-center gap-1 truncate rounded-full border border-line bg-raised px-2 py-0.5 text-[10px] text-ink-dim"
-            >
-              {run.model ?? "unknown"}
-              {run.status === "error" && <span className="text-danger">✕</span>}
-            </span>
-          ))}
-          {group.runs.length > 4 && (
-            <span className="text-[10px] text-ink-faint">+{group.runs.length - 4} more</span>
-          )}
+    <div className="group flex w-full items-center rounded-lg border border-line bg-panel transition-colors hover:border-line-strong hover:bg-hover">
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {group.runs.slice(0, 4).map((run) => (
+              <span
+                key={run.id}
+                className="inline-flex max-w-40 items-center gap-1 truncate rounded-full border border-line bg-raised px-2 py-0.5 text-[10px] text-ink-dim"
+              >
+                {run.model ?? "unknown"}
+                {run.status === "error" && <span className="text-danger">✕</span>}
+              </span>
+            ))}
+            {group.runs.length > 4 && (
+              <span className="text-[10px] text-ink-faint">+{group.runs.length - 4} more</span>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] tabular-nums text-ink-faint">
+            {relativeTime(group.createdAt)} · {ok}/{group.runs.length} ok
+          </p>
         </div>
-        <p className="mt-1 text-[11px] tabular-nums text-ink-faint">
-          {relativeTime(group.createdAt)} · {ok}/{group.runs.length} ok
-        </p>
-      </div>
-      {avgOutcome !== null && <Stars value={avgOutcome} size={11} />}
-    </button>
+        {avgOutcome !== null && <Stars value={avgOutcome} size={11} />}
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label="Delete model run"
+        title="Delete model run"
+        className="mr-3 shrink-0 rounded p-1 text-ink-faint transition-colors hover:bg-danger-soft hover:text-danger"
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
   );
 }
 
@@ -70,6 +85,7 @@ export function ResultsTab({
   const { data: runGroups } = useRunGroups(prompt.id);
   const [logOpen, setLogOpen] = useState(false);
   const [confirmRun, setConfirmRun] = useState<RunDto | null>(null);
+  const [confirmGroup, setConfirmGroup] = useState<RunGroupDto | null>(null);
   const [toolFilter, setToolFilter] = useState<RunToolFilter>("manual");
 
   const addRun = useAppMutation(
@@ -84,6 +100,12 @@ export function ResultsTab({
   const deleteRun = useAppMutation((runId: string) => window.promptBuilder.runs.delete(runId), {
     toast: "Run deleted",
   });
+  const deleteRunGroup = useAppMutation(
+    async (group: RunGroupDto) => {
+      for (const run of group.runs) await window.promptBuilder.runs.delete(run.id);
+    },
+    { toast: "Model run deleted" },
+  );
 
   if (isLoading) return <Spinner />;
 
@@ -146,7 +168,12 @@ export function ResultsTab({
               Model runs
             </p>
             {groups.map((group) => (
-              <RunGroupRow key={group.runGroupId} group={group} onOpen={() => onOpenRunGroup(group.runGroupId)} />
+              <RunGroupRow
+                key={group.runGroupId}
+                group={group}
+                onOpen={() => onOpenRunGroup(group.runGroupId)}
+                onDelete={() => setConfirmGroup(group)}
+              />
             ))}
           </section>
         )}
@@ -180,7 +207,7 @@ export function ResultsTab({
                       type="button"
                       onClick={() => setConfirmRun(run)}
                       aria-label="Delete run"
-                      className="rounded p-0.5 text-ink-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                      className="rounded p-0.5 text-ink-faint transition-colors hover:text-danger"
                     >
                       <Trash2 size={12} />
                     </button>
@@ -200,6 +227,20 @@ export function ResultsTab({
         onOpenChange={setLogOpen}
         versionLabel={currentVersionLabel}
         onSubmit={(input) => addRun.mutate(input)}
+      />
+      <ConfirmDialog
+        open={confirmGroup !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmGroup(null);
+        }}
+        title="Delete this model run?"
+        description={`This permanently removes ${confirmGroup?.runs.length === 1 ? "this model result" : `all ${confirmGroup?.runs.length ?? 0} model results`}, including ratings and judge scores. Saved notes are kept.`}
+        confirmLabel="Delete model run"
+        danger
+        onConfirm={() => {
+          if (confirmGroup) deleteRunGroup.mutate(confirmGroup);
+          setConfirmGroup(null);
+        }}
       />
       <ConfirmDialog
         open={confirmRun !== null}

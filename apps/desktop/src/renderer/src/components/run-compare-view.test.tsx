@@ -236,6 +236,24 @@ describe("RunCompareView", () => {
       expect(input.body).toContain("Plain answer A");
     });
   });
+
+  it("deletes one persisted model result and closes after the last result", async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderCompare(fromStoredGroup(settledStoredGroup));
+    await screen.findByText("claude-opus");
+
+    await user.click(screen.getByRole("button", { name: "Delete claude-opus result" }));
+    await user.click(screen.getByRole("button", { name: "Delete result" }));
+    await waitFor(() => expect(bridge.runs.delete).toHaveBeenCalledWith("run-1"));
+    expect(screen.queryByText("Plain answer A")).toBeNull();
+    expect(screen.getByText("Rate limited")).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+    await user.click(screen.getByRole("button", { name: "Delete unknown result" }));
+    await user.click(screen.getByRole("button", { name: "Delete result" }));
+    await waitFor(() => expect(bridge.runs.delete).toHaveBeenCalledWith("run-2"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
 });
 
 describe("RunCompareView judging", () => {

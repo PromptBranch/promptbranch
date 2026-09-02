@@ -411,3 +411,117 @@ ${triggersForDef(def, recordKeySql).join("\n\n")}`;
     })
     .join("\n\n");
 }
+
+/**
+ * v10: prompt hard deletion becomes a durable aggregate tombstone. Unlike the
+ * ordinary dirty-capture triggers, this trigger is intentionally unguarded:
+ * applying a remote delete must preserve the terminal fact locally too.
+ *
+ * Historical ops and not-yet-refined dirty deletes are both authoritative.
+ * The cleanup repairs databases where a later prompt-row upsert previously
+ * resurrected the parent while its children remained split across peers.
+ */
+export function syncV10Sql(): string {
+  return `CREATE TABLE sync_prompt_tombstones (
+  prompt_id TEXT PRIMARY KEY
+);
+
+CREATE INDEX IF NOT EXISTS sync_ops_record_lookup
+ON sync_ops (table_name, record_id);
+
+CREATE TRIGGER sync_prompt_tombstone_del
+AFTER DELETE ON prompts FOR EACH ROW
+BEGIN
+  INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id) VALUES (OLD.id);
+END;
+
+INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id)
+SELECT record_id FROM sync_ops
+WHERE table_name = 'prompts' AND kind = 'delete';
+
+INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id)
+SELECT record_id FROM sync_dirty
+WHERE table_name = 'prompts' AND kind = 'delete';
+
+INSERT INTO sync_meta (key, value) VALUES ('applying', '1')
+ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+
+UPDATE shared_snapshots AS snapshot
+SET deleted_at = (
+  SELECT MIN(candidate.deleted_at)
+  FROM (
+    SELECT snapshot.deleted_at AS deleted_at
+    UNION ALL
+    SELECT json_extract(op.payload_json, '$.deleted_at')
+    FROM sync_ops AS op
+    WHERE op.table_name = 'shared_snapshots'
+      AND op.record_id = snapshot.snapshot_id
+      AND op.payload_json IS NOT NULL
+      AND json_valid(op.payload_json)
+      AND typeof(json_extract(op.payload_json, '$.deleted_at')) = 'text'
+  ) AS candidate
+)
+WHERE snapshot.deleted_at IS NOT NULL
+   OR EXISTS (
+     SELECT 1 FROM sync_ops AS op
+     WHERE op.table_name = 'shared_snapshots'
+       AND op.record_id = snapshot.snapshot_id
+       AND op.payload_json IS NOT NULL
+       AND json_valid(op.payload_json)
+       AND typeof(json_extract(op.payload_json, '$.deleted_at')) = 'text'
+   );
+
+DELETE FROM search_index
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM runs
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM notes
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM ratings
+WHERE target_type = 'version'
+  AND (
+    target_id IN (
+      SELECT id FROM versions
+      WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones)
+    )
+    OR target_id IN (
+      SELECT record_id FROM sync_ops
+      WHERE table_name = 'versions'
+        AND payload_json IS NOT NULL
+        AND json_valid(payload_json)
+        AND json_extract(payload_json, '$.prompt_id') IN (
+          SELECT prompt_id FROM sync_prompt_tombstones
+        )
+    )
+  );
+
+UPDATE prompts SET current_version_id = NULL
+WHERE id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM versions
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM branches
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM prompt_tags
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM collection_prompts
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM ratings
+WHERE target_type = 'prompt'
+  AND target_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM sync_pending_pointers
+WHERE prompt_id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM prompts
+WHERE id IN (SELECT prompt_id FROM sync_prompt_tombstones);
+
+DELETE FROM sync_meta WHERE key = 'applying';`;
+}

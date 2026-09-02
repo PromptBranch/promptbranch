@@ -1611,7 +1611,17 @@ export class PromptLibrary {
       // -- prompts: inserted with current_version_id NULL, fixed up after versions
       const pendingCurrentVersion: Array<{ promptId: string; oldVersionId: string }> = [];
       for (const prompt of data.tables.prompts) {
-        const id = claimId("prompts", prompt.id, "SELECT id FROM prompts WHERE id = ?");
+        const id = claimId(
+          "prompts",
+          prompt.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM prompts WHERE prompts.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_prompt_tombstones
+                WHERE sync_prompt_tombstones.prompt_id = candidate.id
+              )`,
+        );
         this.run(
           `INSERT INTO prompts (id, title, description, icon, draft_content, current_version_id, is_starred, created_at, updated_at, deleted_at)
            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
@@ -1643,7 +1653,21 @@ export class PromptLibrary {
       }
 
       for (const version of data.tables.versions) {
-        const id = claimId("versions", version.id, "SELECT id FROM versions WHERE id = ?");
+        const id = claimId(
+          "versions",
+          version.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM versions WHERE versions.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_ops
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM sync_dirty
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )`,
+        );
         this.run(
           `INSERT INTO versions
              (id, prompt_id, branch_id, parent_version_id, number, label, content, content_format, change_note, author, status, source, created_at)

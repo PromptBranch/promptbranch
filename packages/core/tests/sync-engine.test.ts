@@ -342,6 +342,244 @@ describe("sync engine", () => {
     expect(b.lib.listVersions(gone.id)).toEqual([]);
   });
 
+  it("makes prompt hard deletion dominate a later metadata edit on every peer", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Delete wins", content: "v1" });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.hardDeletePrompt(prompt.id);
+    a.engine.refineDirty(2_000);
+    b.lib.updatePromptMetadata(prompt.id, { title: "Later disconnected edit" });
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getPrompt(prompt.id)).toBeNull();
+      expect(peer.lib.listBranches(prompt.id)).toEqual([]);
+      expect(peer.lib.listVersions(prompt.id)).toEqual([]);
+      expect(
+        peer.db
+          .prepare("SELECT 1 FROM sync_pending_pointers WHERE prompt_id = ?")
+          .get(prompt.id),
+      ).toBeUndefined();
+    }
+    const aLastSeq = Math.max(
+      ...collectAll(a.engine)
+        .filter((op) => op.source === a.engine.deviceId())
+        .map((op) => op.seq),
+    );
+    expect(b.engine.haveVector()[a.engine.deviceId()]).toBe(aLastSeq);
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("consumes unseen descendants of a hard-deleted prompt without blocking later ops", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Aggregate", content: "v1" });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.hardDeletePrompt(prompt.id);
+    a.engine.refineDirty(2_000);
+
+    const branch = b.lib.listBranches(prompt.id)[0]!;
+    const version = b.lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "concurrent v2",
+    });
+    const note = b.lib.addNote({ promptId: prompt.id, versionId: version.id, body: "late" });
+    const promptRating = b.lib.addRating({
+      targetType: "prompt",
+      targetId: prompt.id,
+      effectiveness: 5,
+    });
+    const versionRating = b.lib.addRating({
+      targetType: "version",
+      targetId: version.id,
+      clarity: 5,
+    });
+    const run = b.lib.addRun({ promptId: prompt.id, versionId: version.id });
+    const unrelated = b.lib.createTag({ name: "must-pass-the-wedged-source" });
+    b.engine.refineDirty(3_000);
+
+    drain(b.engine, a.engine);
+    expect(a.lib.getPrompt(prompt.id)).toBeNull();
+    expect(a.lib.getVersion(version.id)).toBeNull();
+    expect(a.lib.listNotes(prompt.id)).toEqual([]);
+    expect(a.lib.listRuns(prompt.id)).toEqual([]);
+    for (const id of [promptRating.id, versionRating.id]) {
+      expect(a.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(id)).toBeUndefined();
+    }
+    expect(a.db.prepare("SELECT 1 FROM notes WHERE id = ?").get(note.id)).toBeUndefined();
+    expect(a.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(run.id)).toBeUndefined();
+    expect(a.lib.listTags().map((tag) => tag.id)).toContain(unrelated.id);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+    const bLastSeq = Math.max(
+      ...collectAll(b.engine)
+        .filter((op) => op.source === b.engine.deviceId())
+        .map((op) => op.seq),
+    );
+    expect(a.engine.haveVector()[b.engine.deviceId()]).toBe(bLastSeq);
+  });
+
+  it("defers a version rating until its terminally deleted prompt ownership is known", () => {
+    const author = rig();
+    const receiver = rig();
+    const disconnected = rig();
+    const prompt = author.lib.createPrompt({ title: "Rating owner", content: "v1" });
+    author.engine.refineDirty(1_000);
+    drain(author.engine, receiver.engine);
+    drain(author.engine, disconnected.engine);
+
+    author.lib.hardDeletePrompt(prompt.id);
+    author.engine.refineDirty(2_000);
+    drain(author.engine, receiver.engine);
+
+    const branch = disconnected.lib.listBranches(prompt.id)[0]!;
+    const version = disconnected.lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "unseen concurrent version",
+    });
+    const rating = disconnected.lib.addRating({
+      targetType: "version",
+      targetId: version.id,
+      completeness: 5,
+    });
+    const unrelated = disconnected.lib.createTag({ name: "after-deferred-rating" });
+    disconnected.engine.refineDirty(3_000);
+
+    const source = disconnected.engine.deviceId();
+    const sourceOps = collectAll(disconnected.engine).filter((op) => op.source === source);
+    const versionOp = sourceOps.find((op) => op.table === "versions" && op.recordId === version.id)!;
+    const ratingOp = sourceOps.find((op) => op.table === "ratings" && op.recordId === rating.id)!;
+    const unrelatedOp = sourceOps.find((op) => op.table === "tags" && op.recordId === unrelated.id)!;
+
+    // The rating alone does not identify its owning prompt. It must not be
+    // materialized or marked seen before the version history resolves that owner.
+    receiver.engine.applyRemote([ratingOp]);
+    expect(receiver.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(rating.id)).toBeUndefined();
+    expect(
+      receiver.db
+        .prepare("SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?")
+        .get(source, ratingOp.opId),
+    ).toBeUndefined();
+    expect(receiver.engine.haveVector()[source] ?? 0).toBe(0);
+
+    receiver.engine.applyRemote([...sourceOps].reverse());
+    expect(receiver.lib.getVersion(version.id)).toBeNull();
+    expect(receiver.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(rating.id)).toBeUndefined();
+    expect(receiver.lib.listTags().map((tag) => tag.id)).toContain(unrelated.id);
+    expect(receiver.engine.haveVector()[source]).toBe(
+      Math.max(...sourceOps.map((op) => op.seq)),
+    );
+    for (const op of sourceOps) {
+      expect(
+        receiver.db
+          .prepare("SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?")
+          .get(source, op.opId),
+      ).toBeDefined();
+    }
+  });
+
+  it("removes a preexisting version rating when its terminal owner arrives later", () => {
+    const author = rig();
+    const receiver = rig();
+    const disconnected = rig();
+    const prompt = author.lib.createPrompt({ title: "Historical rating", content: "v1" });
+    author.engine.refineDirty(1_000);
+    drain(author.engine, receiver.engine);
+    drain(author.engine, disconnected.engine);
+
+    const branch = disconnected.lib.listBranches(prompt.id)[0]!;
+    const version = disconnected.lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "owner arrives later",
+    });
+    disconnected.engine.refineDirty(2_000);
+    const versionOp = collectAll(disconnected.engine).find(
+      (op) =>
+        op.source === disconnected.engine.deviceId() &&
+        op.table === "versions" &&
+        op.recordId === version.id,
+    )!;
+
+    // This is reachable through the public library API and models a rating
+    // already materialized by a pre-tombstone sync engine.
+    const rating = receiver.lib.addRating({
+      targetType: "version",
+      targetId: version.id,
+      actionability: 4,
+    });
+    receiver.engine.refineDirty(3_000);
+
+    author.lib.hardDeletePrompt(prompt.id);
+    author.engine.refineDirty(4_000);
+    drain(author.engine, receiver.engine);
+    expect(receiver.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(rating.id)).toBeDefined();
+
+    receiver.engine.applyRemote([versionOp]);
+    expect(receiver.lib.getVersion(version.id)).toBeNull();
+    expect(receiver.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(rating.id)).toBeUndefined();
+  });
+
+  it("does not consume an imported rating using a deleted version's historical owner", () => {
+    const source = rig();
+    const receiver = rig();
+    const prompt = source.lib.createPrompt({ title: "Imported successor", content: "v1" });
+    const originalVersionId = prompt.current_version_id!;
+    source.lib.addRating({
+      targetType: "version",
+      targetId: originalVersionId,
+      effectiveness: 5,
+    });
+    const exported = source.lib.exportLibrary();
+    source.engine.refineDirty(1_000);
+    drain(source.engine, receiver.engine);
+
+    source.lib.hardDeletePrompt(prompt.id);
+    source.engine.refineDirty(2_000);
+    drain(source.engine, receiver.engine);
+
+    source.lib.importLibrary(exported);
+    const replacement = source.lib.listPrompts().find((row) => row.title === "Imported successor")!;
+    expect(replacement.id).not.toBe(prompt.id);
+    const replacementVersion = source.lib.listVersions(replacement.id)[0]!;
+    const replacementRating = source.db
+      .prepare("SELECT id, target_id FROM ratings WHERE target_type = 'version' AND target_id = ?")
+      .get(replacementVersion.id) as { id: string; target_id: string };
+    source.engine.refineDirty(3_000);
+
+    const ratingOp = collectAll(source.engine)
+      .filter(
+        (op) =>
+          op.source === source.engine.deviceId() &&
+          op.table === "ratings" &&
+          op.recordId === replacementRating.id &&
+          op.kind === "upsert",
+      )
+      .sort((a, b) => b.seq - a.seq)[0]!;
+
+    // A byte-budget/source split may expose the new rating before the new
+    // version. Historical ownership for a reused id must not bind it to the
+    // terminally deleted prompt forever.
+    receiver.engine.applyRemote([ratingOp]);
+    drain(source.engine, receiver.engine);
+
+    expect(receiver.lib.getPrompt(replacement.id)).not.toBeNull();
+    expect(receiver.lib.getVersion(replacementVersion.id)?.prompt_id).toBe(replacement.id);
+    expect(
+      receiver.db.prepare("SELECT target_id FROM ratings WHERE id = ?").get(replacementRating.id),
+    ).toEqual({ target_id: replacementVersion.id });
+  });
+
   it("propagates ops transitively through a middle device", () => {
     const a = rig();
     const b = rig();
@@ -732,6 +970,159 @@ describe("sync engine", () => {
     const onB = b.lib.getSharedSnapshot("W2XtGXR8_Z5jdHi6B-myT")!;
     expect(onB.prompt_id).toBeNull();
     expect(onB.delete_token).toBe("tok-2");
+  });
+
+  it("keeps a concurrently published share revocable after prompt hard deletion", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Concurrent share", content: "x" });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    b.lib.recordSharedSnapshot({
+      snapshotId: "RACEGXR8_Z5jdHi6B-myT",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/RACEGXR8_Z5jdHi6B-myT",
+      deleteToken: "race-delete-token",
+      fullHistory: false,
+      publishedAt: "2026-09-02T00:00:00.000Z",
+    });
+    b.engine.refineDirty(2_000);
+    a.lib.hardDeletePrompt(prompt.id);
+    a.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getPrompt(prompt.id)).toBeNull();
+      expect(peer.lib.getSharedSnapshot("RACEGXR8_Z5jdHi6B-myT")).toEqual(
+        expect.objectContaining({
+          prompt_id: null,
+          delete_token: "race-delete-token",
+        }),
+      );
+    }
+    expect(a.engine.haveVector()[b.engine.deviceId()]).toBe(1);
+  });
+
+  it("never clears share revocation when prompt deletion nulls its back-reference", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Revoked share", content: "x" });
+    a.lib.recordSharedSnapshot({
+      snapshotId: "REVOKEXR8_Z5jdHi6B-myT",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/REVOKEXR8_Z5jdHi6B-myT",
+      deleteToken: "revoke-token",
+      fullHistory: false,
+      publishedAt: "2026-09-02T00:00:00.000Z",
+    });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.markSharedSnapshotDeleted("REVOKEXR8_Z5jdHi6B-myT");
+    a.engine.refineDirty(2_000);
+    b.lib.hardDeletePrompt(prompt.id);
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(b, a);
+
+    for (const peer of [a, b]) {
+      const share = peer.lib.getSharedSnapshot("REVOKEXR8_Z5jdHi6B-myT")!;
+      expect(share.prompt_id).toBeNull();
+      expect(share.deleted_at).not.toBeNull();
+      expect(share.delete_token).toBe("revoke-token");
+    }
+  });
+
+  it("keeps an unseen concurrently revoked share after its prompt tombstone", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Unseen revoked share", content: "x" });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    b.lib.recordSharedSnapshot({
+      snapshotId: "UNSEENXR8_Z5jdHi6B-myT",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/UNSEENXR8_Z5jdHi6B-myT",
+      deleteToken: "unseen-revoke-token",
+      fullHistory: false,
+      publishedAt: "2026-09-02T00:00:00.000Z",
+    });
+    b.lib.markSharedSnapshotDeleted("UNSEENXR8_Z5jdHi6B-myT");
+    const revokedAt = b.lib.getSharedSnapshot("UNSEENXR8_Z5jdHi6B-myT")!.deleted_at!;
+    b.engine.refineDirty(2_000);
+    a.lib.hardDeletePrompt(prompt.id);
+    a.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getPrompt(prompt.id)).toBeNull();
+      expect(peer.lib.getSharedSnapshot("UNSEENXR8_Z5jdHi6B-myT")).toEqual(
+        expect.objectContaining({
+          prompt_id: null,
+          delete_token: "unseen-revoke-token",
+          deleted_at: revokedAt,
+        }),
+      );
+    }
+    expect(a.engine.haveVector()[b.engine.deviceId()]).toBe(1);
+  });
+
+  it("merges concurrent share revocations to the first timestamp in either arrival order", () => {
+    const a = rig();
+    const b = rig();
+    const c1 = rig();
+    const c2 = rig();
+    const prompt = a.lib.createPrompt({ title: "Concurrent revocations", content: "x" });
+    a.lib.recordSharedSnapshot({
+      snapshotId: "TWOREVXR8_Z5jdHi6B-myT",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/TWOREVXR8_Z5jdHi6B-myT",
+      deleteToken: "two-revokes-token",
+      fullHistory: false,
+      publishedAt: "2026-09-02T00:00:00.000Z",
+    });
+    a.engine.refineDirty(1_000);
+    for (const peer of [b, c1, c2]) drain(a.engine, peer.engine);
+
+    const firstRevocation = "2026-09-02T00:01:00.000Z";
+    const secondRevocation = "2026-09-02T00:02:00.000Z";
+    a.db
+      .prepare("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
+      .run(firstRevocation, "TWOREVXR8_Z5jdHi6B-myT");
+    a.engine.refineDirty(2_000);
+    b.db
+      .prepare("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
+      .run(secondRevocation, "TWOREVXR8_Z5jdHi6B-myT");
+    b.engine.refineDirty(3_000);
+
+    const revokeA = collectAll(a.engine).find(
+      (op) =>
+        op.source === a.engine.deviceId() &&
+        op.table === "shared_snapshots" &&
+        op.recordId === "TWOREVXR8_Z5jdHi6B-myT" &&
+        op.payload?.["deleted_at"] === firstRevocation,
+    )!;
+    const revokeB = collectAll(b.engine).find(
+      (op) =>
+        op.source === b.engine.deviceId() &&
+        op.table === "shared_snapshots" &&
+        op.recordId === "TWOREVXR8_Z5jdHi6B-myT" &&
+        op.payload?.["deleted_at"] === secondRevocation,
+    )!;
+
+    c1.engine.applyRemote([revokeA, revokeB]);
+    c2.engine.applyRemote([revokeB, revokeA]);
+
+    expect(c1.lib.getSharedSnapshot("TWOREVXR8_Z5jdHi6B-myT")?.deleted_at).toBe(firstRevocation);
+    expect(c2.lib.getSharedSnapshot("TWOREVXR8_Z5jdHi6B-myT")?.deleted_at).toBe(firstRevocation);
   });
 
   it("backfills pre-v7 share rows into the dirty set exactly once", () => {

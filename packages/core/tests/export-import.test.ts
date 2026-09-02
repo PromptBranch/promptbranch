@@ -187,6 +187,27 @@ describe("export/import", () => {
     expect(hits.has(clone.id)).toBe(true);
   });
 
+  it("remaps a prompt id that was previously hard-deleted on this device", () => {
+    const sourceDb = openMemoryDatabase();
+    const sourceLib = new PromptLibrary(sourceDb);
+    const sourcePrompt = sourceLib.createPrompt({ title: "Imported again", content: "v1" });
+    const sourceVersionId = sourcePrompt.current_version_id!;
+    const exported = sourceLib.exportLibrary();
+
+    lib.importLibrary(exported);
+    lib.hardDeletePrompt(sourcePrompt.id);
+    const summary = lib.importLibrary(exported);
+
+    expect(lib.getPrompt(sourcePrompt.id)).toBeNull();
+    const replacement = lib.listPrompts().find((prompt) => prompt.title === "Imported again");
+    expect(replacement?.id).toBeDefined();
+    expect(replacement?.id).not.toBe(sourcePrompt.id);
+    expect(lib.listVersions(replacement!.id)[0]?.id).not.toBe(sourceVersionId);
+    expect(summary.prompts?.remapped).toBe(1);
+    expect(summary.versions?.remapped).toBe(1);
+    sourceDb.close();
+  });
+
   it("round-trips provider configuration without API keys", () => {
     const { prompt } = populate(lib);
     const provider = lib.createProvider({

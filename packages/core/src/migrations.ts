@@ -1,6 +1,6 @@
 import type BetterSqlite3 from "better-sqlite3";
 import { SCHEMA_SQL } from "./schema.js";
-import { syncMigrationSql, syncV7Sql, syncV9Sql } from "./sync/tables.js";
+import { syncMigrationSql, syncV7Sql, syncV9Sql, syncV10Sql } from "./sync/tables.js";
 
 interface Migration {
   version: number;
@@ -126,6 +126,11 @@ ALTER TABLE runs ADD COLUMN prompt_content TEXT;
     version: 9,
     name: "delimiter-safe-sync-record-keys",
     sql: syncV9Sql(),
+  },
+  {
+    version: 10,
+    name: "durable-prompt-hard-delete-tombstones",
+    sql: syncV10Sql(),
   },
 ];
 

@@ -111,6 +111,8 @@ const MERGE_TABLES = new Set<SyncedTableName>(["tags", "collections", "branches"
  * Convergence rules:
  * - append-only rows union by primary key (UUIDs never collide);
  * - mutable rows resolve by (HLC, deviceId) last-writer-wins;
+ * - prompt hard deletion is terminal for the prompt and its owned aggregate;
+ * - share revocation is grow-only and keeps the earliest non-null timestamp;
  * - unique-name collisions (tags/collections/branches) merge into the local
  *   row and record an id remap so later references follow it;
  * - ops are stored verbatim regardless of LWW outcome so gossip stays
@@ -410,6 +412,7 @@ export class SyncEngine {
           summary.applied += one.applied;
           summary.skipped += one.skipped;
           summary.stale += one.stale;
+          summary.deferred += one.deferred;
         } catch (opErr) {
           if (!isForeignKeyFailure(opErr)) throw opErr;
           summary.deferred += 1;
@@ -463,7 +466,22 @@ export class SyncEngine {
             validatePayload(def, op);
           }
 
-          const { table, recordId, payload } = this.remapOp(def, op);
+          const remapped = this.remapOp(def, op);
+          const { table, recordId } = remapped;
+          let { payload } = remapped;
+
+          if (
+            table === "ratings" &&
+            op.kind === "upsert" &&
+            payload?.["target_type"] === "version" &&
+            !this.knowsVersion(String(payload["target_id"]))
+          ) {
+            // Ratings have a polymorphic target rather than a SQLite FK. Do
+            // the same transient-parent deferral explicitly so a rating that
+            // arrives before its version cannot become an unowned orphan.
+            summary.deferred += 1;
+            continue;
+          }
           const localHead = head.get(table, recordId) as { hlc: string; device_id: string } | undefined;
           const wins =
             localHead === undefined ||
@@ -483,7 +501,56 @@ export class SyncEngine {
           );
           this.observeStamp(op.hlc);
 
-          if (!wins) {
+          const promptHardDelete = table === "prompts" && op.kind === "delete";
+          if (promptHardDelete) {
+            this.recordPromptTombstone(recordId);
+          }
+
+          if (op.kind === "upsert" && payload !== null) {
+            if (table === "shared_snapshots") {
+              payload = this.normalizeSharedSnapshot(payload);
+              const local = this.db
+                .prepare("SELECT deleted_at FROM shared_snapshots WHERE snapshot_id = ?")
+                .get(recordId) as { deleted_at: string | null } | undefined;
+              const incomingDeletedAt =
+                typeof payload["deleted_at"] === "string" ? payload["deleted_at"] : null;
+              const deletedAt =
+                local?.deleted_at && incomingDeletedAt
+                  ? [local.deleted_at, incomingDeletedAt].sort()[0]!
+                  : (local?.deleted_at ?? incomingDeletedAt);
+              payload = { ...payload, deleted_at: deletedAt };
+              if (!wins && local !== undefined && deletedAt !== local.deleted_at) {
+                // Revocation is an absorbing state. An older revoke may not
+                // replace newer share metadata, but it must still revoke the
+                // locally retained token. Keep the earliest timestamp so the
+                // merge is independent of delivery order.
+                this.db
+                  .prepare("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
+                  .run(deletedAt, recordId);
+                summary.applied += 1;
+                continue;
+              }
+            } else {
+              const owner = this.tombstonedPromptOwner(def, payload);
+              if (owner !== null) {
+                // Terminal aggregate deletion consumes later descendant ops
+                // for gossip/cursor continuity without rematerializing rows.
+                if (def.name === "versions") {
+                  // A polymorphic rating has no SQLite FK. It may have arrived
+                  // before ownership of this version was known, so remove it
+                  // when the terminally owned version is finally identified.
+                  this.db
+                    .prepare("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?")
+                    .run(recordId);
+                }
+                if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
+                summary.stale += 1;
+                continue;
+              }
+            }
+          }
+
+          if (!wins && !promptHardDelete) {
             summary.stale += 1;
             continue;
           }
@@ -493,7 +560,7 @@ export class SyncEngine {
           } else {
             this.applyUpsert(def, recordId, payload!, touchedPrompts, touchedBranches, op.hlc);
           }
-          upsertHead.run(table, recordId, op.hlc, op.source);
+          if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
           summary.applied += 1;
         }
 
@@ -523,6 +590,82 @@ export class SyncEngine {
         "INSERT OR IGNORE INTO sync_id_remaps (table_name, remote_id, local_id) VALUES (?, ?, ?)",
       )
       .run(table, remoteId, localId);
+  }
+
+  private isPromptTombstoned(promptId: string): boolean {
+    return this.db
+      .prepare("SELECT 1 FROM sync_prompt_tombstones WHERE prompt_id = ?")
+      .get(promptId) !== undefined;
+  }
+
+  private recordPromptTombstone(promptId: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id) VALUES (?)")
+      .run(promptId);
+    this.db.prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ?").run(promptId);
+  }
+
+  /** Returns the terminally deleted prompt that owns this incoming row. */
+  private tombstonedPromptOwner(
+    def: SyncedTableDef,
+    payload: Record<string, unknown>,
+  ): string | null {
+    if (def.name === "prompts") {
+      const promptId = String(payload["id"]);
+      return this.isPromptTombstoned(promptId) ? promptId : null;
+    }
+
+    if (
+      def.name === "branches" ||
+      def.name === "versions" ||
+      def.name === "prompt_tags" ||
+      def.name === "collection_prompts" ||
+      def.name === "notes" ||
+      def.name === "runs"
+    ) {
+      const promptId = String(payload["prompt_id"]);
+      return this.isPromptTombstoned(promptId) ? promptId : null;
+    }
+
+    if (def.name !== "ratings") return null;
+    const targetId = String(payload["target_id"]);
+    if (payload["target_type"] === "prompt") {
+      return this.isPromptTombstoned(targetId) ? targetId : null;
+    }
+    if (payload["target_type"] !== "version") return null;
+    const current = this.db.prepare("SELECT prompt_id FROM versions WHERE id = ?").get(targetId) as
+      | { prompt_id: string }
+      | undefined;
+    if (current && this.isPromptTombstoned(current.prompt_id)) return current.prompt_id;
+    const historical = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.prompt_id') AS prompt_id
+         FROM sync_ops
+         WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
+         ORDER BY hlc DESC, source_device_id DESC
+         LIMIT 1`,
+      )
+      .get(targetId) as { prompt_id: string | null } | undefined;
+    return historical?.prompt_id && this.isPromptTombstoned(historical.prompt_id)
+      ? historical.prompt_id
+      : null;
+  }
+
+  private normalizeSharedSnapshot(payload: Record<string, unknown>): Record<string, unknown> {
+    const promptId = payload["prompt_id"];
+    if (typeof promptId !== "string" || !this.isPromptTombstoned(promptId)) return payload;
+    return { ...payload, prompt_id: null };
+  }
+
+  private knowsVersion(versionId: string): boolean {
+    if (this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(versionId)) return true;
+    return this.db
+      .prepare(
+        `SELECT 1 FROM sync_ops
+         WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
+         LIMIT 1`,
+      )
+      .get(versionId) !== undefined;
   }
 
   /** Applies recorded id remaps to an op's record key and payload references. */
@@ -805,6 +948,10 @@ export class SyncEngine {
       .prepare("SELECT prompt_id, hlc FROM sync_pending_pointers WHERE version_id = ?")
       .get(versionId) as { prompt_id: string; hlc: string } | undefined;
     if (!stash) return;
+    if (this.isPromptTombstoned(stash.prompt_id)) {
+      this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
+      return;
+    }
     // Belt and braces: never let a stash older than the prompt row's winning
     // revision resurrect a stale pointer.
     const head = this.db

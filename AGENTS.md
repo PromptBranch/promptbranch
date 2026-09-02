@@ -195,8 +195,9 @@ Match that format: emoji, `type(scope): subject`.
 - SQLite migrations are **forward-only and append-only**: add a new numbered
   migration in `packages/core/src/migrations.ts`; never edit an
   already-shipped migration. The runner backs up on-disk DBs before migrating
-  automatically. (Currently at v9: v8 adds exact run prompt snapshots and v9
-  replaces composite-key sync triggers with delimiter-safe record keys.)
+  automatically. (Currently at v10: v8 adds exact run prompt snapshots, v9
+  replaces composite-key sync triggers with delimiter-safe record keys, and
+  v10 makes prompt hard-delete tombstones durable.)
 - Comments in the codebase explain *why*, not what; match that density and
   tone (see `packages/core/src/db.ts` / `paths.ts` for the house style).
 - Theming: CSS custom properties (`--pb-*`) in

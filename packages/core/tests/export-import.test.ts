@@ -49,6 +49,7 @@ function populate(library: PromptLibrary) {
     versionId: v2.id,
     tool: "claude",
     model: "claude-opus",
+    promptContent: "Review the release candidate from 2026-09-02",
     outcomeRating: 5,
     resultSummary: "great",
     metrics: { tokens: 100 },
@@ -113,6 +114,9 @@ describe("export/import", () => {
     expect(freshLib.listCollections()[0]!.prompt_count).toBe(1);
     expect(freshLib.getAverageRatings("prompt", prompt.id).effectiveness).toBeCloseTo(4);
     expect(freshLib.listRuns(prompt.id)[0]!.model).toBe("claude-opus");
+    expect(freshLib.listRuns(prompt.id)[0]!.prompt_content).toBe(
+      "Review the release candidate from 2026-09-02",
+    );
     expect(JSON.parse(freshLib.listRuns(prompt.id)[0]!.metrics_json!)).toEqual({ tokens: 100 });
 
     // Search index rebuilt.
@@ -328,6 +332,7 @@ describe("export/import", () => {
     expect(run.status).toBe("completed");
     expect(run.provider).toBeNull();
     expect(run.output).toBeNull();
+    expect(run.prompt_content).toBeNull();
     expect(run.outcome_rating).toBe(4);
     expect(freshLib.getPrompt("p1")!.current_version_id).toBe("v1");
     expect(freshLib.listProviders()).toEqual([]);

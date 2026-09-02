@@ -3,7 +3,15 @@ import { SqliteError } from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { reindexPrompt } from "../reindex.js";
 import { compareHlc, formatHlc, parseHlc } from "./hlc.js";
-import { SYNCED_TABLES, decodeRecordId, tableDef, type SyncedTableDef, type SyncedTableName } from "./tables.js";
+import {
+  SYNCED_TABLES,
+  decodeRecordId,
+  encodeRecordId,
+  recordKeySql,
+  tableDef,
+  type SyncedTableDef,
+  type SyncedTableName,
+} from "./tables.js";
 
 /** One record-level change, as it travels between devices. */
 export interface SyncOp {
@@ -14,7 +22,7 @@ export interface SyncOp {
   /** Unique per source; makes apply idempotent. */
   opId: string;
   table: SyncedTableName;
-  /** Composite pk values joined with ':' (junction tables). */
+  /** Stable encoded primary-key values. */
   recordId: string;
   kind: "upsert" | "delete";
   /** Full row snapshot for upserts (redacted), null for deletes. */
@@ -294,7 +302,7 @@ export class SyncEngine {
   bootstrapDirty(): void {
     this.db.transaction(() => {
       for (const def of SYNCED_TABLES) {
-        const pk = def.pk.map((c) => `"${c}"`).join(" || ':' || ");
+        const pk = recordKeySql(def.pk);
         this.db
           .prepare(`INSERT INTO sync_dirty (table_name, record_id, kind) SELECT '${def.name}', ${pk}, 'upsert' FROM ${def.name}`)
           .run();
@@ -531,7 +539,7 @@ export class SyncEngine {
     if (op.payload !== null) {
       const payload = { ...op.payload };
       for (const column of Object.keys(refs)) payload[column] = remapValue(column, payload[column]);
-      const recordId = def.pk.map((c) => String(payload[c])).join(":");
+      const recordId = encodeRecordId(def, def.pk.map((c) => String(payload[c])));
       return { table: def.name, recordId, payload };
     }
     // Tombstones: FK columns remap as usual, and a merge table's own id also
@@ -546,7 +554,7 @@ export class SyncEngine {
       const remapped = this.readRemap(def.name, values[0]!);
       if (remapped !== null) values[0] = remapped;
     }
-    return { table: def.name, recordId: values.join(":"), payload: null };
+    return { table: def.name, recordId: encodeRecordId(def, values), payload: null };
   }
 
   private applyUpsert(
@@ -887,10 +895,15 @@ function redactPayload(table: SyncedTableName, row: Record<string, unknown>): Re
     return { ...row, api_key_enc: null };
   }
   if (table === "runs") {
-    const output = row["output"];
+    // Exact substituted prompts were added after wire protocol v1. Keep them
+    // device-local until peers can negotiate optional columns; otherwise a
+    // rolling upgrade wedges older peers on schema-drift validation.
+    const { prompt_content: _promptContent, ...portable } = row;
+    const output = portable["output"];
     if (typeof output === "string" && output.length > RUN_OUTPUT_CAP) {
-      return { ...row, output: output.slice(0, RUN_OUTPUT_CAP) + TRUNCATION_MARKER };
+      return { ...portable, output: output.slice(0, RUN_OUTPUT_CAP) + TRUNCATION_MARKER };
     }
+    return portable;
   }
   return row;
 }

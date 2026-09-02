@@ -26,7 +26,7 @@ const now = () => new Date().toISOString();
 const RATING_DIMENSIONS = ["effectiveness", "clarity", "completeness", "actionability"] as const;
 
 /** metrics_json keys owned by run execution — updateRunMetrics patches must not touch them. */
-const RESERVED_METRICS_KEYS = new Set(["usage", "costUsd"]);
+const RESERVED_METRICS_KEYS = new Set(["usage", "costUsd", "promptContentCaptured"]);
 type RatingDimension = (typeof RATING_DIMENSIONS)[number];
 
 export type PromptSort = "updated" | "created" | "title" | "rating";
@@ -1074,6 +1074,7 @@ export class PromptLibrary {
     provider?: string;
     status?: RunStatus;
     output?: string;
+    promptContent?: string;
     error?: string;
     latencyMs?: number;
     runGroupId?: string;
@@ -1097,9 +1098,9 @@ export class PromptLibrary {
     const id = randomUUID();
     this.run(
       `INSERT INTO runs
-         (id, prompt_id, version_id, tool, model, provider, status, output, error, latency_ms, run_group_id,
-          outcome_rating, result_summary, metrics_json, started_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+          latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.promptId,
       input.versionId,
@@ -1108,6 +1109,7 @@ export class PromptLibrary {
       input.provider ?? null,
       input.status ?? "completed",
       input.output ?? null,
+      input.promptContent ?? null,
       input.error ?? null,
       input.latencyMs ?? null,
       input.runGroupId ?? null,
@@ -1132,6 +1134,7 @@ export class PromptLibrary {
     model: string;
     status: RunStatus;
     output?: string;
+    promptContent?: string;
     error?: string;
     latencyMs?: number;
     runGroupId?: string;
@@ -1148,9 +1151,14 @@ export class PromptLibrary {
       input.status === "completed" && input.output !== undefined
         ? input.output.replace(/\s+/g, " ").trim().slice(0, 280) || undefined
         : undefined;
+    const metrics =
+      input.promptContent !== undefined
+        ? { ...(input.metrics ?? {}), promptContentCaptured: true }
+        : input.metrics;
     return this.addRun({
       ...input,
       tool: "prompthub-run",
+      ...(metrics !== undefined ? { metrics } : {}),
       ...(resultSummary !== undefined ? { resultSummary } : {}),
     });
   }
@@ -1195,7 +1203,8 @@ export class PromptLibrary {
    * Shallow-merges `patch` into a run's metrics_json blob. Existing keys not
    * named in the patch (usage, costUsd, …) are preserved; a corrupt stored
    * blob is treated as empty. Values must be JSON-serializable. The reserved
-   * execution keys `usage`/`costUsd` are owned by recordModelRun — patches
+   * execution keys `usage`/`costUsd`/`promptContentCaptured` are owned by
+   * recordModelRun — patches
    * containing them are rejected so callers can't rewrite execution facts.
    */
   updateRunMetrics(runId: string, patch: Record<string, unknown>): RunRow {
@@ -1718,9 +1727,9 @@ export class PromptLibrary {
         const id = claimId("runs", run.id, "SELECT id FROM runs WHERE id = ?");
         this.run(
           `INSERT INTO runs
-             (id, prompt_id, version_id, tool, model, provider, status, output, error, latency_ms, run_group_id,
-              outcome_rating, result_summary, metrics_json, started_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+              latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           remap("prompts", run.prompt_id),
           remap("versions", run.version_id),
@@ -1732,6 +1741,7 @@ export class PromptLibrary {
           remap("providers", run.provider ?? null),
           run.status ?? "completed",
           run.output ?? null,
+          run.prompt_content ?? null,
           run.error ?? null,
           run.latency_ms ?? null,
           run.run_group_id ?? null,

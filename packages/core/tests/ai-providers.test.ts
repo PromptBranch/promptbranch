@@ -84,6 +84,7 @@ describe("migration 3", () => {
     expect(run["status"]).toBe("completed");
     expect(run["provider"]).toBeNull();
     expect(run["output"]).toBeNull();
+    expect(run["prompt_content"]).toBeNull();
     expect(run["error"]).toBeNull();
     expect(run["latency_ms"]).toBeNull();
     expect(run["run_group_id"]).toBeNull();
@@ -266,6 +267,7 @@ describe("model runs", () => {
       model: "gpt-4o-mini",
       status: "completed",
       output: "Hello  world,\nhow are you?",
+      promptContent: "Say hi to Ada",
       latencyMs: 812,
       runGroupId: "group-1",
       metrics: { usage: { inputTokens: 12, outputTokens: 7 }, costUsd: 0.000006 },
@@ -273,12 +275,15 @@ describe("model runs", () => {
     expect(okRun.tool).toBe("prompthub-run");
     expect(okRun.status).toBe("completed");
     expect(okRun.output).toBe("Hello  world,\nhow are you?");
+    expect(okRun.prompt_content).toBe("Say hi to Ada");
     expect(okRun.result_summary).toBe("Hello world, how are you?");
     expect(okRun.latency_ms).toBe(812);
     expect(okRun.run_group_id).toBe("group-1");
+    expect(JSON.parse(okRun.metrics_json!)).toMatchObject({ promptContentCaptured: true });
     expect(JSON.parse(okRun.metrics_json!)).toEqual({
       usage: { inputTokens: 12, outputTokens: 7 },
       costUsd: 0.000006,
+      promptContentCaptured: true,
     });
 
     const failRun = lib.recordModelRun({

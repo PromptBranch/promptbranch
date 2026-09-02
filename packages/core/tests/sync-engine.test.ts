@@ -90,6 +90,163 @@ describe("sync engine", () => {
     expect(b.engine.pendingDirty()).toBe(0);
   });
 
+  it("syncs provider model ids that contain the composite-key delimiter", () => {
+    const a = rig();
+    const b = rig();
+    const provider = a.lib.createProvider({
+      type: "ollama",
+      driver: "openai-compatible",
+      name: "Local Ollama",
+    });
+    a.lib.setProviderModels(provider.id, [
+      { modelId: "llama3.2:latest", displayName: "Llama 3.2 Latest" },
+    ]);
+
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+
+    expect(b.lib.getProvider(provider.id)?.name).toBe("Local Ollama");
+    expect(b.lib.listProviderModels(provider.id)).toEqual([
+      expect.objectContaining({
+        provider_id: provider.id,
+        model_id: "llama3.2:latest",
+        display_name: "Llama 3.2 Latest",
+      }),
+    ]);
+  });
+
+  it("bootstraps provider model ids that contain the composite-key delimiter", () => {
+    const a = rig();
+    const b = rig();
+    const provider = a.lib.createProvider({
+      type: "ollama",
+      driver: "openai-compatible",
+      name: "Bootstrap Ollama",
+    });
+    a.lib.setProviderModels(provider.id, [{ modelId: "qwen3:8b" }]);
+    a.db.prepare("DELETE FROM sync_dirty").run();
+
+    a.engine.bootstrapDirty();
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+
+    expect(b.lib.listProviderModels(provider.id)).toEqual([
+      expect.objectContaining({ model_id: "qwen3:8b" }),
+    ]);
+  });
+
+  it("applies LWW consistently to delimiter-bearing provider model ids", () => {
+    const a = rig();
+    const b = rig();
+    const provider = a.lib.createProvider({
+      type: "ollama",
+      driver: "openai-compatible",
+      name: "LWW Ollama",
+    });
+    a.lib.setProviderModels(provider.id, [
+      { modelId: "qwen3:8b", displayName: "Original" },
+    ]);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    b.lib.setProviderModels(provider.id, [
+      { modelId: "qwen3:8b", displayName: "Newer local" },
+    ]);
+    b.engine.refineDirty(3_000);
+    a.lib.setProviderModels(provider.id, [
+      { modelId: "qwen3:8b", displayName: "Older remote" },
+    ]);
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+
+    expect(b.lib.listProviderModels(provider.id)[0]?.display_name).toBe("Newer local");
+  });
+
+  it("syncs deletion of provider model ids containing the composite-key delimiter", () => {
+    const a = rig();
+    const b = rig();
+    const provider = a.lib.createProvider({
+      type: "ollama",
+      driver: "openai-compatible",
+      name: "Delete Ollama",
+    });
+    a.lib.setProviderModels(provider.id, [{ modelId: "llama3.2:latest" }]);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.setProviderModels(provider.id, []);
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+
+    expect(b.lib.listProviderModels(provider.id)).toEqual([]);
+  });
+
+  it("syncs imported composite ids that begin with the JSON encoding marker", () => {
+    const a = rig();
+    const b = rig();
+    a.db
+      .prepare(
+        `INSERT INTO providers (id, type, driver, name, created_at)
+         VALUES ('[tenant', 'ollama', 'openai-compatible', 'Bracket Ollama', '2026-09-02T00:00:00.000Z')`,
+      )
+      .run();
+    a.db
+      .prepare(
+        `INSERT INTO provider_models (provider_id, model_id, display_name, enabled)
+         VALUES ('[tenant', 'llama', 'Bracket Llama', 1)`,
+      )
+      .run();
+
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+    expect(b.lib.listProviderModels("[tenant")).toHaveLength(1);
+
+    a.db
+      .prepare("DELETE FROM provider_models WHERE provider_id = '[tenant' AND model_id = 'llama'")
+      .run();
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+    expect(b.lib.listProviderModels("[tenant")).toEqual([]);
+  });
+
+  it("syncs imported delimiter-bearing ids through every junction table", () => {
+    const a = rig();
+    const b = rig();
+    const createdAt = "2026-09-02T00:00:00.000Z";
+    a.db
+      .prepare(
+        `INSERT INTO prompts (id, title, created_at, updated_at)
+         VALUES ('tenant:prompt', 'Imported prompt', ?, ?)`,
+      )
+      .run(createdAt, createdAt);
+    a.db.prepare("INSERT INTO tags (id, name) VALUES ('tag:one', 'Imported tag')").run();
+    a.db
+      .prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES ('tenant:prompt', 'tag:one')")
+      .run();
+    a.db
+      .prepare("INSERT INTO collections (id, name, sort_order) VALUES ('collection:one', 'Imported', 0)")
+      .run();
+    a.db
+      .prepare(
+        `INSERT INTO collection_prompts (collection_id, prompt_id, sort_order)
+         VALUES ('collection:one', 'tenant:prompt', 0)`,
+      )
+      .run();
+
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    expect(b.lib.listTagsForPrompt("tenant:prompt").map((tag) => tag.id)).toEqual(["tag:one"]);
+    expect(
+      b.db
+        .prepare(
+          `SELECT 1 FROM collection_prompts
+           WHERE collection_id = 'collection:one' AND prompt_id = 'tenant:prompt'`,
+        )
+        .get(),
+    ).toBeTruthy();
+  });
+
   it("unions concurrent append-only edits and converges branch numbering", () => {
     const a = rig();
     const b = rig();
@@ -283,6 +440,7 @@ describe("sync engine", () => {
       model: "m",
       status: "completed",
       output: "y".repeat(2_200_000),
+      promptContent: "Exact executed prompt",
     });
     a.engine.refineDirty();
     drain(a.engine, b.engine);
@@ -290,6 +448,7 @@ describe("sync engine", () => {
     const run = b.lib.listRuns(prompt.id)[0]!;
     expect(run.output!.length).toBeLessThanOrEqual(2_001_000);
     expect(run.output).toMatch(/sync-truncated/);
+    expect(run.prompt_content).toBeNull();
   });
 
   it("syncs drafts with last-writer-wins", () => {

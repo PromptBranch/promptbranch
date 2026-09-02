@@ -1,6 +1,6 @@
 import type BetterSqlite3 from "better-sqlite3";
 import { SCHEMA_SQL } from "./schema.js";
-import { syncMigrationSql, syncV7Sql } from "./sync/tables.js";
+import { syncMigrationSql, syncV7Sql, syncV9Sql } from "./sync/tables.js";
 
 interface Migration {
   version: number;
@@ -110,6 +110,22 @@ CREATE INDEX idx_shared_snapshots_prompt ON shared_snapshots(prompt_id);
     version: 7,
     name: "sync-shared-snapshots",
     sql: syncV7Sql(),
+  },
+  // The version row is only a lineage anchor: users can execute an edited
+  // draft with variable values that differ from that immutable version.
+  // Existing runs stay nullable so their historical behavior can fall back
+  // to version content when the exact execution input was never recorded.
+  {
+    version: 8,
+    name: "run-prompt-content",
+    sql: `
+ALTER TABLE runs ADD COLUMN prompt_content TEXT;
+`,
+  },
+  {
+    version: 9,
+    name: "delimiter-safe-sync-record-keys",
+    sql: syncV9Sql(),
   },
 ];
 

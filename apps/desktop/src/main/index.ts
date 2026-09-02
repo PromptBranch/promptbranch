@@ -115,6 +115,10 @@ import {
   type ShareServiceDeps,
 } from "./share.js";
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
+import {
+  createDailyBackupScheduler,
+  type DailyBackupScheduler,
+} from "./backup-scheduler.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { createBeforeQuitHandler } from "./shutdown.js";
@@ -187,12 +191,12 @@ app.on("open-url", (event, url) => {
   if (target) importDispatcher.dispatch(target);
 });
 
-const BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const UPDATE_STARTUP_DELAY_MS = 20_000;
 
 let db: Database | null = null;
 let library: PromptLibrary | null = null;
 let backupsDir: string | null = null;
+let backupScheduler: DailyBackupScheduler | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
@@ -263,10 +267,16 @@ function versionLabelFor(versionId: string): string | null {
   return row ? versionLabel(row, row.branch_name) : null;
 }
 
-function runBackupNow(): string {
+function writeBackup(): string {
   if (!backupsDir) throw new Error("Backups directory not initialized");
   const backupPath = backupDatabase(getDb(), backupsDir, 10);
   console.log(`[main] backup written: ${backupPath}`);
+  return backupPath;
+}
+
+function runBackupNow(): string {
+  const backupPath = writeBackup();
+  backupScheduler?.backupCompleted();
   return backupPath;
 }
 
@@ -1104,15 +1114,16 @@ if (!gotSingleInstanceLock) {
   library = new PromptLibrary(db);
   console.log(`[main] database opened at ${dbPath}${opened.backupPath ? ` (pre-migration backup: ${opened.backupPath})` : ""}`);
 
-  // Automatic daily backup: snapshot if the newest backup is older than 24h.
-  const latest = latestBackup(backupsDir);
-  if (!latest || Date.now() - latest.mtimeMs > BACKUP_MAX_AGE_MS) {
-    try {
-      runBackupNow();
-    } catch (err) {
-      console.error("[main] automatic backup failed:", err);
-    }
-  }
+  backupScheduler = createDailyBackupScheduler({
+    latestBackupMtimeMs: () => latestBackup(backupsDir!)?.mtimeMs ?? null,
+    createBackup: () => {
+      writeBackup();
+    },
+    onError: (error) => console.error("[main] automatic backup failed:", error),
+  });
+  // Start synchronously to preserve the existing startup due-check, then keep
+  // checking while the app remains open.
+  backupScheduler.start();
 
   // Multi-device sync: pure P2P over the local network (see
   // docs-internal/specs/2026-08-27-sync-design.md). Ops are durable in
@@ -1185,6 +1196,8 @@ app.on("window-all-closed", () => {
 
 const handleBeforeQuit = createBeforeQuitHandler({
   clearBackgroundWork: () => {
+    backupScheduler?.stop();
+    backupScheduler = null;
     if (syncPokeTimer) clearInterval(syncPokeTimer);
     syncPokeTimer = null;
     if (updateStartupTimer) clearTimeout(updateStartupTimer);

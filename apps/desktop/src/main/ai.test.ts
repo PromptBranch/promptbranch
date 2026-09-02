@@ -43,6 +43,8 @@ let judgeInFlight = 0;
 let judgeMaxInFlight = 0;
 /** Request-URL log so tests can assert which model id actually went out. */
 const seenUrls: string[] = [];
+/** Judge request prompts captured at the fake provider boundary. */
+const judgeRequestPrompts: string[] = [];
 
 /** One OpenAI chat-completions SSE chunk (streaming responses). */
 function sseChunk(model: string, body: Record<string, unknown>): string {
@@ -132,6 +134,7 @@ beforeAll(async () => {
         // Judge stubs: structured verdict JSON, a flaky one that answers with
         // malformed JSON on its first call (retry path), and one always broken.
         if (parsed.model.startsWith("model-judge")) {
+          judgeRequestPrompts.push(parsed.messages[0]?.content ?? "");
           flakyJudgeCalls += parsed.model === "model-judge-flaky" ? 1 : 0;
           // Flaky stub: malformed on the FIRST call after a reset, valid after
           // — deterministic under the judge pool's concurrent interleaving.
@@ -669,6 +672,7 @@ describe("runModelGroup", () => {
     // Both rows persisted under the group, with provider/model/latency set.
     const rows = deps.lib.listRuns(prompt.id, { runGroupId: group.runGroupId });
     expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.prompt_content === "Say hello to Ada")).toBe(true);
     const okRow = rows.find((r) => r.status === "completed")!;
     expect(okRow.provider).toBe(providerId);
     expect(okRow.model).toBe("model-a");
@@ -676,6 +680,7 @@ describe("runModelGroup", () => {
     expect(JSON.parse(okRow.metrics_json!)).toEqual({
       usage: { inputTokens: 10, outputTokens: 5 },
       costUsd: null, // no catalog cached in this test
+      promptContentCaptured: true,
     });
     expect(deps.lib.listRunGroups(prompt.id)).toHaveLength(1);
   });
@@ -755,6 +760,82 @@ describe("judgeRunGroup", () => {
     const rows = deps.lib.listRuns(prompt.id, { runGroupId });
     expect(rows.every((r) => r.outcome_rating === null)).toBe(true);
     expect(rows.find((r) => r.id === completedA.id)!.metrics_json).toBeNull();
+  });
+
+  it("judges the substituted draft that produced the run instead of the saved template", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-judge"]);
+    const prompt = deps.lib.createPrompt({
+      title: "Launch",
+      content: "Saved template for {{name}}",
+    });
+    const group = await runModelGroup(deps, {
+      promptId: prompt.id,
+      content: "Executed draft for {{name}}",
+      variables: { name: "Ada" },
+      modelRefs: [{ providerId, modelId: "model-a" }],
+    });
+    judgeRequestPrompts.length = 0;
+
+    await judgeRunGroup(deps, {
+      runGroupId: group.runGroupId,
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(judgeRequestPrompts).toHaveLength(1);
+    expect(judgeRequestPrompts[0]).toContain('Prompt:\n"""\nExecuted draft for Ada\n"""');
+    expect(judgeRequestPrompts[0]).not.toContain("Saved template for {{name}}");
+  });
+
+  it("falls back to saved version content for legacy runs without an execution snapshot", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-c", "model-judge"]);
+    const { runGroupId } = seedRunGroup(deps, providerId);
+    judgeRequestPrompts.length = 0;
+
+    await judgeRunGroup(deps, {
+      runGroupId,
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(judgeRequestPrompts).toHaveLength(2);
+    expect(
+      judgeRequestPrompts.every((request) =>
+        request.includes('Prompt:\n"""\nSay hi politely\n"""'),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails closed when a synced run says its exact prompt snapshot stayed on another device", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-judge"]);
+    const prompt = deps.lib.createPrompt({ title: "Remote", content: "Saved fallback" });
+    const run = deps.lib.addRun({
+      promptId: prompt.id,
+      versionId: prompt.current_version_id!,
+      tool: "prompthub-run",
+      provider: providerId,
+      model: "model-a",
+      status: "completed",
+      output: "Remote output",
+      runGroupId: "remote-group",
+      metrics: { promptContentCaptured: true },
+    });
+    judgeRequestPrompts.length = 0;
+
+    const result = await judgeRunGroup(deps, {
+      runGroupId: "remote-group",
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        runId: run.id,
+        error: expect.stringMatching(/exact prompt snapshot is unavailable.*device that executed/i),
+      }),
+    ]);
+    expect(judgeRequestPrompts).toEqual([]);
   });
 
   it("retries once on malformed judge JSON (parse-and-validate fallback)", async () => {

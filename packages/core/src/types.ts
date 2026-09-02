@@ -106,6 +106,8 @@ export interface RunRow {
   status: RunStatus;
   /** Full model output for completed runs. */
   output: string | null;
+  /** Exact post-substitution prompt sent to the model; null on legacy/manual runs. */
+  prompt_content: string | null;
   /** Normalized error message for failed runs. */
   error: string | null;
   latency_ms: number | null;

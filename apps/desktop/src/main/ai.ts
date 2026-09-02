@@ -720,6 +720,7 @@ export async function runModelGroup(
             model: p.modelId,
             status: "completed",
             output: result.text,
+            promptContent: content,
             latencyMs: result.latencyMs,
             runGroupId,
             startedAt,
@@ -757,6 +758,7 @@ export async function runModelGroup(
             provider: p.provider.id,
             model: p.modelId,
             status: "error",
+            promptContent: content,
             error: message,
             runGroupId,
             startedAt,
@@ -850,9 +852,28 @@ export async function judgeRunGroup(deps: AiServiceDeps, input: AiJudgeInput): P
       try {
         const version = lib.getVersion(row.version_id);
         if (!version) throw new Error(`Version not found: ${row.version_id}`);
+        let promptContent = row.prompt_content;
+        if (promptContent === null) {
+          let capturedElsewhere = false;
+          try {
+            const metrics = row.metrics_json === null ? null : JSON.parse(row.metrics_json);
+            capturedElsewhere =
+              typeof metrics === "object" &&
+              metrics !== null &&
+              (metrics as Record<string, unknown>)["promptContentCaptured"] === true;
+          } catch {
+            // Legacy/corrupt metrics have no reliable snapshot marker.
+          }
+          if (capturedElsewhere) {
+            throw new Error(
+              "The exact prompt snapshot is unavailable on this device; judge this run on the device that executed it",
+            );
+          }
+          promptContent = version.content;
+        }
         const verdict = await runJudge({
           model,
-          promptContent: version.content,
+          promptContent,
           output: row.output!,
           ...(input.criteria !== undefined ? { criteria: input.criteria } : {}),
           signal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),

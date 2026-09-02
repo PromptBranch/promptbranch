@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -12,6 +12,25 @@ import type {
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
 import { MainPane } from "./MainPane";
+
+vi.mock("@uiw/react-codemirror", () => ({
+  default: ({
+    value,
+    onChange,
+    readOnly,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <textarea
+      aria-label="Prompt editor"
+      value={value}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
 
 // Render counter for the memoized Inspector: it renders TagEditor with the
 // `compact` prop (the MainPane tag row does not), so each compact render
@@ -282,6 +301,32 @@ describe("MainPane share button", () => {
         includeHistory: false,
         content: "Unsaved editor content",
       }),
+    );
+  });
+});
+
+describe("MainPane restored prompt editing", () => {
+  it("autosaves an edit after restoring a trashed prompt without remounting the editor", async () => {
+    bridge.versions.get.mockResolvedValue({
+      ...version,
+      content: "Persisted version",
+      contentFormat: "markdown",
+    });
+    const trashedPrompt = { ...prompt, deletedAt: "2026-08-02T09:00:00Z" };
+    const view = renderApp(<MainPane prompt={trashedPrompt} />);
+
+    await screen.findByText("Persisted version");
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(bridge.prompts.restore).toHaveBeenCalledWith(prompt.id));
+
+    view.rerender(<MainPane prompt={prompt} />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const restoredEditor = screen.getByRole("textbox", { name: "Prompt editor" });
+    fireEvent.change(restoredEditor, { target: { value: "Restored edit" } });
+    view.unmount();
+
+    await waitFor(() =>
+      expect(bridge.drafts.set).toHaveBeenCalledWith(prompt.id, "Restored edit"),
     );
   });
 });

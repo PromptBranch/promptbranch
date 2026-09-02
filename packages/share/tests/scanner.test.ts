@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import { scanForSecrets } from "../src/scanner.js";
 
@@ -111,5 +112,34 @@ describe("scanForSecrets — reporting", () => {
 
   it("returns an empty array for clean text", () => {
     expect(scanForSecrets("You are a helpful assistant. Answer concisely.")).toEqual([]);
+  });
+
+  it("reports dense findings near the payload limit without quadratic rescanning", () => {
+    const lineCount = 12_000;
+    const text = Array.from(
+      { length: lineCount },
+      (_, index) => `user${index}@example.com`,
+    ).join("\n");
+
+    const startedAt = performance.now();
+    const findings = scanForSecrets(text);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(text.length).toBeLessThan(256 * 1024);
+    expect(findings).toHaveLength(lineCount);
+    expect(findings[0]).toMatchObject({ rule: "email-address", line: 1 });
+    expect(findings.at(-1)).toMatchObject({ rule: "email-address", line: lineCount });
+    expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it("scans long non-email identifiers without quadratic backtracking", () => {
+    const text = "A_".repeat(32 * 1024);
+
+    const startedAt = performance.now();
+    const findings = scanForSecrets(text);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(findings).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1_000);
   });
 });

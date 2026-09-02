@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
+import { useAppState } from "../state/app-state";
 import { MainPane } from "./MainPane";
 
 vi.mock("@uiw/react-codemirror", () => ({
@@ -158,6 +159,11 @@ async function startRun(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Run" }));
 }
 
+function HistoricalVersionControl({ versionId }: { versionId: string }) {
+  const { setViewingVersionId } = useAppState();
+  return <button onClick={() => setViewingVersionId(versionId)}>View historical version</button>;
+}
+
 describe("MainPane live run progress", () => {
   it("drives the live compare view through queued → streaming → completed", async () => {
     const user = userEvent.setup();
@@ -302,6 +308,92 @@ describe("MainPane share button", () => {
         content: "Unsaved editor content",
       }),
     );
+  });
+
+  it("shares the historical version currently displayed instead of the current draft", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content:
+        versionId === historicalVersion.id ? "Historical content" : "Saved current content",
+      contentFormat: "markdown",
+    }));
+    bridge.share.preview.mockImplementation(async (input) => ({
+      payload: {
+        formatVersion: 1,
+        title: "Greeting",
+        content: input.content ?? "Saved current content",
+        tags: [],
+        publishedAt: "2026-08-26T12:00:00.000Z",
+      },
+      findings: [],
+    }));
+    bridge.share.publish.mockResolvedValue({
+      id: "V1StGXR8_Z5jdHi6B-myT",
+      url: "https://promptbranch.app/p/V1StGXR8_Z5jdHi6B-myT",
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane
+          prompt={{ ...prompt, currentVersionId: currentVersion.id, draftContent: "Current draft" }}
+        />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(await screen.findByText("Historical content")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Share prompt" }));
+    await waitFor(() =>
+      expect(bridge.share.preview).toHaveBeenCalledWith({
+        promptId: "prompt-1",
+        includeHistory: false,
+        content: "Historical content",
+      }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/"content": "Historical content"/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Current draft/)).toBeNull();
+
+    await user.click(within(dialog).getByRole("button", { name: "Publish" }));
+    await waitFor(() =>
+      expect(bridge.share.publish).toHaveBeenCalledWith({
+        promptId: "prompt-1",
+        includeHistory: false,
+        content: "Historical content",
+      }),
+    );
+  });
+
+  it("disables sharing until the selected historical content has loaded", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(screen.getByRole("button", { name: "Share prompt" })).toBeDisabled();
   });
 });
 

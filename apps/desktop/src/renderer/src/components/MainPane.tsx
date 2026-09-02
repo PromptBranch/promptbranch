@@ -599,9 +599,10 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
               <button
                 type="button"
                 onClick={() => setShareOpen(true)}
+                disabled={!isViewingCurrent && !versionContent}
                 title="Share prompt…"
                 aria-label="Share prompt"
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Share2 size={12} />
                 <span className="@max-md:hidden">Share</span>
@@ -831,7 +832,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         content={
           isViewingCurrent
             ? (liveContentRef.current ?? prompt.draftContent ?? versionContent?.content)
-            : (prompt.draftContent ?? undefined)
+            : versionContent?.content
         }
       />
       <NameDialog

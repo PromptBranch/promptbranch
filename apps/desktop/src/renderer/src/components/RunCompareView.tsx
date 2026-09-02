@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Bookmark, ChevronDown, ChevronRight, CircleStop, Play, RefreshCw, Scale, X } from "lucide-react";
+import { AlertTriangle, Bookmark, ChevronDown, ChevronRight, CircleStop, Play, RefreshCw, Scale, Trash2, X } from "lucide-react";
 import { judgeAverage, type JudgeScores } from "@promptbranch/ai/judge-average";
 import type { AiJudgeResult, AiRunGroupDto, RunGroupDto } from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
@@ -324,15 +324,19 @@ function RunColumn({
   run,
   judging,
   judgeEntry,
+  deletable,
   onRate,
   onSaveNote,
+  onDelete,
 }: {
   run: CompareRun;
   /** True while the judge is scoring this group (completed columns only). */
   judging: boolean;
   judgeEntry: JudgeEntry | undefined;
+  deletable: boolean;
   onRate: (runId: string, outcomeRating: number | null) => void;
   onSaveNote: (run: CompareRun) => void;
+  onDelete: (run: CompareRun) => void;
 }) {
   const stats = [
     run.latencyMs !== null ? `${run.latencyMs} ms` : null,
@@ -385,6 +389,17 @@ function RunColumn({
           {stats.length > 0 ? stats.join(" · ") : "—"}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
+          {deletable && run.runId !== "" && (
+            <button
+              type="button"
+              onClick={() => onDelete(run)}
+              aria-label={`Delete ${run.modelId} result`}
+              title="Delete model result"
+              className="rounded p-0.5 text-ink-faint transition-colors hover:bg-danger-soft hover:text-danger"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
           {rateable && (
             <button
               type="button"
@@ -451,6 +466,7 @@ export function RunCompareView({
   const [judgeModelLabel, setJudgeModelLabel] = useState<string | null>(null);
   const [judgeSkippedCount, setJudgeSkippedCount] = useState(0);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<CompareRun | null>(null);
   const { toast } = useToast();
   useEffect(() => {
     setRuns(group?.runs ?? []);
@@ -458,6 +474,7 @@ export function RunCompareView({
     setJudgeEntries({});
     setJudgeModelLabel(null);
     setJudgeSkippedCount(0);
+    setDeleteTarget(null);
   }, [group]);
 
   const rate = useAppMutation(
@@ -519,6 +536,23 @@ export function RunCompareView({
         body: `Model output — ${run.modelId} (${new Date().toISOString().slice(0, 10)})\n\n${run.output ?? ""}`,
       }),
     { toast: "Saved to Notes" },
+  );
+
+  const deleteRun = useAppMutation(
+    (run: CompareRun) => window.promptBuilder.runs.delete(run.runId),
+    {
+      toast: "Model result deleted",
+      onSuccess: (_, deleted) => {
+        setRuns((current) => current.filter((run) => run.runId !== deleted.runId));
+        setJudgeEntries((current) => {
+          const remaining = { ...current };
+          delete remaining[deleted.runId];
+          return remaining;
+        });
+        setDeleteTarget(null);
+        if (runs.length === 1 && runs[0]?.runId === deleted.runId) onOpenChange(false);
+      },
+    },
   );
 
   const applyRatings = useAppMutation(
@@ -666,8 +700,10 @@ export function RunCompareView({
                 run={run}
                 judging={judge.isPending}
                 judgeEntry={judgeEntries[run.runId] ?? storedJudgeEntry(run)}
+                deletable={!live && !running}
                 onRate={(runId, outcomeRating) => rate.mutate({ runId, outcomeRating })}
                 onSaveNote={(target) => saveNote.mutate(target)}
+                onDelete={setDeleteTarget}
               />
             ))}
           </div>
@@ -717,6 +753,19 @@ export function RunCompareView({
         description="Some runs already have an outcome rating. Applying the judge scores overwrites them."
         confirmLabel="Apply ratings"
         onConfirm={applyJudgeRatings}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(next) => {
+          if (!next) setDeleteTarget(null);
+        }}
+        title="Delete this model result?"
+        description="This permanently removes the result, its rating, and judge scores. Notes saved from it are kept."
+        confirmLabel="Delete result"
+        danger
+        onConfirm={() => {
+          if (deleteTarget) deleteRun.mutate(deleteTarget);
+        }}
       />
     </Dialog.Root>
   );

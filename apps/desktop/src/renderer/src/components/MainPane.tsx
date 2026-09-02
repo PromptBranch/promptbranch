@@ -824,7 +824,16 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       </Group>
 
       {/* Dialogs */}
-      <ShareDialog open={shareOpen} onOpenChange={setShareOpen} prompt={prompt} />
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        prompt={prompt}
+        content={
+          isViewingCurrent
+            ? (liveContentRef.current ?? prompt.draftContent ?? versionContent?.content)
+            : (prompt.draftContent ?? undefined)
+        }
+      />
       <NameDialog
         open={renameOpen}
         onOpenChange={setRenameOpen}

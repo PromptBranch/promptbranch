@@ -95,6 +95,25 @@ describe("AiProvidersSection re-test", () => {
     expect(screen.queryByLabelText("Test model")).not.toBeInTheDocument();
   });
 
+  it("shows the actionable failure hint returned by the connection test", async () => {
+    bridge.ai.providers.list.mockResolvedValue([
+      { ...googleProvider, testModel: "gemini-3.5-flash-lite" },
+    ]);
+    bridge.ai.providers.test.mockResolvedValue({
+      ok: false,
+      error: "Provider request failed (HTTP 401): bad key",
+      hint: "Check the API key and confirm this account has access to the selected model.",
+    });
+    const user = userEvent.setup();
+    renderApp(<AiProvidersSection />);
+
+    await screen.findByText("Google");
+    await user.click(screen.getByRole("button", { name: "Actions for Google" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Re-test connection/ }));
+
+    expect(await screen.findByText(/confirm this account has access/i)).toBeInTheDocument();
+  });
+
   it("offers one-click switch to the provider-named replacement", async () => {
     bridge.ai.providers.list.mockResolvedValue([{ ...googleProvider, testModel: "gemini-2.5-flash-lite" }]);
     bridge.ai.providers.test.mockResolvedValue({

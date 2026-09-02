@@ -273,13 +273,14 @@ describe("MainPane share button", () => {
       findings: [],
     });
     const user = userEvent.setup();
-    renderApp(<MainPane prompt={prompt} />);
+    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Unsaved editor content" }} />);
     await user.click(screen.getByRole("button", { name: "Share prompt" }));
     expect(await screen.findByText('Share "Greeting"')).toBeInTheDocument();
     await waitFor(() =>
       expect(bridge.share.preview).toHaveBeenCalledWith({
         promptId: "prompt-1",
         includeHistory: false,
+        content: "Unsaved editor content",
       }),
     );
   });

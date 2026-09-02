@@ -53,6 +53,29 @@ const publishOk: PublishResponse = {
 };
 
 describe("previewShare", () => {
+  it("uses the current editor content when the saved version is empty", () => {
+    const lib = new PromptLibrary(openMemoryDatabase());
+    const prompt = lib.createPrompt({ title: "Draft prompt", content: "" });
+    const input = {
+      promptId: prompt.id,
+      includeHistory: false,
+      content: "Use the content currently visible in the editor.",
+    };
+
+    const preview = previewShare(makeDeps(lib), input);
+
+    expect(preview.payload.content).toBe("Use the content currently visible in the editor.");
+  });
+
+  it("rejects a genuinely blank prompt before portal schema validation", () => {
+    const lib = new PromptLibrary(openMemoryDatabase());
+    const prompt = lib.createPrompt({ title: "Blank prompt", content: "" });
+
+    expect(() =>
+      previewShare(makeDeps(lib), { promptId: prompt.id, includeHistory: false, content: "   " }),
+    ).toThrow("Prompt content is empty — add content before sharing");
+  });
+
   it("builds a current-version payload from the prompt (default scope)", () => {
     const { lib, prompt } = setup();
     const { payload, findings } = previewShare(

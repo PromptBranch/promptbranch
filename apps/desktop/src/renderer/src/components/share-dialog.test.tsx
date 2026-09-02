@@ -54,8 +54,8 @@ beforeEach(() => {
   bridge.share.publish.mockResolvedValue(publishResult);
 });
 
-function renderDialog() {
-  return renderApp(<ShareDialog open onOpenChange={vi.fn()} prompt={prompt} />);
+function renderDialog(content = "Say hi.") {
+  return renderApp(<ShareDialog open onOpenChange={vi.fn()} prompt={prompt} content={content} />);
 }
 
 describe("ShareDialog", () => {
@@ -69,6 +69,7 @@ describe("ShareDialog", () => {
     expect(bridge.share.publish).toHaveBeenCalledWith({
       promptId: "prompt-1",
       includeHistory: false,
+      content: "Say hi.",
     });
     expect(await screen.findByText(publishResult.url)).toBeInTheDocument();
     // The delete token stays in the main process; the dialog only notes it.
@@ -110,6 +111,7 @@ describe("ShareDialog", () => {
       expect(bridge.share.preview).toHaveBeenCalledWith({
         promptId: "prompt-1",
         includeHistory: true,
+        content: "Say hi.",
       }),
     );
   });

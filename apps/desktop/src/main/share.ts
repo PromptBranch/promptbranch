@@ -38,6 +38,8 @@ export interface ShareScopeInput {
   promptId: string;
   includeHistory: boolean;
   description?: string;
+  /** Current renderer content, including an unsaved draft. */
+  content?: string;
 }
 
 export interface SharePreview {
@@ -50,6 +52,10 @@ function buildPayload(deps: ShareServiceDeps, input: ShareScopeInput): SnapshotP
   if (!prompt) throw new Error(`Prompt not found: ${input.promptId}`);
   const current = prompt.current_version_id ? deps.lib.getVersion(prompt.current_version_id) : null;
   if (!current) throw new Error("Prompt has no current version");
+  const content = input.content ?? current.content;
+  if (!content.trim()) {
+    throw new Error("Prompt content is empty — add content before sharing");
+  }
   const history = input.includeHistory
     ? deps.lib.listDefaultBranchVersions(input.promptId).map((v) => ({
         version: v.number,
@@ -62,7 +68,7 @@ function buildPayload(deps: ShareServiceDeps, input: ShareScopeInput): SnapshotP
     title: prompt.title,
     ...(input.description !== undefined ? { description: input.description } : {}),
     promptDescription: prompt.description,
-    content: current.content,
+    content,
     tags: deps.lib.listTagsForPrompt(input.promptId).map((t) => t.name),
     ...(history ? { history } : {}),
     ...(parentId ? { parentId } : {}),

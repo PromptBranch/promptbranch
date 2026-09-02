@@ -525,3 +525,8 @@ WHERE id IN (SELECT prompt_id FROM sync_prompt_tombstones);
 
 DELETE FROM sync_meta WHERE key = 'applying';`;
 }
+
+/** v11 has no schema change; its transactional reducer is registered in migrations.ts. */
+export function syncV11Sql(): string {
+  return "-- canonical-natural-key-sync repair runs in the migration callback\nSELECT 1;";
+}

@@ -29,6 +29,38 @@ function syncBoth(a: Rig, b: Rig, byteBudget?: number): void {
   drain(b.engine, a.engine, byteBudget);
 }
 
+function fixedOp(
+  source: string,
+  seq: number,
+  table: SyncOp["table"],
+  recordId: string,
+  payload: Record<string, unknown> | null,
+  millis: number,
+  kind: "upsert" | "delete" = "upsert",
+): SyncOp {
+  return {
+    source,
+    seq,
+    opId: `${source}-${seq}-${table}-${recordId}-${kind}`,
+    table,
+    recordId,
+    kind,
+    payload,
+    hlc: formatHlc({ millis, counter: 0 }),
+    createdAt: "2026-09-03T00:00:00.000Z",
+  };
+}
+
+function seedPrompt(r: Rig, id: string): void {
+  r.db
+    .prepare(
+      `INSERT INTO prompts (id, title, created_at, updated_at)
+       VALUES (?, 'Fixed prompt', '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')`,
+    )
+    .run(id);
+  r.db.prepare("DELETE FROM sync_dirty").run();
+}
+
 /** Export with table arrays sorted by stable keys, for cross-device equality. */
 function normalizedExport(r: Rig) {
   const data = r.lib.exportLibrary();
@@ -313,6 +345,1113 @@ describe("sync engine", () => {
       expect(r.lib.listTagsForPrompt(pA.id).map((t) => t.name)).toEqual(["prod"]);
       expect(r.lib.listTagsForPrompt(pB.id).map((t) => t.name)).toEqual(["prod"]);
     }
+  });
+
+  it("canonical natural-key tag collisions to the smallest id on every live peer", () => {
+    const a = rig();
+    const b = rig();
+    a.db.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-a', 'prod', '#0000aa')").run();
+    b.db.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-b', 'prod', '#0000bb')").run();
+
+    a.engine.refineDirty(1_000);
+    b.engine.refineDirty(2_000);
+    syncBoth(a, b);
+
+    for (const r of [a, b]) {
+      expect(r.db.prepare("SELECT id, name, color FROM tags WHERE name = 'prod'").all()).toEqual([
+        { id: "tag-a", name: "prod", color: "#0000bb" },
+      ]);
+    }
+  });
+
+  it("lets a newer alias tombstone win when its parent upsert arrives later", () => {
+    const r = rig();
+    const tag = (id: string, kind: "upsert" | "delete", millis: number): SyncOp => ({
+      source: `source-${id}-${kind}`,
+      seq: 1,
+      opId: `${id}-${kind}-${millis}`,
+      table: "tags",
+      recordId: id,
+      kind,
+      payload: kind === "upsert" ? { id, name: "prod", color: `#${millis}` } : null,
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([tag("tag-a", "upsert", 100)]);
+    r.engine.applyRemote([tag("tag-b", "delete", 300)]);
+    r.engine.applyRemote([tag("tag-b", "upsert", 200)]);
+
+    expect(r.db.prepare("SELECT id FROM tags WHERE name = 'prod'").all()).toEqual([]);
+    expect(r.db.prepare("SELECT record_id, hlc FROM sync_heads WHERE table_name = 'tags'").all()).toEqual([
+      { record_id: "tag-a", hlc: formatHlc({ millis: 300, counter: 0 }) },
+    ]);
+  });
+
+  it("reduces head-only tag-membership tombstones when aliases become canonical", () => {
+    const r = rig();
+    const prompt = r.lib.createPrompt({ title: "Membership", content: "x" });
+    r.db.prepare("DELETE FROM sync_dirty").run();
+    const op = (table: "tags" | "prompt_tags", recordId: string, kind: "upsert" | "delete", payload: Record<string, unknown> | null, millis: number): SyncOp => ({
+      source: `source-${table}-${recordId}-${kind}`,
+      seq: 1,
+      opId: `${table}-${recordId}-${kind}-${millis}`,
+      table,
+      recordId,
+      kind,
+      payload,
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([
+      op("tags", "tag-a", "upsert", { id: "tag-a", name: "prod", color: null }, 100),
+      op("prompt_tags", `${prompt.id}:tag-a`, "upsert", { prompt_id: prompt.id, tag_id: "tag-a" }, 100),
+    ]);
+    r.engine.applyRemote([op("prompt_tags", `${prompt.id}:tag-b`, "delete", null, 300)]);
+    r.engine.applyRemote([op("tags", "tag-b", "upsert", { id: "tag-b", name: "prod", color: null }, 200)]);
+
+    expect(r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([]);
+    expect(
+      r.db
+        .prepare("SELECT record_id, hlc FROM sync_heads WHERE table_name = 'prompt_tags'")
+        .all(),
+    ).toEqual([{ record_id: `${prompt.id}:tag-a`, hlc: formatHlc({ millis: 300, counter: 0 }) }]);
+  });
+
+  it("reduces collection membership history at the canonical key and keeps the winning sort order", () => {
+    const r = rig();
+    const prompt = r.lib.createPrompt({ title: "Collection membership", content: "x" });
+    r.db.prepare("DELETE FROM sync_dirty").run();
+    const op = (table: "collections" | "collection_prompts", recordId: string, payload: Record<string, unknown>, millis: number): SyncOp => ({
+      source: `source-${table}-${recordId}-${millis}`,
+      seq: 1,
+      opId: `${table}-${recordId}-${millis}`,
+      table,
+      recordId,
+      kind: "upsert",
+      payload,
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([
+      op("collections", "collection-a", { id: "collection-a", name: "prod", sort_order: 0 }, 100),
+      op(
+        "collection_prompts",
+        `collection-a:${prompt.id}`,
+        { collection_id: "collection-a", prompt_id: prompt.id, sort_order: 1 },
+        100,
+      ),
+      op("collections", "collection-b", { id: "collection-b", name: "prod", sort_order: 0 }, 200),
+      op(
+        "collection_prompts",
+        `collection-b:${prompt.id}`,
+        { collection_id: "collection-b", prompt_id: prompt.id, sort_order: 9 },
+        300,
+      ),
+    ]);
+
+    expect(r.db.prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts").all()).toEqual([
+      { collection_id: "collection-a", prompt_id: prompt.id, sort_order: 9 },
+    ]);
+    expect(
+      r.db
+        .prepare("SELECT record_id, hlc FROM sync_heads WHERE table_name = 'collection_prompts'")
+        .all(),
+    ).toEqual([{ record_id: `collection-a:${prompt.id}`, hlc: formatHlc({ millis: 300, counter: 0 }) }]);
+  });
+
+  it("refines pending alias writes before a remote canonical rekey", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Pending membership", content: "x" });
+    a.engine.refineDirty(100);
+    drain(a.engine, b.engine);
+
+    a.db.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-a', 'prod', NULL)").run();
+    a.engine.refineDirty(1_000);
+    b.db.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-b', 'prod', NULL)").run();
+    b.db.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, 'tag-b')").run(prompt.id);
+
+    drain(a.engine, b.engine);
+    b.engine.refineDirty(2_000);
+    const pending = b.engine.opsSince({}).ops.filter((entry) => entry.source === b.engine.deviceId());
+    expect(pending.filter((entry) => entry.table === "tags").at(-1)?.kind).toBe("upsert");
+    expect(pending.filter((entry) => entry.table === "prompt_tags").at(-1)?.kind).toBe("upsert");
+
+    drain(b.engine, a.engine);
+    expect(a.lib.listTagsForPrompt(prompt.id).map((tag) => tag.name)).toEqual(["prod"]);
+    expect(b.lib.listTagsForPrompt(prompt.id).map((tag) => tag.name)).toEqual(["prod"]);
+  });
+
+  it("reports structural canonicalization when the incoming parent op is stale", () => {
+    const r = rig();
+    const tag = (id: string, millis: number): SyncOp => ({
+      source: `source-${id}`,
+      seq: 1,
+      opId: `tag-${id}-${millis}`,
+      table: "tags",
+      recordId: id,
+      kind: "upsert",
+      payload: { id, name: "prod", color: `#${millis}` },
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([tag("tag-b", 2_000)]);
+    const summary = r.engine.applyRemote([tag("tag-a", 1_000)]);
+
+    expect(summary).toMatchObject({ applied: 1, stale: 0, skipped: 0, deferred: 0 });
+    expect(r.db.prepare("SELECT id, color FROM tags WHERE name = 'prod'").all()).toEqual([
+      { id: "tag-a", color: "#2000" },
+    ]);
+  });
+
+  it("reports child-only canonicalization as the one applied stale parent op", () => {
+    const r = rig();
+    const prompt = r.lib.createPrompt({ title: "Child-only reporting", content: "x" });
+    r.db.prepare("DELETE FROM sync_dirty").run();
+    const op = (table: "tags" | "prompt_tags", recordId: string, kind: "upsert" | "delete", payload: Record<string, unknown> | null, millis: number): SyncOp => ({
+      source: `source-${table}-${recordId}-${kind}`,
+      seq: 1,
+      opId: `${table}-${recordId}-${kind}-${millis}`,
+      table,
+      recordId,
+      kind,
+      payload,
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([
+      op("tags", "tag-a", "upsert", { id: "tag-a", name: "prod", color: null }, 400),
+      op("prompt_tags", `${prompt.id}:tag-a`, "upsert", { prompt_id: prompt.id, tag_id: "tag-a" }, 100),
+      op("prompt_tags", `${prompt.id}:tag-b`, "delete", null, 300),
+    ]);
+    const summary = r.engine.applyRemote([
+      op("tags", "tag-b", "upsert", { id: "tag-b", name: "prod", color: null }, 200),
+    ]);
+
+    expect(summary).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+    expect(r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([]);
+  });
+
+  it("reports a repeated stale canonical parent as stale when all reduced state is unchanged", () => {
+    const r = rig();
+    const prompt = r.lib.createPrompt({ title: "Repeated canonical parent", content: "x" });
+    r.db.prepare("DELETE FROM sync_dirty").run();
+    const op = (table: "tags" | "prompt_tags", recordId: string, kind: "upsert" | "delete", payload: Record<string, unknown> | null, millis: number): SyncOp => ({
+      source: `repeat-${table}-${recordId}-${kind}-${millis}`,
+      seq: 1,
+      opId: `repeat-${table}-${recordId}-${kind}-${millis}`,
+      table,
+      recordId,
+      kind,
+      payload,
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    const snapshot = () => ({
+      tags: r.db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
+      promptTags: r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
+      heads: r.db.prepare("SELECT table_name, record_id, hlc, device_id FROM sync_heads ORDER BY table_name, record_id").all(),
+      remaps: r.db.prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id").all(),
+    });
+
+    r.engine.applyRemote([
+      op("tags", "tag-a", "upsert", { id: "tag-a", name: "prod", color: null }, 400),
+      op("prompt_tags", `${prompt.id}:tag-a`, "upsert", { prompt_id: prompt.id, tag_id: "tag-a" }, 100),
+      op("prompt_tags", `${prompt.id}:tag-b`, "delete", null, 300),
+      op("tags", "tag-b", "upsert", { id: "tag-b", name: "prod", color: null }, 200),
+    ]);
+    const before = snapshot();
+    const summary = r.engine.applyRemote([
+      op("tags", "tag-a", "upsert", { id: "tag-a", name: "prod", color: null }, 150),
+    ]);
+
+    expect(summary).toEqual({ applied: 0, skipped: 0, stale: 1, deferred: 0 });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("classifies a winning canonical rekey exactly once", () => {
+    const r = rig();
+    const tag = (id: string, millis: number): SyncOp => ({
+      source: `source-${id}`,
+      seq: 1,
+      opId: `winning-tag-${id}-${millis}`,
+      table: "tags",
+      recordId: id,
+      kind: "upsert",
+      payload: { id, name: "prod", color: `#${millis}` },
+      hlc: formatHlc({ millis, counter: 0 }),
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([tag("tag-b", 100)]);
+    expect(r.engine.applyRemote([tag("tag-a", 200)])).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+  });
+
+  it("keeps tag LWW state and memberships at one canonical key", () => {
+    const a = rig();
+    const b = rig();
+    for (const r of [a, b]) seedPrompt(r, "prompt-1");
+    const aOps = [
+      fixedOp("device-a", 1, "tags", "tag-a", { id: "tag-a", name: "prod", color: "#112233" }, 100),
+      fixedOp(
+        "device-a",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-a",
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+        110,
+      ),
+    ];
+    const bOps = [
+      fixedOp("device-b", 1, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#445566" }, 200),
+      fixedOp(
+        "device-b",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-b",
+        { prompt_id: "prompt-1", tag_id: "tag-b" },
+        210,
+      ),
+    ];
+
+    a.engine.applyRemote(aOps);
+    b.engine.applyRemote(bOps);
+    syncBoth(a, b);
+
+    for (const r of [a, b]) {
+      expect(r.db.prepare("SELECT id, name, color FROM tags").all()).toEqual([
+        { id: "tag-a", name: "prod", color: "#445566" },
+      ]);
+      expect(r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+      ]);
+    }
+  });
+
+  it("keeps collection LWW sort order and membership at one canonical key", () => {
+    const a = rig();
+    const b = rig();
+    for (const r of [a, b]) seedPrompt(r, "prompt-1");
+    a.engine.applyRemote([
+      fixedOp(
+        "device-a",
+        1,
+        "collections",
+        "collection-a",
+        { id: "collection-a", name: "Inbox", sort_order: 2 },
+        100,
+      ),
+      fixedOp(
+        "device-a",
+        2,
+        "collection_prompts",
+        "collection-a:prompt-1",
+        { collection_id: "collection-a", prompt_id: "prompt-1", sort_order: 3 },
+        110,
+      ),
+    ]);
+    b.engine.applyRemote([
+      fixedOp(
+        "device-b",
+        1,
+        "collections",
+        "collection-b",
+        { id: "collection-b", name: "Inbox", sort_order: 9 },
+        200,
+      ),
+      fixedOp(
+        "device-b",
+        2,
+        "collection_prompts",
+        "collection-b:prompt-1",
+        { collection_id: "collection-b", prompt_id: "prompt-1", sort_order: 7 },
+        210,
+      ),
+    ]);
+    syncBoth(a, b);
+
+    for (const r of [a, b]) {
+      expect(r.db.prepare("SELECT id, name, sort_order FROM collections").all()).toEqual([
+        { id: "collection-a", name: "Inbox", sort_order: 9 },
+      ]);
+      expect(r.db.prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts").all()).toEqual([
+        { collection_id: "collection-a", prompt_id: "prompt-1", sort_order: 7 },
+      ]);
+    }
+  });
+
+  it("unions same-prompt branch collisions and renumbers both devices' versions", () => {
+    const a = rig();
+    const b = rig();
+    for (const r of [a, b]) seedPrompt(r, "prompt-1");
+    const version = (id: string, branchId: string, content: string, createdAt: string) => ({
+      id,
+      prompt_id: "prompt-1",
+      branch_id: branchId,
+      parent_version_id: null,
+      number: 1,
+      label: null,
+      content,
+      content_format: "markdown",
+      change_note: null,
+      author: "You",
+      status: "active",
+      source: "user",
+      created_at: createdAt,
+    });
+    a.engine.applyRemote([
+      fixedOp(
+        "device-a",
+        1,
+        "branches",
+        "branch-a",
+        {
+          id: "branch-a",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: "from A",
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        100,
+      ),
+      fixedOp(
+        "device-a",
+        2,
+        "versions",
+        "version-a",
+        version("version-a", "branch-a", "from A", "2026-09-03T00:00:00.000Z"),
+        110,
+      ),
+    ]);
+    b.engine.applyRemote([
+      fixedOp(
+        "device-b",
+        1,
+        "branches",
+        "branch-b",
+        {
+          id: "branch-b",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: "from B",
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        200,
+      ),
+      fixedOp(
+        "device-b",
+        2,
+        "versions",
+        "version-b",
+        version("version-b", "branch-b", "from B", "2026-09-03T00:01:00.000Z"),
+        210,
+      ),
+    ]);
+    syncBoth(a, b);
+
+    for (const r of [a, b]) {
+      expect(r.db.prepare("SELECT id, prompt_id, name, description FROM branches").all()).toEqual([
+        { id: "branch-a", prompt_id: "prompt-1", name: "experiment", description: "from B" },
+      ]);
+      expect(
+        r.db
+          .prepare("SELECT id, branch_id, number, content FROM versions ORDER BY number")
+          .all(),
+      ).toEqual([
+        { id: "version-a", branch_id: "branch-a", number: 1, content: "from A" },
+        { id: "version-b", branch_id: "branch-a", number: 2, content: "from B" },
+      ]);
+    }
+  });
+
+  it("does not merge same-named branches owned by different prompts", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-a");
+    seedPrompt(r, "prompt-b");
+
+    r.engine.applyRemote([
+      fixedOp(
+        "device-a",
+        1,
+        "branches",
+        "branch-a",
+        {
+          id: "branch-a",
+          prompt_id: "prompt-a",
+          name: "experiment",
+          description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        100,
+      ),
+      fixedOp(
+        "device-b",
+        1,
+        "branches",
+        "branch-b",
+        {
+          id: "branch-b",
+          prompt_id: "prompt-b",
+          name: "experiment",
+          description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        200,
+      ),
+    ]);
+
+    expect(r.db.prepare("SELECT id, prompt_id, name FROM branches ORDER BY id").all()).toEqual([
+      { id: "branch-a", prompt_id: "prompt-a", name: "experiment" },
+      { id: "branch-b", prompt_id: "prompt-b", name: "experiment" },
+    ]);
+    expect(r.db.prepare("SELECT * FROM sync_id_remaps WHERE table_name = 'branches'").all()).toEqual([]);
+  });
+
+  it("converges exact tag exports in opposite order and through third-peer gossip", () => {
+    const first = rig();
+    const second = rig();
+    const relay = rig();
+    for (const r of [first, second, relay]) seedPrompt(r, "prompt-1");
+    const ops = [
+      fixedOp("device-a", 1, "tags", "tag-a", { id: "tag-a", name: "prod", color: "#101010" }, 100),
+      fixedOp("device-b", 1, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#202020" }, 200),
+      fixedOp(
+        "device-a",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-a",
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+        110,
+      ),
+      fixedOp(
+        "device-b",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-b",
+        { prompt_id: "prompt-1", tag_id: "tag-b" },
+        210,
+      ),
+    ];
+
+    first.engine.applyRemote(ops);
+    second.engine.applyRemote([...ops].reverse());
+    drain(first.engine, relay.engine);
+
+    const expected = {
+      tags: [{ id: "tag-a", name: "prod", color: "#202020" }],
+      prompt_tags: [{ prompt_id: "prompt-1", tag_id: "tag-a" }],
+    };
+    for (const r of [first, second, relay]) {
+      const exported = normalizedExport(r);
+      expect({ tags: exported.tags, prompt_tags: exported.prompt_tags }).toEqual(expected);
+    }
+  });
+
+  it("records older alias memberships below a winning tag tombstone across delivery shapes", () => {
+    const staged = rig();
+    const batch = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [staged, batch, relay, third]) seedPrompt(r, "prompt-1");
+
+    const ops = [
+      fixedOp("device-a", 1, "tags", "tag-a", { id: "tag-a", name: "prod", color: "#0000aa" }, 100),
+      fixedOp(
+        "device-a",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-a",
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+        110,
+      ),
+      fixedOp("device-b", 1, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#0000bb" }, 200),
+      fixedOp(
+        "device-b",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-b",
+        { prompt_id: "prompt-1", tag_id: "tag-b" },
+        210,
+      ),
+      fixedOp("device-d", 1, "tags", "tag-b", null, 300, "delete"),
+    ];
+    const snapshot = (r: Rig) => ({
+      tags: r.db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
+      promptTags: r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
+      heads: r.db
+        .prepare(
+          `SELECT table_name, record_id, hlc, device_id FROM sync_heads
+           WHERE table_name IN ('tags', 'prompt_tags') ORDER BY table_name, record_id`,
+        )
+        .all(),
+      cursors: r.db
+        .prepare("SELECT source_device_id, last_seq FROM sync_cursors ORDER BY source_device_id")
+        .all(),
+      remaps: r.db
+        .prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id")
+        .all(),
+      ops: r.engine.opsSince({}).ops,
+    });
+    const expected = {
+      tags: [],
+      promptTags: [],
+      heads: [
+        {
+          table_name: "prompt_tags",
+          record_id: "prompt-1:tag-a",
+          hlc: formatHlc({ millis: 210, counter: 0 }),
+          device_id: "device-b",
+        },
+        {
+          table_name: "tags",
+          record_id: "tag-a",
+          hlc: formatHlc({ millis: 300, counter: 0 }),
+          device_id: "device-d",
+        },
+      ],
+      cursors: [
+        { source_device_id: "device-a", last_seq: 2 },
+        { source_device_id: "device-b", last_seq: 2 },
+        { source_device_id: "device-d", last_seq: 1 },
+      ],
+      remaps: [{ table_name: "tags", remote_id: "tag-b", local_id: "tag-a" }],
+      ops,
+    };
+
+    expect(staged.engine.applyRemote(ops.slice(0, 2))).toEqual({ applied: 2, skipped: 0, stale: 0, deferred: 0 });
+    expect(staged.engine.applyRemote(ops.slice(2, 4))).toEqual({ applied: 2, skipped: 0, stale: 0, deferred: 0 });
+    expect(staged.engine.applyRemote(ops.slice(4))).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+    expect(batch.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(batch.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 5, stale: 0, deferred: 0 });
+    expect(relay.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(third.engine.applyRemote(relay.engine.opsSince({}).ops)).toEqual({
+      applied: 5,
+      skipped: 0,
+      stale: 0,
+      deferred: 0,
+    });
+
+    for (const r of [staged, batch, relay, third]) expect(snapshot(r)).toEqual(expected);
+  });
+
+  it("discovers delete-first tag aliases from history before a later same-name upsert", () => {
+    const deleteFirst = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [deleteFirst, relay, third]) seedPrompt(r, "prompt-1");
+    const ops = [
+      fixedOp("device-a", 1, "tags", "tag-a", { id: "tag-a", name: "prod", color: "#0000aa" }, 100),
+      fixedOp(
+        "device-a",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-a",
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+        110,
+      ),
+      fixedOp("device-b", 1, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#0000bb" }, 200),
+      fixedOp(
+        "device-b",
+        2,
+        "prompt_tags",
+        "prompt-1:tag-b",
+        { prompt_id: "prompt-1", tag_id: "tag-b" },
+        210,
+      ),
+      fixedOp("device-d", 1, "tags", "tag-b", null, 300, "delete"),
+    ];
+    const snapshot = (r: Rig) => ({
+      tags: r.db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
+      promptTags: r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
+      heads: r.db
+        .prepare(
+          `SELECT table_name, record_id, hlc, device_id FROM sync_heads
+           WHERE table_name IN ('tags', 'prompt_tags') ORDER BY table_name, record_id`,
+        )
+        .all(),
+      cursors: r.db.prepare("SELECT source_device_id, last_seq FROM sync_cursors ORDER BY source_device_id").all(),
+      remaps: r.db
+        .prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id")
+        .all(),
+      ops: r.engine.opsSince({}).ops,
+    });
+    const expected = {
+      tags: [],
+      promptTags: [],
+      heads: [
+        {
+          table_name: "prompt_tags",
+          record_id: "prompt-1:tag-a",
+          hlc: formatHlc({ millis: 210, counter: 0 }),
+          device_id: "device-b",
+        },
+        {
+          table_name: "tags",
+          record_id: "tag-a",
+          hlc: formatHlc({ millis: 300, counter: 0 }),
+          device_id: "device-d",
+        },
+      ],
+      cursors: [
+        { source_device_id: "device-a", last_seq: 2 },
+        { source_device_id: "device-b", last_seq: 2 },
+        { source_device_id: "device-d", last_seq: 1 },
+      ],
+      remaps: [{ table_name: "tags", remote_id: "tag-b", local_id: "tag-a" }],
+      ops,
+    };
+
+    expect(deleteFirst.engine.applyRemote(ops.slice(4))).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(2, 4))).toEqual({ applied: 1, skipped: 0, stale: 1, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(0, 2))).toEqual({ applied: 1, skipped: 0, stale: 1, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 5, stale: 0, deferred: 0 });
+    expect(relay.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(third.engine.applyRemote(relay.engine.opsSince({}).ops)).toEqual({
+      applied: 5,
+      skipped: 0,
+      stale: 0,
+      deferred: 0,
+    });
+
+    for (const r of [deleteFirst, relay, third]) expect(snapshot(r)).toEqual(expected);
+  });
+
+  it("discovers delete-first collection aliases from history before a later same-name upsert", () => {
+    const deleteFirst = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [deleteFirst, relay, third]) seedPrompt(r, "prompt-1");
+    const ops = [
+      fixedOp(
+        "device-a",
+        1,
+        "collections",
+        "collection-a",
+        { id: "collection-a", name: "prod", sort_order: 1 },
+        100,
+      ),
+      fixedOp(
+        "device-a",
+        2,
+        "collection_prompts",
+        "collection-a:prompt-1",
+        { collection_id: "collection-a", prompt_id: "prompt-1", sort_order: 1 },
+        110,
+      ),
+      fixedOp(
+        "device-b",
+        1,
+        "collections",
+        "collection-b",
+        { id: "collection-b", name: "prod", sort_order: 2 },
+        200,
+      ),
+      fixedOp(
+        "device-b",
+        2,
+        "collection_prompts",
+        "collection-b:prompt-1",
+        { collection_id: "collection-b", prompt_id: "prompt-1", sort_order: 9 },
+        210,
+      ),
+      fixedOp("device-d", 1, "collections", "collection-b", null, 300, "delete"),
+    ];
+    const snapshot = (r: Rig) => ({
+      collections: r.db.prepare("SELECT id, name, sort_order FROM collections ORDER BY id").all(),
+      collectionPrompts: r.db
+        .prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts ORDER BY collection_id, prompt_id")
+        .all(),
+      heads: r.db
+        .prepare(
+          `SELECT table_name, record_id, hlc, device_id FROM sync_heads
+           WHERE table_name IN ('collections', 'collection_prompts') ORDER BY table_name, record_id`,
+        )
+        .all(),
+      cursors: r.db.prepare("SELECT source_device_id, last_seq FROM sync_cursors ORDER BY source_device_id").all(),
+      remaps: r.db
+        .prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id")
+        .all(),
+      ops: r.engine.opsSince({}).ops,
+    });
+    const expected = {
+      collections: [],
+      collectionPrompts: [],
+      heads: [
+        {
+          table_name: "collection_prompts",
+          record_id: "collection-a:prompt-1",
+          hlc: formatHlc({ millis: 210, counter: 0 }),
+          device_id: "device-b",
+        },
+        {
+          table_name: "collections",
+          record_id: "collection-a",
+          hlc: formatHlc({ millis: 300, counter: 0 }),
+          device_id: "device-d",
+        },
+      ],
+      cursors: [
+        { source_device_id: "device-a", last_seq: 2 },
+        { source_device_id: "device-b", last_seq: 2 },
+        { source_device_id: "device-d", last_seq: 1 },
+      ],
+      remaps: [{ table_name: "collections", remote_id: "collection-b", local_id: "collection-a" }],
+      ops,
+    };
+
+    expect(deleteFirst.engine.applyRemote(ops.slice(4))).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(2, 4))).toEqual({ applied: 1, skipped: 0, stale: 1, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(0, 2))).toEqual({ applied: 1, skipped: 0, stale: 1, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 5, stale: 0, deferred: 0 });
+    expect(relay.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(third.engine.applyRemote(relay.engine.opsSince({}).ops)).toEqual({
+      applied: 5,
+      skipped: 0,
+      stale: 0,
+      deferred: 0,
+    });
+
+    for (const r of [deleteFirst, relay, third]) expect(snapshot(r)).toEqual(expected);
+  });
+
+  it("discovers delete-first same-prompt branch aliases before a later upsert", () => {
+    const deleteFirst = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [deleteFirst, relay, third]) seedPrompt(r, "prompt-1");
+    const version = (id: string, branchId: string, content: string) => ({
+      id,
+      prompt_id: "prompt-1",
+      branch_id: branchId,
+      parent_version_id: null,
+      number: 1,
+      label: null,
+      content,
+      content_format: "markdown",
+      change_note: null,
+      author: "You",
+      status: "active",
+      source: "user",
+      created_at: "2026-09-03T00:00:00.000Z",
+    });
+    const ops = [
+      fixedOp(
+        "device-a",
+        1,
+        "branches",
+        "branch-a",
+        {
+          id: "branch-a",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: "from A",
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        100,
+      ),
+      fixedOp("device-a", 2, "versions", "version-a", version("version-a", "branch-a", "from A"), 110),
+      fixedOp(
+        "device-b",
+        1,
+        "branches",
+        "branch-b",
+        {
+          id: "branch-b",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: "from B",
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        200,
+      ),
+      fixedOp("device-b", 2, "versions", "version-b", version("version-b", "branch-b", "from B"), 210),
+      fixedOp("device-d", 1, "branches", "branch-b", null, 300, "delete"),
+    ];
+    const snapshot = (r: Rig) => ({
+      branches: r.db.prepare("SELECT id, prompt_id, name, description FROM branches ORDER BY id").all(),
+      versions: r.db.prepare("SELECT id, branch_id, content FROM versions ORDER BY id").all(),
+      heads: r.db
+        .prepare(
+          `SELECT table_name, record_id, hlc, device_id FROM sync_heads
+           WHERE table_name IN ('branches', 'versions') ORDER BY table_name, record_id`,
+        )
+        .all(),
+      cursors: r.db.prepare("SELECT source_device_id, last_seq FROM sync_cursors ORDER BY source_device_id").all(),
+      remaps: r.db
+        .prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id")
+        .all(),
+      ops: r.engine.opsSince({}).ops,
+    });
+    const expected = {
+      branches: [],
+      versions: [],
+      heads: [
+        {
+          table_name: "branches",
+          record_id: "branch-a",
+          hlc: formatHlc({ millis: 300, counter: 0 }),
+          device_id: "device-d",
+        },
+        {
+          table_name: "versions",
+          record_id: "version-a",
+          hlc: formatHlc({ millis: 110, counter: 0 }),
+          device_id: "device-a",
+        },
+        {
+          table_name: "versions",
+          record_id: "version-b",
+          hlc: formatHlc({ millis: 210, counter: 0 }),
+          device_id: "device-b",
+        },
+      ],
+      cursors: [
+        { source_device_id: "device-a", last_seq: 2 },
+        { source_device_id: "device-b", last_seq: 2 },
+        { source_device_id: "device-d", last_seq: 1 },
+      ],
+      remaps: [{ table_name: "branches", remote_id: "branch-b", local_id: "branch-a" }],
+      ops,
+    };
+
+    expect(deleteFirst.engine.applyRemote(ops.slice(4))).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(2, 4))).toEqual({ applied: 1, skipped: 0, stale: 1, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops.slice(0, 2))).toEqual({ applied: 2, skipped: 0, stale: 0, deferred: 0 });
+    expect(deleteFirst.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 5, stale: 0, deferred: 0 });
+    expect(relay.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(third.engine.applyRemote(relay.engine.opsSince({}).ops)).toEqual({
+      applied: 5,
+      skipped: 0,
+      stale: 0,
+      deferred: 0,
+    });
+
+    for (const r of [deleteFirst, relay, third]) expect(snapshot(r)).toEqual(expected);
+  });
+
+  it("records older collection memberships below a winning collection tombstone", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const ops = [
+      fixedOp(
+        "device-a",
+        1,
+        "collections",
+        "collection-a",
+        { id: "collection-a", name: "prod", sort_order: 0 },
+        100,
+      ),
+      fixedOp(
+        "device-a",
+        2,
+        "collection_prompts",
+        "collection-a:prompt-1",
+        { collection_id: "collection-a", prompt_id: "prompt-1", sort_order: 1 },
+        110,
+      ),
+      fixedOp(
+        "device-b",
+        1,
+        "collections",
+        "collection-b",
+        { id: "collection-b", name: "prod", sort_order: 0 },
+        200,
+      ),
+      fixedOp(
+        "device-b",
+        2,
+        "collection_prompts",
+        "collection-b:prompt-1",
+        { collection_id: "collection-b", prompt_id: "prompt-1", sort_order: 9 },
+        210,
+      ),
+      fixedOp("device-d", 1, "collections", "collection-b", null, 300, "delete"),
+    ];
+
+    expect(r.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(r.db.prepare("SELECT id FROM collections").all()).toEqual([]);
+    expect(r.db.prepare("SELECT collection_id, prompt_id FROM collection_prompts").all()).toEqual([]);
+    expect(
+      r.db
+        .prepare("SELECT record_id, hlc, device_id FROM sync_heads WHERE table_name = 'collection_prompts'")
+        .all(),
+    ).toEqual([
+      {
+        record_id: "collection-a:prompt-1",
+        hlc: formatHlc({ millis: 210, counter: 0 }),
+        device_id: "device-b",
+      },
+    ]);
+    expect(r.engine.opsSince({}).ops).toEqual(ops);
+    expect(r.engine.haveVector()).toMatchObject({ "device-a": 2, "device-b": 2, "device-d": 1 });
+  });
+
+  it("records older versions below a winning branch tombstone", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const version = (id: string, branchId: string, content: string) => ({
+      id,
+      prompt_id: "prompt-1",
+      branch_id: branchId,
+      parent_version_id: null,
+      number: 1,
+      label: null,
+      content,
+      content_format: "markdown",
+      change_note: null,
+      author: "You",
+      status: "active",
+      source: "user",
+      created_at: "2026-09-03T00:00:00.000Z",
+    });
+    const ops = [
+      fixedOp(
+        "device-a",
+        1,
+        "branches",
+        "branch-a",
+        {
+          id: "branch-a",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        100,
+      ),
+      fixedOp("device-a", 2, "versions", "version-a", version("version-a", "branch-a", "from A"), 110),
+      fixedOp(
+        "device-b",
+        1,
+        "branches",
+        "branch-b",
+        {
+          id: "branch-b",
+          prompt_id: "prompt-1",
+          name: "experiment",
+          description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        },
+        200,
+      ),
+      fixedOp("device-b", 2, "versions", "version-b", version("version-b", "branch-b", "from B"), 210),
+      fixedOp("device-d", 1, "branches", "branch-b", null, 300, "delete"),
+    ];
+
+    expect(r.engine.applyRemote(ops)).toEqual({ applied: 5, skipped: 0, stale: 0, deferred: 0 });
+    expect(r.db.prepare("SELECT id FROM branches").all()).toEqual([]);
+    expect(r.db.prepare("SELECT id FROM versions").all()).toEqual([]);
+    expect(
+      r.db
+        .prepare("SELECT table_name, record_id, hlc, device_id FROM sync_heads WHERE table_name IN ('branches', 'versions') ORDER BY table_name, record_id")
+        .all(),
+    ).toEqual([
+      {
+        table_name: "branches",
+        record_id: "branch-a",
+        hlc: formatHlc({ millis: 300, counter: 0 }),
+        device_id: "device-d",
+      },
+      {
+        table_name: "versions",
+        record_id: "version-a",
+        hlc: formatHlc({ millis: 110, counter: 0 }),
+        device_id: "device-a",
+      },
+      {
+        table_name: "versions",
+        record_id: "version-b",
+        hlc: formatHlc({ millis: 210, counter: 0 }),
+        device_id: "device-b",
+      },
+    ]);
+    expect(r.engine.opsSince({}).ops).toEqual(ops);
+    expect(r.engine.haveVector()).toMatchObject({ "device-a": 2, "device-b": 2, "device-d": 1 });
+  });
+
+  it("loads each prompt-tag history once while repairing independent tag components", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    for (let index = 0; index < 12; index += 1) {
+      const tagId = `tag-${index}`;
+      r.engine.applyRemote([
+        fixedOp(
+          `device-${index}`,
+          1,
+          "tags",
+          tagId,
+          { id: tagId, name: `tag-${index}`, color: "#101010" },
+          100 + index,
+        ),
+        fixedOp(
+          `device-${index}`,
+          2,
+          "prompt_tags",
+          `prompt-1:${tagId}`,
+          { prompt_id: "prompt-1", tag_id: tagId },
+          200 + index,
+        ),
+      ]);
+    }
+
+    let promptTagHistoryLoads = 0;
+    r.engine.repairNaturalKeyMerges({
+      onChildHistoryLoad: (table) => {
+        if (table === "prompt_tags") promptTagHistoryLoads += 1;
+      },
+    });
+
+    expect(promptTagHistoryLoads).toBe(1);
+  });
+
+  it("keeps later known-alias writes and membership tombstones at one logical key", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    r.engine.applyRemote([
+      fixedOp("device-a", 1, "tags", "tag-a", { id: "tag-a", name: "prod", color: "#111111" }, 100),
+      fixedOp("device-b", 1, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#222222" }, 200),
+      fixedOp("device-b", 2, "tags", "tag-b", { id: "tag-b", name: "prod", color: "#333333" }, 300),
+      fixedOp(
+        "device-b",
+        3,
+        "prompt_tags",
+        "prompt-1:tag-b",
+        { prompt_id: "prompt-1", tag_id: "tag-b" },
+        310,
+      ),
+      fixedOp("device-b", 4, "prompt_tags", "prompt-1:tag-b", null, 400, "delete"),
+    ]);
+
+    expect(r.db.prepare("SELECT id, name, color FROM tags").all()).toEqual([
+      { id: "tag-a", name: "prod", color: "#333333" },
+    ]);
+    expect(r.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([]);
+    expect(r.db.prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'tags'").all()).toEqual([
+      { remote_id: "tag-b", local_id: "tag-a" },
+    ]);
+    expect(
+      r.db
+        .prepare("SELECT table_name, record_id, hlc, device_id FROM sync_heads WHERE table_name IN ('tags', 'prompt_tags') ORDER BY table_name")
+        .all(),
+    ).toEqual([
+      {
+        table_name: "prompt_tags",
+        record_id: "prompt-1:tag-a",
+        hlc: "0000000000400:000000",
+        device_id: "device-b",
+      },
+      {
+        table_name: "tags",
+        record_id: "tag-a",
+        hlc: "0000000000300:000000",
+        device_id: "device-b",
+      },
+    ]);
   });
 
   it("propagates deletions: note hard-delete, prompt soft-delete, prompt hard-delete cascade", () => {
@@ -836,8 +1975,10 @@ describe("sync engine", () => {
       expect(r.lib.listTags().filter((t) => t.name === "prod").length).toBe(1);
     }
 
-    // B hard-deletes its (locally-winning) tag row — a future delete API.
-    b.db.prepare("DELETE FROM tags WHERE id = ?").run(tagB.id);
+    // Canonicalization may have retired B's original id; delete the row that
+    // actually represents the logical tag, as a future alias-aware API would.
+    const canonicalId = (b.db.prepare("SELECT id FROM tags WHERE name = 'prod'").get() as { id: string }).id;
+    b.db.prepare("DELETE FROM tags WHERE id = ?").run(canonicalId);
     b.engine.refineDirty();
     drain(b.engine, a.engine);
     // A kept its own id for "prod"; the tombstone must follow the remap.

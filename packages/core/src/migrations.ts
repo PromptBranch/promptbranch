@@ -1,11 +1,13 @@
 import type BetterSqlite3 from "better-sqlite3";
 import { SCHEMA_SQL } from "./schema.js";
-import { syncMigrationSql, syncV7Sql, syncV9Sql, syncV10Sql } from "./sync/tables.js";
+import { repairNaturalKeyMerges } from "./sync/natural-key-repair.js";
+import { syncMigrationSql, syncV7Sql, syncV9Sql, syncV10Sql, syncV11Sql } from "./sync/tables.js";
 
 interface Migration {
   version: number;
   name: string;
   sql: string;
+  repair?: (db: BetterSqlite3.Database) => void;
 }
 
 /**
@@ -132,6 +134,12 @@ ALTER TABLE runs ADD COLUMN prompt_content TEXT;
     name: "durable-prompt-hard-delete-tombstones",
     sql: syncV10Sql(),
   },
+  {
+    version: 11,
+    name: "canonical-natural-key-sync",
+    sql: syncV11Sql(),
+    repair: repairNaturalKeyMerges,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;
@@ -148,6 +156,7 @@ export function runMigrations(db: BetterSqlite3.Database): void {
     if (migration.version <= current) continue;
     db.transaction(() => {
       db.exec(migration.sql);
+      migration.repair?.(db);
       db.pragma(`user_version = ${migration.version}`);
     })();
   }

@@ -388,7 +388,7 @@ describe("migrations", () => {
     first.db.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(10);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(
       migrated.db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'sync_ops_record_lookup'")
@@ -442,6 +442,274 @@ describe("migrations", () => {
         deleted_at: null,
       },
     ]);
+    migrated.db.close();
+  });
+
+  it("repairs v10 natural-key tag histories with inverse remaps", () => {
+    const tagOps = [
+      {
+        source_device_id: "device-a",
+        seq: 1,
+        op_id: "tag-a-upsert",
+        table_name: "tags",
+        record_id: "tag-a",
+        kind: "upsert",
+        payload_json: JSON.stringify({ id: "tag-a", name: "prod", color: "#0000aa" }),
+        hlc: "0000000001000:000000",
+        created_at: "2026-09-02T00:00:00.000Z",
+      },
+      {
+        source_device_id: "device-b",
+        seq: 1,
+        op_id: "tag-b-upsert",
+        table_name: "tags",
+        record_id: "tag-b",
+        kind: "upsert",
+        payload_json: JSON.stringify({ id: "tag-b", name: "prod", color: "#0000bb" }),
+        hlc: "0000000002000:000000",
+        created_at: "2026-09-02T00:00:00.000Z",
+      },
+    ];
+
+    const seedReleasedV10 = (dbPath: string, localTagId: "tag-a" | "tag-b") => {
+      const seeded = openDatabase(dbPath).db;
+      seeded
+        .prepare(
+          `INSERT INTO prompts (id, title, created_at, updated_at)
+           VALUES ('prompt-1', 'Natural key repair', '2026-09-02T00:00:00.000Z', '2026-09-02T00:00:00.000Z')`,
+        )
+        .run();
+      seeded.prepare("INSERT INTO tags (id, name, color) VALUES (?, 'prod', ?)").run(
+        localTagId,
+        localTagId === "tag-a" ? "#0000aa" : "#0000bb",
+      );
+      seeded.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES ('prompt-1', ?)").run(localTagId);
+      seeded
+        .prepare(
+          "INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES ('tags', ?, ?)",
+        )
+        .run(localTagId === "tag-a" ? "tag-b" : "tag-a", localTagId);
+      const insertOp = seeded.prepare(
+        `INSERT INTO sync_ops
+           (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+         VALUES (@source_device_id, @seq, @op_id, @table_name, @record_id, @kind, @payload_json, @hlc, @created_at)`,
+      );
+      for (const op of tagOps) insertOp.run(op);
+      seeded
+        .prepare(
+          `INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES
+           ('tags', 'tag-a', '0000000001000:000000', 'device-a'),
+           ('tags', 'tag-b', '0000000002000:000000', 'device-b')`,
+        )
+        .run();
+      seeded.prepare("DELETE FROM sync_dirty").run();
+      // This ordinary local write was captured by the released trigger but
+      // not yet refined before the upgrade. It must become a normal immutable
+      // op before repair reduces the historical tag component.
+      seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('pending-tag', 'pending', '#00cc00')").run();
+      seeded.pragma("user_version = 10");
+      const verbatimOps = seeded
+        .prepare(
+          `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
+           FROM sync_ops ORDER BY source_device_id, seq`,
+        )
+        .all();
+      seeded.close();
+      return verbatimOps;
+    };
+
+    const aPath = tmpDbPath();
+    const bPath = tmpDbPath();
+    const verbatimOps = [seedReleasedV10(aPath, "tag-a"), seedReleasedV10(bPath, "tag-b")];
+    const migrated = [openDatabase(aPath), openDatabase(bPath)];
+
+    expect(
+      migrated.map(({ db }) =>
+        db.prepare("SELECT id, name, color FROM tags WHERE name = 'prod'").all(),
+      ),
+    ).toEqual([
+      [{ id: "tag-a", name: "prod", color: "#0000bb" }],
+      [{ id: "tag-a", name: "prod", color: "#0000bb" }],
+    ]);
+
+    for (const [index, { db, backupPath }] of migrated.entries()) {
+      const expectedOps = verbatimOps[index]!;
+      expect(backupPath).not.toBeNull();
+      expect(fs.existsSync(backupPath!)).toBe(true);
+      expect(db.pragma("user_version", { simple: true })).toBe(11);
+      expect(db.prepare("SELECT prompt_id, tag_id FROM prompt_tags").all()).toEqual([
+        { prompt_id: "prompt-1", tag_id: "tag-a" },
+      ]);
+      expect(db.prepare("SELECT id, name, color FROM tags WHERE id = 'pending-tag'").all()).toEqual([
+        { id: "pending-tag", name: "pending", color: "#00cc00" },
+      ]);
+      expect(
+        db
+          .prepare(
+            "SELECT kind, payload_json FROM sync_ops WHERE table_name = 'tags' AND record_id = 'pending-tag'",
+          )
+          .all(),
+      ).toEqual([
+        {
+          kind: "upsert",
+          payload_json: JSON.stringify({ id: "pending-tag", name: "pending", color: "#00cc00" }),
+        },
+      ]);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM sync_dirty").get()).toEqual({ count: 0 });
+      expect(
+        db
+          .prepare("SELECT record_id, hlc, device_id FROM sync_heads WHERE table_name = 'tags' AND record_id = 'tag-a'")
+          .all(),
+      ).toEqual([{ record_id: "tag-a", hlc: "0000000002000:000000", device_id: "device-b" }]);
+      expect(
+        db.prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'tags'").all(),
+      ).toEqual([{ remote_id: "tag-b", local_id: "tag-a" }]);
+      expect(
+        db
+          .prepare(
+            `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
+             FROM sync_ops WHERE source_device_id IN ('device-a', 'device-b') ORDER BY source_device_id, seq`,
+          )
+          .all(),
+      ).toEqual(expectedOps);
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      const repaired = {
+        tags: db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
+        promptTags: db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
+        heads: db
+          .prepare("SELECT table_name, record_id, hlc, device_id FROM sync_heads ORDER BY table_name, record_id")
+          .all(),
+        remaps: db.prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id").all(),
+      };
+      db.close();
+
+      const reopened = openDatabase(index === 0 ? aPath : bPath);
+      expect(reopened.backupPath).toBeNull();
+      expect(reopened.db.pragma("user_version", { simple: true })).toBe(11);
+      expect({
+        tags: reopened.db.prepare("SELECT id, name, color FROM tags ORDER BY id").all(),
+        promptTags: reopened.db.prepare("SELECT prompt_id, tag_id FROM prompt_tags ORDER BY prompt_id, tag_id").all(),
+        heads: reopened.db
+          .prepare("SELECT table_name, record_id, hlc, device_id FROM sync_heads ORDER BY table_name, record_id")
+          .all(),
+        remaps: reopened.db
+          .prepare("SELECT table_name, remote_id, local_id FROM sync_id_remaps ORDER BY table_name, remote_id")
+          .all(),
+      }).toEqual(repaired);
+      reopened.db.close();
+    }
+  });
+
+  it("compresses v10 tag remap chains and reciprocal edges directly to the minimum id", () => {
+    const dbPath = tmpDbPath();
+    const seeded = openDatabase(dbPath).db;
+    seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-a', 'prod', '#112233')").run();
+    seeded
+      .prepare(
+        `INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES
+           ('tags', 'tag-c', 'tag-b'),
+           ('tags', 'tag-b', 'tag-a'),
+           ('tags', 'tag-a', 'tag-c')`,
+      )
+      .run();
+    seeded.prepare("DELETE FROM sync_dirty").run();
+    seeded.pragma("user_version = 10");
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(
+      migrated.db
+        .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'tags' ORDER BY remote_id")
+        .all(),
+    ).toEqual([
+      { remote_id: "tag-b", local_id: "tag-a" },
+      { remote_id: "tag-c", local_id: "tag-a" },
+    ]);
+    expect(
+      migrated.db
+        .prepare("SELECT 1 FROM sync_id_remaps WHERE table_name = 'tags' AND remote_id = local_id")
+        .all(),
+    ).toEqual([]);
+    expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.db.close();
+  });
+
+  it("keeps terminally deleted prompt aggregates absent while repairing v10 history", () => {
+    const dbPath = tmpDbPath();
+    const seeded = openDatabase(dbPath).db;
+    const library = new PromptLibrary(seeded);
+    const prompt = library.createPrompt({ title: "Terminal history", content: "v1" });
+    const tag = library.createTag({ name: "Terminal tag" });
+    const collection = library.createCollection({ name: "Terminal collection" });
+    library.addTagToPrompt(prompt.id, tag.id);
+    library.addPromptToCollection(collection.id, prompt.id, 7);
+    const engine = new SyncEngine(seeded);
+    engine.refineDirty(100);
+
+    engine.applyRemote([
+      {
+        source: "remote-delete",
+        seq: 1,
+        opId: "terminal-prompt-delete",
+        table: "prompts",
+        recordId: prompt.id,
+        kind: "delete",
+        payload: null,
+        hlc: "0000000000200:000000",
+        createdAt: "2026-09-03T00:00:00.000Z",
+      },
+    ]);
+
+    expect(seeded.prepare("SELECT 1 FROM prompts WHERE id = ?").get(prompt.id)).toBeUndefined();
+    expect(seeded.prepare("SELECT 1 FROM branches WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(seeded.prepare("SELECT 1 FROM versions WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(seeded.prepare("SELECT 1 FROM prompt_tags WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(seeded.prepare("SELECT 1 FROM collection_prompts WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    const history = seeded
+      .prepare(
+        `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
+         FROM sync_ops ORDER BY source_device_id, seq`,
+      )
+      .all();
+    const descendantHeads = seeded
+      .prepare(
+        `SELECT table_name, record_id, hlc, device_id
+         FROM sync_heads
+         WHERE table_name IN ('branches', 'versions', 'prompt_tags', 'collection_prompts')
+         ORDER BY table_name, record_id`,
+      )
+      .all();
+    seeded.pragma("user_version = 10");
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(migrated.db.prepare("SELECT 1 FROM prompts WHERE id = ?").get(prompt.id)).toBeUndefined();
+    expect(migrated.db.prepare("SELECT 1 FROM branches WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(migrated.db.prepare("SELECT 1 FROM versions WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(migrated.db.prepare("SELECT 1 FROM prompt_tags WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(migrated.db.prepare("SELECT 1 FROM collection_prompts WHERE prompt_id = ?").get(prompt.id)).toBeUndefined();
+    expect(migrated.db.prepare("SELECT prompt_id FROM sync_prompt_tombstones").all()).toContainEqual({ prompt_id: prompt.id });
+    expect(
+      migrated.db
+        .prepare(
+          `SELECT table_name, record_id, hlc, device_id
+           FROM sync_heads
+           WHERE table_name IN ('branches', 'versions', 'prompt_tags', 'collection_prompts')
+           ORDER BY table_name, record_id`,
+        )
+        .all(),
+    ).toEqual(descendantHeads);
+    expect(
+      migrated.db
+        .prepare(
+          `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
+           FROM sync_ops ORDER BY source_device_id, seq`,
+        )
+        .all(),
+    ).toEqual(history);
+    expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     migrated.db.close();
   });
 });

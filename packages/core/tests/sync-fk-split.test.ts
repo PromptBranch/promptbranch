@@ -89,8 +89,9 @@ describe("apply with out-of-order foreign keys across sources", () => {
     // A constraint error that is NOT an FK failure must not be swallowed:
     // deferring it would wedge this source's tail forever.
     expect(() => c.engine.applyRemote([runOp])).toThrow();
-    // And the poison op was never recorded.
-    expect(collectAll(c.engine).length).toBe(0);
+    // The preflight intentionally refined the local prompt aggregate, but the
+    // rejected remote poison op itself was never recorded.
+    expect(collectAll(c.engine).filter((entry) => entry.source === "skewed-peer")).toEqual([]);
   });
 
   it("reports both SQLite and semantic deferrals when a batch is split", () => {

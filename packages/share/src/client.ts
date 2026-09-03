@@ -1,4 +1,5 @@
 import {
+  MAX_PAYLOAD_BYTES,
   publishResponseSchema,
   snapshotResponseSchema,
   type PublishResponse,
@@ -11,6 +12,7 @@ import { parseSnapshotUrl } from "./url.js";
 /** Operational error taxonomy — callers switch on `kind`, never on message text. */
 export type ShareError =
   | { kind: "network"; message: string }
+  | { kind: "too-large"; actualBytes: number; maxBytes: number }
   | { kind: "invalid-id"; input: string }
   | { kind: "not-found" }
   | { kind: "gone" }
@@ -73,6 +75,14 @@ export async function publishSnapshot(
   payload: SnapshotPayload,
   deps: ShareClientDeps = {},
 ): Promise<ShareResult<PublishResponse>> {
+  const body = JSON.stringify({ snapshot: payload });
+  const bodyBytes = new TextEncoder().encode(body).byteLength;
+  if (bodyBytes > MAX_PAYLOAD_BYTES) {
+    return {
+      ok: false,
+      error: { kind: "too-large", actualBytes: bodyBytes, maxBytes: MAX_PAYLOAD_BYTES },
+    };
+  }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base = baseUrl.replace(/\/+$/, "");
@@ -81,7 +91,7 @@ export async function publishSnapshot(
     response = await fetchImpl(`${base}/api/snapshots`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ snapshot: payload }),
+      body,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -138,6 +148,8 @@ export function describeShareError(error: ShareError): string {
   switch (error.kind) {
     case "network":
       return `Could not reach the portal: ${error.message}`;
+    case "too-large":
+      return `Snapshot is too large to publish (${Math.ceil(error.actualBytes / 1024)} KiB; maximum ${Math.floor(error.maxBytes / 1024)} KiB)`;
     case "invalid-id":
       return `Not a snapshot link: ${error.input}`;
     case "not-found":

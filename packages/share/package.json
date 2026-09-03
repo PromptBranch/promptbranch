@@ -3,11 +3,24 @@
   "version": "0.2.0",
   "license": "MIT",
   "type": "module",
+  "files": [
+    "dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    },
+    "types": "./dist/index.d.ts"
   },
   "engines": {
-    "node": "^22 || ^24 || >=26"
+    "node": ">=22"
   },
   "description": "PromptBranch sharing contract: snapshot schemas, id/token generation, secret scanner and portal HTTP client. Zero Electron/DOM dependencies.",
   "exports": {
@@ -15,7 +28,8 @@
   },
   "types": "./src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/clean-package-output.mjs && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

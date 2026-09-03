@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/mcp",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "MIT",
   "type": "module",
   "description": "Local-first MCP server for versioning, searching, evaluating, and improving AI prompts with coding agents.",

@@ -347,6 +347,7 @@ export class PromptLibrary {
       params.push(...options.tagIds);
     }
 
+    const sort = options.sort ?? "updated";
     const orderBy: Record<PromptSort, string> = {
       updated: "p.updated_at DESC",
       created: "p.created_at DESC",
@@ -354,27 +355,38 @@ export class PromptLibrary {
       rating: "avg_rating IS NULL, avg_rating DESC",
     };
 
-    const innerSql = `
-      SELECT p.*, (
-        SELECT AVG(val) FROM (
-          SELECT effectiveness AS val FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.effectiveness IS NOT NULL
-          UNION ALL
-          SELECT clarity FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.clarity IS NOT NULL
-          UNION ALL
-          SELECT completeness FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.completeness IS NOT NULL
-          UNION ALL
-          SELECT actionability FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.actionability IS NOT NULL
-        )
-      ) AS avg_rating
-      FROM prompts p
-      ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}`;
+    const whereClause = () => (where.length > 0 ? `WHERE ${where.join(" AND ")}` : "");
+    if (sort !== "rating" && options.minRating === undefined) {
+      return this.all<PromptRow>(
+        `SELECT p.* FROM prompts p ${whereClause()} ORDER BY ${orderBy[sort]}`,
+        ...params,
+      );
+    }
 
-    const orderClause = `ORDER BY ${orderBy[options.sort ?? "updated"]}`;
-    let sql = `${innerSql} ${orderClause}`;
     if (options.minRating !== undefined) {
-      sql = `SELECT * FROM (${innerSql}) p WHERE avg_rating >= ? ${orderClause}`;
+      where.push("ra.avg_rating >= ?");
       params.push(options.minRating);
     }
+    const sql = `
+      WITH rating_averages AS (
+        SELECT target_id,
+          (
+            TOTAL(effectiveness) + TOTAL(clarity) +
+            TOTAL(completeness) + TOTAL(actionability)
+          ) / NULLIF(
+            COUNT(effectiveness) + COUNT(clarity) +
+            COUNT(completeness) + COUNT(actionability),
+            0
+          ) AS avg_rating
+        FROM ratings
+        WHERE target_type = 'prompt'
+        GROUP BY target_id
+      )
+      SELECT p.*, ra.avg_rating
+      FROM prompts p
+      LEFT JOIN rating_averages ra ON ra.target_id = p.id
+      ${whereClause()}
+      ORDER BY ${orderBy[sort]}`;
 
     type RowWithAvg = PromptRow & { avg_rating: number | null };
     return this.all<RowWithAvg>(sql, ...params).map(({ avg_rating: _avg, ...row }) => row);

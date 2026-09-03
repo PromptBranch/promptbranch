@@ -31,9 +31,14 @@ beforeAll(async () => {
   const { db } = openDatabase(dbPath);
   const lib = new PromptLibrary(db);
   promptTitle = "Security audit";
-  lib.createPrompt({
+  const prompt = lib.createPrompt({
     title: promptTitle,
     description: "Reviews code for security issues",
+    content: "",
+  });
+  lib.createVersion({
+    promptId: prompt.id,
+    branchId: lib.listBranches(prompt.id)[0]!.id,
     content: "You are a meticulous security auditor.",
     changeNote: "initial",
   });

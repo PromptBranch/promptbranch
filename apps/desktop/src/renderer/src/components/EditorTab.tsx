@@ -271,6 +271,12 @@ export const EditorTab = memo(function EditorTab({
   };
 
   const dirty = isCurrent && content !== version.content;
+  const isInitialPlaceholder =
+    isCurrent &&
+    version.branchName === "main" &&
+    version.number === 1 &&
+    version.parentVersionId === null &&
+    version.content.length === 0;
 
   // Debounced draft autosave (current version only). lastSavedDraft avoids
   // redundant writes; refs keep the unmount flush accurate. When the
@@ -519,7 +525,7 @@ export const EditorTab = memo(function EditorTab({
               )}
             >
               <Save size={12} />
-              Save as new version
+              {isInitialPlaceholder ? "Save version 1" : "Save as new version"}
             </button>
           )}
         </div>
@@ -528,7 +534,13 @@ export const EditorTab = memo(function EditorTab({
       <SaveVersionDialog
         open={saveDialogOpen}
         onOpenChange={setSaveDialogOpen}
-        nextLabel={version.branchName === "main" ? `v${version.number + 1}` : `${version.branchName} v${version.number + 1}`}
+        nextLabel={
+          isInitialPlaceholder
+            ? "v1"
+            : version.branchName === "main"
+              ? `v${version.number + 1}`
+              : `${version.branchName} v${version.number + 1}`
+        }
         onSave={(note) => createVersion.mutate({ changeNote: note, content: contentRef.current })}
       />
       <ImproveDialog

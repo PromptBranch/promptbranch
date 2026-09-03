@@ -495,7 +495,43 @@ export class PromptLibrary {
     if (!branch) throw new Error(`Branch ${input.branchId} not found on prompt ${input.promptId}`);
 
     return this.db.transaction((): VersionRow => {
-      const head = this.getBranchHead(input.branchId);
+      let head = this.getBranchHead(input.branchId);
+      const prompt = this.mustGetPrompt(input.promptId);
+      if (
+        branch.name === "main" &&
+        head?.number === 1 &&
+        head.parent_version_id === null &&
+        head.source === "user" &&
+        head.content.length === 0 &&
+        prompt.current_version_id === head.id &&
+        input.content.length > 0
+      ) {
+        const committedAt = now();
+        const initialized = this.db
+          .prepare(
+            `UPDATE versions
+             SET label = ?, content = ?, content_format = ?, change_note = ?, created_at = ?
+             WHERE id = ? AND content = ?`,
+          )
+          .run(
+            input.label ?? head.label,
+            input.content,
+            input.contentFormat ?? head.content_format,
+            input.changeNote ?? null,
+            committedAt,
+            head.id,
+            head.content,
+          );
+        if (initialized.changes === 1) {
+          // A title-only prompt starts with an empty v1 placeholder. Its first
+          // real save establishes v1; after that, versions remain append-only.
+          this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", committedAt, input.promptId);
+          this.reindexPrompt(input.promptId);
+          return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", head.id)!;
+        }
+        // Another process may have initialized the placeholder after our read.
+        head = this.getBranchHead(input.branchId);
+      }
       const versionId = randomUUID();
       this.run(
         `INSERT INTO versions

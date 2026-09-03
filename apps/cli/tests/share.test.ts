@@ -17,6 +17,11 @@ import { openDatabase, PromptLibrary } from "@promptbranch/core";
  */
 
 const CLI = path.join(import.meta.dirname, "..", "dist", "index.js");
+const CLI_PACKAGE_VERSION = (
+  JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 const SNAPSHOT_ID = "V1StGXR8_Z5jdHi6B-myT";
 const MALFORMED_SNAPSHOT_ID = "AAAAAAAAAAAAAAAAAAAAA";
 const GONE_SNAPSHOT_ID = "CCCCCCCCCCCCCCCCCCCCC";
@@ -182,6 +187,7 @@ describe("promptbranch publish", () => {
       description: "Reviews diffs",
       content: "Review this diff carefully.",
       tags: ["review"],
+      appVersion: `promptbranch-cli/${CLI_PACKAGE_VERSION}`,
     });
     expect(lastPublished).not.toHaveProperty("history");
 

@@ -91,6 +91,17 @@ afterAll(async () => {
 });
 
 describe("promptbranch MCP release QA", () => {
+  it("advertises the npm package version during initialization", () => {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8"),
+    ) as { version: string };
+
+    expect(client.getServerVersion()).toEqual({
+      name: "promptbranch",
+      version: packageJson.version,
+    });
+  });
+
   it("advertises only the six agent-safe tools with required schemas", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([

@@ -3,6 +3,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import packageJson from "../package.json" with { type: "json" };
 import {
   openDatabase,
   PromptLibrary,
@@ -71,7 +72,7 @@ const promptRef = z.string().min(1).describe("Prompt title (exact or unique subs
 const versionNumber = z.number().int().positive().optional().describe("Per-branch version number; defaults to the current version");
 const branchName = z.string().min(1).optional().describe("Branch name; defaults to the current version's branch");
 
-const server = new McpServer({ name: "promptbranch", version: "0.1.0" });
+const server = new McpServer({ name: "promptbranch", version: packageJson.version });
 
 server.registerTool(
   "get_prompt",

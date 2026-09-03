@@ -2,6 +2,7 @@ import tls from "node:tls";
 import type { SyncEngine } from "@promptbranch/core";
 import { derivePairingCode, type DeviceIdentity } from "./identity.js";
 import { createFrameReader, encodeFrame } from "./frames.js";
+import { PROTOCOL_VERSION } from "./messages.js";
 import { PairingAcceptor, PairingInitiator } from "./pairing.js";
 import { SyncSession } from "./session.js";
 import type { DiscoveredPeer, Discovery } from "./discovery.js";
@@ -22,7 +23,7 @@ export interface PeerServiceDeps {
   onStatusChange(): void;
   discovery?: Discovery;
   listen?: { host?: string; port?: number };
-  /** How long pairWithCode waits for the acceptor's verdict. */
+  /** Maximum lifetime of a pairing protocol after TLS connects. */
   pairTimeoutMs?: number;
   /** How long an outbound socket may take to complete its TLS handshake. */
   handshakeTimeoutMs?: number;
@@ -65,6 +66,7 @@ export interface SyncServiceStatus {
 }
 
 const PAIRING_WINDOW_MS = 10 * 60 * 1000;
+const PAIR_TIMEOUT_MS = 60_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
 const NEARBY_TTL_MS = 5 * 60 * 1000;
 const PING_INTERVAL_MS = 30_000;
@@ -108,6 +110,7 @@ class Connection {
   private readonly closed: Promise<void>;
   private resolveClosed: (() => void) | null = null;
   private lastInboundAt: number;
+  private pairingTimer: NodeJS.Timeout | null = null;
   /** The socket or session faulted — counts toward peer unhealthiness. */
   failed = false;
 
@@ -218,6 +221,7 @@ class Connection {
       this.service.deps.engine.upsertSyncPeer({ fingerprint, name: peerName });
     }
     const session = this.service.makeSession(this.socket, fingerprint);
+    this.clearPairingDeadline();
     this.phase = { kind: "sync", fingerprint, session };
     session.start();
     this.service.deps.onStatusChange();
@@ -236,6 +240,17 @@ class Connection {
     if (!this.closing) this.lastInboundAt = now;
   }
 
+  startPairingDeadline(timeoutMs: number): void {
+    if (this.closing || this.phase.kind !== "pairing-in" || this.pairingTimer) return;
+    this.pairingTimer = setTimeout(() => {
+      this.pairingTimer = null;
+      if (this.closing || this.phase.kind !== "pairing-in") return;
+      this.service.deps.log?.("[pairing] inbound pairing timed out");
+      void this.close();
+    }, timeoutMs);
+    this.pairingTimer.unref?.();
+  }
+
   retireIfSilent(now: number, timeoutMs: number): void {
     if (
       this.closing ||
@@ -251,6 +266,7 @@ class Connection {
   close(): Promise<void> {
     if (this.closing) return this.closed;
     this.closing = true;
+    this.clearPairingDeadline();
     // Detach synchronously before destroy(): a data event already queued by
     // the stream must not reach pairing or sync after ownership is dropped.
     this.socket.off("data", this.onData);
@@ -262,10 +278,17 @@ class Connection {
   }
 
   private detachHandlers(): void {
+    this.clearPairingDeadline();
     this.socket.off("data", this.onData);
     this.socket.off("close", this.onClose);
     this.socket.off("end", this.onEnd);
     this.socket.off("error", this.onError);
+  }
+
+  private clearPairingDeadline(): void {
+    if (!this.pairingTimer) return;
+    clearTimeout(this.pairingTimer);
+    this.pairingTimer = null;
   }
 }
 
@@ -547,7 +570,7 @@ export class PeerService {
         }
         void connection.close();
         finish({ ok: false, error: "Timed out waiting for the other device to accept" });
-      }, this.deps.pairTimeoutMs ?? 60_000);
+      }, this.deps.pairTimeoutMs ?? PAIR_TIMEOUT_MS);
       timer.unref?.();
 
       const initiator = new PairingInitiator(socket, {
@@ -801,7 +824,13 @@ export class PeerService {
             void connection.close();
             return;
           }
-          socket.write(encodeFrame({ t: "pair-confirmed", name: this.deps.deviceName() }));
+          socket.write(
+            encodeFrame({
+              t: "pair-confirmed-v2",
+              v: PROTOCOL_VERSION,
+              name: this.deps.deviceName(),
+            }),
+          );
           connection.upgradeToSync(name);
         },
         onRejected: () => {
@@ -809,7 +838,10 @@ export class PeerService {
             void connection.close();
             return;
           }
-          socket.end(encodeFrame({ t: "pair-rejected" }), () => void connection.close());
+          socket.end(
+            encodeFrame({ t: "pair-rejected-v2", v: PROTOCOL_VERSION }),
+            () => void connection.close(),
+          );
         },
         log: (message) => this.deps.log?.(`[pairing] ${message}`),
       });
@@ -820,6 +852,7 @@ export class PeerService {
         "inbound",
       );
       this.connections.set(fingerprint, connection);
+      connection.startPairingDeadline(this.deps.pairTimeoutMs ?? PAIR_TIMEOUT_MS);
       return;
     }
     // Unknown peer with no pairing window open.

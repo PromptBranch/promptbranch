@@ -1,13 +1,15 @@
 import { memo, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import { Bold, Braces, Code, Columns2, Eye, Italic, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, X } from "lucide-react";
 import type { PromptDetail, VersionContentDto } from "../../../shared/ipc.js";
-import { useAppMutation } from "../hooks/use-data";
+import { qk, useAppMutation } from "../hooks/use-data";
 import { getPref, usePref } from "../lib/prefs";
 import type { ModelRef } from "../lib/ai-prefs";
+import { enqueuePromptDraftWrite } from "../lib/draft-save-coordinator";
 import { useResolvedTheme } from "../lib/theme";
 import { clockTime, cx, wordCount } from "../lib/time";
 import { useToast } from "../lib/toast";
@@ -248,6 +250,7 @@ export const EditorTab = memo(function EditorTab({
   liveContentRef?: { current: string | null };
 }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { openSettings } = useAppState();
   const availableModels = useAvailableModels();
   const [improveOpen, setImproveOpen] = useState(false);
@@ -276,20 +279,74 @@ export const EditorTab = memo(function EditorTab({
   const contentRef = useRef(content);
   const versionContentRef = useRef(version.content);
   const lastSavedDraftRef = useRef<string | null>(prompt.draftContent ?? null);
+  const localEditGenerationRef = useRef(0);
+  const authoritativeEditGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const draftClearRequestedRef = useRef(false);
   contentRef.current = content;
+  versionContentRef.current = version.content;
   if (liveContentRef) liveContentRef.current = content;
 
-  const saveDraft = useRef(() => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const persistDraft = useRef<(
+    value: string | null,
+    showSavedAt?: boolean,
+    editGeneration?: number,
+  ) => void>(() => undefined);
+  persistDraft.current = (
+    draftValue,
+    showSavedAt = true,
+    editGeneration = localEditGenerationRef.current,
+  ) => {
+    enqueuePromptDraftWrite(queryClient, prompt.id, {
+      value: draftValue,
+      persist: () => window.promptBuilder.drafts.set(prompt.id, draftValue),
+      onAccepted: () => {
+        lastSavedDraftRef.current = draftValue;
+        authoritativeEditGenerationRef.current = editGeneration;
+        queryClient.setQueryData<PromptDetail>(qk.prompt(prompt.id), (cached) =>
+          cached ? { ...cached, draftContent: draftValue } : cached,
+        );
+        if (mountedRef.current && showSavedAt) setSavedAt(Date.now());
+      },
+      onRejected: () => {
+        toast("Failed to save draft", "error");
+      },
+    });
+  };
+
+  const saveDraft = useRef<() => void>(() => undefined);
+  saveDraft.current = () => {
     if (!isCurrent || !getPref("autosave-drafts")) return;
+    if (draftClearRequestedRef.current) {
+      persistDraft.current(null, false);
+      return;
+    }
     const value = contentRef.current;
     const draftValue = value === versionContentRef.current ? null : value;
-    if (draftValue === lastSavedDraftRef.current) return;
-    lastSavedDraftRef.current = draftValue;
-    window.promptBuilder.drafts
-      .set(prompt.id, draftValue)
-      .then(() => setSavedAt(Date.now()))
-      .catch(() => toast("Failed to save draft", "error"));
-  });
+    const hasUnpersistedLocalIntent =
+      localEditGenerationRef.current !== authoritativeEditGenerationRef.current;
+    if (draftValue === lastSavedDraftRef.current && !hasUnpersistedLocalIntent) return;
+    persistDraft.current(draftValue);
+  };
+
+  useEffect(() => {
+    if (!isCurrent) return;
+    const refreshedContent = prompt.draftContent ?? version.content;
+    const hasNewerLocalEdit =
+      localEditGenerationRef.current !== authoritativeEditGenerationRef.current;
+    lastSavedDraftRef.current = prompt.draftContent;
+    if (!hasNewerLocalEdit && contentRef.current !== refreshedContent) {
+      contentRef.current = refreshedContent;
+      setContent(refreshedContent);
+    }
+  }, [isCurrent, prompt.draftContent, version.content]);
 
   useEffect(() => {
     if (!isCurrent) return;
@@ -307,17 +364,28 @@ export const EditorTab = memo(function EditorTab({
   }, []);
 
   const createVersion = useAppMutation(
-    (changeNote: string) =>
+    (input: { changeNote: string; content: string }) =>
       window.promptBuilder.versions.create({
         promptId: prompt.id,
         branchId: version.branchId,
-        content,
-        ...(changeNote ? { changeNote } : {}),
+        content: input.content,
+        ...(input.changeNote ? { changeNote: input.changeNote } : {}),
       }),
     {
-      onSuccess: (created) => {
-        lastSavedDraftRef.current = null;
-        void window.promptBuilder.drafts.set(prompt.id, null);
+      onSuccess: (created, submitted) => {
+        versionContentRef.current = submitted.content;
+        if (contentRef.current === submitted.content) {
+          // This editor still contains the content that just became a version.
+          // Until invalidation replaces it, every timer/unmount flush must keep
+          // reinforcing the clear instead of re-queuing that promoted content.
+          draftClearRequestedRef.current = true;
+          persistDraft.current(null, false);
+        } else {
+          // Edits made while version creation was in flight belong to the new
+          // version as its draft; the submitted snapshot alone was promoted.
+          draftClearRequestedRef.current = false;
+          persistDraft.current(contentRef.current);
+        }
         toast(`Saved as ${created.displayLabel}`);
       },
     },
@@ -326,7 +394,12 @@ export const EditorTab = memo(function EditorTab({
   const editor = (
     <CodeMirror
       value={content}
-      onChange={(value) => setContent(value)}
+      onChange={(value) => {
+        draftClearRequestedRef.current = false;
+        localEditGenerationRef.current += 1;
+        contentRef.current = value;
+        setContent(value);
+      }}
       onCreateEditor={(view) => {
         viewRef.current = view;
       }}
@@ -456,13 +529,16 @@ export const EditorTab = memo(function EditorTab({
         open={saveDialogOpen}
         onOpenChange={setSaveDialogOpen}
         nextLabel={version.branchName === "main" ? `v${version.number + 1}` : `${version.branchName} v${version.number + 1}`}
-        onSave={(note) => createVersion.mutate(note)}
+        onSave={(note) => createVersion.mutate({ changeNote: note, content: contentRef.current })}
       />
       <ImproveDialog
         open={improveOpen}
         onOpenChange={setImproveOpen}
         content={content}
         onApply={(improved) => {
+          draftClearRequestedRef.current = false;
+          localEditGenerationRef.current += 1;
+          contentRef.current = improved;
           setContent(improved);
           toast("Improved draft applied — save it as a new version to keep it");
         }}

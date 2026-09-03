@@ -67,13 +67,34 @@ const RULES: Rule[] = [
     pattern:
       /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|[\w-]+(?:\.[\w-]+)*\.(?:local|internal|lan|corp|home))(?::\d+)?(?:\/\S*)?/g,
   },
-  { name: "email-address", severity: "medium", pattern: /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g },
+  {
+    name: "email-address",
+    severity: "medium",
+    // Without a left boundary, a failed @ lookup retries the greedy local
+    // part at every character of a long identifier.
+    pattern: /(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g,
+  },
 ];
 
-function lineOf(text: string, index: number): number {
-  let line = 1;
-  for (let i = 0; i < index; i++) if (text[i] === "\n") line++;
-  return line;
+function newlineOffsets(text: string): number[] {
+  const offsets: number[] = [];
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    offsets.push(index);
+  }
+  return offsets;
+}
+
+function lineOf(offsets: readonly number[], index: number): number {
+  // Lower-bound search: the insertion point is the number of newlines before
+  // the match and therefore its zero-based line index.
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((offsets[middle] ?? Number.POSITIVE_INFINITY) < index) low = middle + 1;
+    else high = middle;
+  }
+  return low + 1;
 }
 
 function truncate(value: string): string {
@@ -87,6 +108,7 @@ function truncate(value: string): string {
  */
 export function scanForSecrets(text: string): Finding[] {
   const findings: Finding[] = [];
+  const offsets = newlineOffsets(text);
   for (const rule of RULES) {
     for (const match of text.matchAll(rule.pattern)) {
       const value = match[1] ?? match[0];
@@ -94,7 +116,7 @@ export function scanForSecrets(text: string): Finding[] {
       findings.push({
         severity: rule.severity,
         rule: rule.name,
-        line: lineOf(text, match.index),
+        line: lineOf(offsets, match.index),
         match: truncate(match[0]),
       });
     }

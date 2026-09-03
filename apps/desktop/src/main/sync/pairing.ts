@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import { encodeFrame } from "./frames.js";
-import { parseMessage } from "./messages.js";
+import { parseMessage, PROTOCOL_VERSION } from "./messages.js";
 
 /**
  * Pairing handshake over an established TLS connection. The connection owner
@@ -29,7 +29,13 @@ export class PairingInitiator {
   ) {}
 
   start(): void {
-    this.socket.write(encodeFrame({ t: "pair-introduce", name: this.deps.deviceName }));
+    this.socket.write(
+      encodeFrame({
+        t: "pair-introduce-v2",
+        v: PROTOCOL_VERSION,
+        name: this.deps.deviceName,
+      }),
+    );
   }
 
   handleMessage(message: unknown): void {
@@ -37,11 +43,11 @@ export class PairingInitiator {
     const parsed = parseMessage(message);
     if (!parsed) return;
     switch (parsed.t) {
-      case "pair-confirmed":
+      case "pair-confirmed-v2":
         this.settled = true;
         this.deps.onConfirmed();
         return;
-      case "pair-rejected":
+      case "pair-rejected-v2":
         this.settled = true;
         this.deps.onRejected();
         return;
@@ -79,7 +85,7 @@ export class PairingAcceptor {
     if (this.settled) return;
     const parsed = parseMessage(message);
     if (!parsed) return;
-    if (parsed.t !== "pair-introduce") {
+    if (parsed.t !== "pair-introduce-v2") {
       this.deps.log?.(`unexpected frame while pairing: ${parsed.t}`);
       return;
     }

@@ -313,8 +313,8 @@ describe("peer service over real TLS (loopback)", () => {
     }
   });
 
-  it("keeps an established session alive beyond the TLS handshake deadline", async () => {
-    const handshakeTimeoutMs = 60;
+  it("keeps an established session alive beyond the connection deadlines", async () => {
+    const connectionDeadlineMs = 60;
     const transitionsA: string[] = [];
     const transitionsB: string[] = [];
     let outbound!: tls.TLSSocket;
@@ -323,11 +323,13 @@ describe("peer service over real TLS (loopback)", () => {
     let a!: ServiceRig;
     let b!: ServiceRig;
     a = await rig("A", {
-      handshakeTimeoutMs,
+      handshakeTimeoutMs: connectionDeadlineMs,
+      pairTimeoutMs: connectionDeadlineMs,
       onStatusChange: () => transitionsA.push(a.service.status().peers[0]?.state ?? "none"),
     });
     b = await rig("B", {
-      handshakeTimeoutMs,
+      handshakeTimeoutMs: connectionDeadlineMs,
+      pairTimeoutMs: connectionDeadlineMs,
       connectTls: (options) => {
         outbound = tls.connect(options);
         baseErrorListeners = outbound.listenerCount("error");
@@ -400,6 +402,22 @@ describe("peer service over real TLS (loopback)", () => {
       for (const socket of sockets) socket.destroy();
       server.close();
       await once(server, "close");
+    }
+  });
+
+  it("bounds an inbound pairing handshake when a TLS peer never introduces itself", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const local = await rig("Local", { pairTimeoutMs: 75 });
+    const port = await start(local);
+    local.service.beginPairing();
+    const remote = await connectWithIdentity(port, remoteIdentity);
+
+    try {
+      await vi.waitFor(() => expect(remote.destroyed).toBe(true), { timeout: 750 });
+      expect(local.confirm.state.decisions).toEqual([]);
+      expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+    } finally {
+      remote.destroy();
     }
   });
 
@@ -586,11 +604,11 @@ describe("peer service over real TLS (loopback)", () => {
     let second: tls.TLSSocket | null = null;
 
     try {
-      first.write(encodeFrame({ t: "pair-introduce", name: "First owner" }));
+      first.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "First owner" }));
       await vi.waitFor(() => expect(requests).toHaveLength(1));
 
       second = await connectWithIdentity(port, remoteIdentity);
-      second.write(encodeFrame({ t: "pair-introduce", name: "Duplicate" }));
+      second.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Duplicate" }));
       await vi.waitFor(() => expect(second?.destroyed).toBe(true));
       expect(requests).toEqual([
         { fingerprint: remoteIdentity.fingerprint, name: "First owner" },
@@ -625,7 +643,7 @@ describe("peer service over real TLS (loopback)", () => {
     local.service.beginPairing();
     const remote = await connectWithIdentity(port, remoteIdentity);
 
-    remote.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+    remote.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
     await vi.waitFor(() => expect(signal).toBeDefined());
     remote.destroy();
     await once(remote, "close");
@@ -655,7 +673,7 @@ describe("peer service over real TLS (loopback)", () => {
       local.service.beginPairing();
       const remote = await connectWithIdentity(port, remoteIdentity);
 
-      remote.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+      remote.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
       await vi.waitFor(() => expect(signal).toBeDefined());
       if (action === "cancel") local.service.cancelPairing();
       else await local.service.stop();
@@ -1835,7 +1853,7 @@ describe("peer service over real TLS (loopback)", () => {
       const remoteIdentity = await loadOrCreateIdentity(tempDir());
       local.service.beginPairing();
       remoteSocket = await connectWithIdentity(port, remoteIdentity);
-      remoteSocket.write(encodeFrame({ t: "pair-introduce", name: "Remote" }));
+      remoteSocket.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
       await confirmationStarted;
 
       await advanceLiveClock(clock, 50, 10);

@@ -34,6 +34,10 @@ Open **Shares** in the desktop app's left rail. You can search your shares,
 filter active and revoked links, copy a link, and revoke an active share. A
 revoked link no longer serves the snapshot.
 
+After revoking a share, choose **Remove permanently** to delete its entry from
+your local Shares list. This removes only the local management record; the
+public link is already disabled. The removal also syncs to paired devices.
+
 Shares and their revocation tokens sync between paired devices, so any of your
 paired devices can manage a share.
 

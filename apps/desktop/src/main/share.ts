@@ -220,19 +220,14 @@ export function importSnapshot(
     deps.lib.listPrompts().map((p) => p.title),
     preview.snapshot.title,
   );
-  const tagIds = preview.snapshot.tags.map((name) => {
-    const existing = deps.lib
-      .listTags()
-      .find((t) => t.name.toLowerCase() === name.toLowerCase());
-    return existing ? existing.id : deps.lib.createTag({ name }).id;
-  });
+  const provenance = `Imported from ${preview.url}`;
   const prompt = deps.lib.createPrompt({
     title,
     ...(preview.snapshot.description ? { description: preview.snapshot.description } : {}),
-    tagIds,
+    tagNames: preview.snapshot.tags,
     content: preview.snapshot.content,
-    changeNote: `Imported from ${preview.url}`,
+    changeNote: provenance,
+    initialNote: provenance,
   });
-  deps.lib.addNote({ promptId: prompt.id, body: `Imported from ${preview.url}` });
   return { promptId: prompt.id, title: prompt.title };
 }

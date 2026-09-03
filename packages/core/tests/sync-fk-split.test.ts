@@ -89,8 +89,51 @@ describe("apply with out-of-order foreign keys across sources", () => {
     // A constraint error that is NOT an FK failure must not be swallowed:
     // deferring it would wedge this source's tail forever.
     expect(() => c.engine.applyRemote([runOp])).toThrow();
-    // And the poison op was never recorded.
-    expect(collectAll(c.engine).length).toBe(0);
+    // The preflight intentionally refined the local prompt aggregate, but the
+    // rejected remote poison op itself was never recorded.
+    expect(collectAll(c.engine).filter((entry) => entry.source === "skewed-peer")).toEqual([]);
+  });
+
+  it("reports both SQLite and semantic deferrals when a batch is split", () => {
+    const receiver = rig();
+    const prompt = receiver.lib.createPrompt({ title: "Mixed deferrals", content: "x" });
+    const createdAt = "2026-09-02T00:00:00.000Z";
+    const orphanJunction: SyncOp = {
+      source: "mixed-peer",
+      seq: 1,
+      opId: "missing-tag",
+      table: "prompt_tags",
+      recordId: `${prompt.id}:missing-tag`,
+      kind: "upsert",
+      payload: { prompt_id: prompt.id, tag_id: "missing-tag" },
+      hlc: formatHlc({ millis: 1_000, counter: 0 }),
+      createdAt,
+    };
+    const unknownVersionRating: SyncOp = {
+      source: "mixed-peer",
+      seq: 2,
+      opId: "unknown-version-rating",
+      table: "ratings",
+      recordId: "unknown-version-rating",
+      kind: "upsert",
+      payload: {
+        id: "unknown-version-rating",
+        target_type: "version",
+        target_id: "unknown-version",
+        effectiveness: null,
+        clarity: 5,
+        completeness: null,
+        actionability: null,
+        created_at: createdAt,
+      },
+      hlc: formatHlc({ millis: 1_000, counter: 1 }),
+      createdAt,
+    };
+
+    const summary = receiver.engine.applyRemote([orphanJunction, unknownVersionRating]);
+
+    expect(summary).toEqual({ applied: 0, skipped: 0, stale: 0, deferred: 2 });
+    expect(receiver.engine.haveVector()["mixed-peer"] ?? 0).toBe(0);
   });
 
   it("propagates non-SQLite failures loudly (malformed composite record key)", () => {

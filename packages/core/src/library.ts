@@ -26,7 +26,7 @@ const now = () => new Date().toISOString();
 const RATING_DIMENSIONS = ["effectiveness", "clarity", "completeness", "actionability"] as const;
 
 /** metrics_json keys owned by run execution — updateRunMetrics patches must not touch them. */
-const RESERVED_METRICS_KEYS = new Set(["usage", "costUsd"]);
+const RESERVED_METRICS_KEYS = new Set(["usage", "costUsd", "promptContentCaptured"]);
 type RatingDimension = (typeof RATING_DIMENSIONS)[number];
 
 export type PromptSort = "updated" | "created" | "title" | "rating";
@@ -213,6 +213,9 @@ export interface ImportTableSummary {
 
 export type ImportSummary = Record<string, ImportTableSummary>;
 
+const MODEL_CATALOG_SETTING = "model_catalog";
+const MODEL_CATALOG_CREDENTIAL_TRUST_SETTING = "model_catalog_credential_trusted";
+
 /**
  * Cohesive domain API over an open database handle. Obtain a handle via
  * `openDatabase` / `openMemoryDatabase` (see `db.ts`), then:
@@ -248,11 +251,37 @@ export class PromptLibrary {
     icon?: string;
     /** Existing tag ids to attach. */
     tagIds?: string[];
+    /** Tag names to resolve or create inside the prompt transaction. */
+    tagNames?: string[];
+    /** Collection to attach atomically with the new prompt. */
+    collectionId?: string;
     content: string;
     changeNote?: string;
+    /** Optional first note, committed atomically with the prompt. */
+    initialNote?: string;
   }): PromptRow {
     if (!input.title.trim()) throw new Error("Prompt title must not be empty");
+    if (input.initialNote !== undefined && !input.initialNote.trim()) {
+      throw new Error("Note body must not be empty");
+    }
     return this.db.transaction((): PromptRow => {
+      const tagIds = new Set(input.tagIds ?? []);
+      const tagsByName = new Map<string, string>();
+      for (const tag of this.all<TagRow>("SELECT * FROM tags ORDER BY rowid")) {
+        const key = tag.name.toLowerCase();
+        if (!tagsByName.has(key)) tagsByName.set(key, tag.id);
+      }
+      for (const name of input.tagNames ?? []) {
+        if (!name.trim()) throw new Error("Tag name must not be empty");
+        const key = name.toLowerCase();
+        let tagId = tagsByName.get(key);
+        if (!tagId) {
+          tagId = this.createTag({ name }).id;
+          tagsByName.set(key, tagId);
+        }
+        tagIds.add(tagId);
+      }
+
       const ts = now();
       const promptId = randomUUID();
       this.run(
@@ -287,8 +316,26 @@ export class PromptLibrary {
       );
       this.run("UPDATE prompts SET current_version_id = ? WHERE id = ?", versionId, promptId);
 
-      for (const tagId of input.tagIds ?? []) {
+      for (const tagId of tagIds) {
         this.run("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      }
+
+      if (input.collectionId !== undefined) {
+        this.run(
+          "INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, 0)",
+          input.collectionId,
+          promptId,
+        );
+      }
+
+      if (input.initialNote !== undefined) {
+        this.run(
+          "INSERT INTO notes (id, prompt_id, version_id, body, created_at) VALUES (?, ?, NULL, ?, ?)",
+          randomUUID(),
+          promptId,
+          input.initialNote,
+          ts,
+        );
       }
 
       this.reindexPrompt(promptId);
@@ -344,6 +391,7 @@ export class PromptLibrary {
       params.push(...options.tagIds);
     }
 
+    const sort = options.sort ?? "updated";
     const orderBy: Record<PromptSort, string> = {
       updated: "p.updated_at DESC",
       created: "p.created_at DESC",
@@ -351,27 +399,38 @@ export class PromptLibrary {
       rating: "avg_rating IS NULL, avg_rating DESC",
     };
 
-    const innerSql = `
-      SELECT p.*, (
-        SELECT AVG(val) FROM (
-          SELECT effectiveness AS val FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.effectiveness IS NOT NULL
-          UNION ALL
-          SELECT clarity FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.clarity IS NOT NULL
-          UNION ALL
-          SELECT completeness FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.completeness IS NOT NULL
-          UNION ALL
-          SELECT actionability FROM ratings r WHERE r.target_type = 'prompt' AND r.target_id = p.id AND r.actionability IS NOT NULL
-        )
-      ) AS avg_rating
-      FROM prompts p
-      ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}`;
+    const whereClause = () => (where.length > 0 ? `WHERE ${where.join(" AND ")}` : "");
+    if (sort !== "rating" && options.minRating === undefined) {
+      return this.all<PromptRow>(
+        `SELECT p.* FROM prompts p ${whereClause()} ORDER BY ${orderBy[sort]}`,
+        ...params,
+      );
+    }
 
-    const orderClause = `ORDER BY ${orderBy[options.sort ?? "updated"]}`;
-    let sql = `${innerSql} ${orderClause}`;
     if (options.minRating !== undefined) {
-      sql = `SELECT * FROM (${innerSql}) p WHERE avg_rating >= ? ${orderClause}`;
+      where.push("ra.avg_rating >= ?");
       params.push(options.minRating);
     }
+    const sql = `
+      WITH rating_averages AS (
+        SELECT target_id,
+          (
+            TOTAL(effectiveness) + TOTAL(clarity) +
+            TOTAL(completeness) + TOTAL(actionability)
+          ) / NULLIF(
+            COUNT(effectiveness) + COUNT(clarity) +
+            COUNT(completeness) + COUNT(actionability),
+            0
+          ) AS avg_rating
+        FROM ratings
+        WHERE target_type = 'prompt'
+        GROUP BY target_id
+      )
+      SELECT p.*, ra.avg_rating
+      FROM prompts p
+      LEFT JOIN rating_averages ra ON ra.target_id = p.id
+      ${whereClause()}
+      ORDER BY ${orderBy[sort]}`;
 
     type RowWithAvg = PromptRow & { avg_rating: number | null };
     return this.all<RowWithAvg>(sql, ...params).map(({ avg_rating: _avg, ...row }) => row);
@@ -920,6 +979,16 @@ export class PromptLibrary {
     );
   }
 
+  /** Permanently removes local history only after the portal share was revoked. */
+  removeRevokedSharedSnapshot(snapshotId: string): void {
+    const snapshot = this.getSharedSnapshot(snapshotId);
+    if (!snapshot) throw new Error(`Shared snapshot not found: ${snapshotId}`);
+    if (snapshot.deleted_at === null) {
+      throw new Error("Revoke the share before removing its local record");
+    }
+    this.run("DELETE FROM shared_snapshots WHERE snapshot_id = ?", snapshotId);
+  }
+
   // -------------------------------------------------------------- settings
 
   getSetting(key: string): string | null {
@@ -966,6 +1035,7 @@ export class PromptLibrary {
        FROM versions v
        JOIN prompts p ON p.id = v.prompt_id
        JOIN branches b ON b.id = v.branch_id
+       WHERE v.status = 'active'
        ORDER BY v.created_at DESC, v.rowid DESC
        LIMIT ?`,
       limit,
@@ -1074,6 +1144,7 @@ export class PromptLibrary {
     provider?: string;
     status?: RunStatus;
     output?: string;
+    promptContent?: string;
     error?: string;
     latencyMs?: number;
     runGroupId?: string;
@@ -1097,9 +1168,9 @@ export class PromptLibrary {
     const id = randomUUID();
     this.run(
       `INSERT INTO runs
-         (id, prompt_id, version_id, tool, model, provider, status, output, error, latency_ms, run_group_id,
-          outcome_rating, result_summary, metrics_json, started_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+          latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.promptId,
       input.versionId,
@@ -1108,6 +1179,7 @@ export class PromptLibrary {
       input.provider ?? null,
       input.status ?? "completed",
       input.output ?? null,
+      input.promptContent ?? null,
       input.error ?? null,
       input.latencyMs ?? null,
       input.runGroupId ?? null,
@@ -1132,6 +1204,7 @@ export class PromptLibrary {
     model: string;
     status: RunStatus;
     output?: string;
+    promptContent?: string;
     error?: string;
     latencyMs?: number;
     runGroupId?: string;
@@ -1148,9 +1221,14 @@ export class PromptLibrary {
       input.status === "completed" && input.output !== undefined
         ? input.output.replace(/\s+/g, " ").trim().slice(0, 280) || undefined
         : undefined;
+    const metrics =
+      input.promptContent !== undefined
+        ? { ...(input.metrics ?? {}), promptContentCaptured: true }
+        : input.metrics;
     return this.addRun({
       ...input,
       tool: "prompthub-run",
+      ...(metrics !== undefined ? { metrics } : {}),
       ...(resultSummary !== undefined ? { resultSummary } : {}),
     });
   }
@@ -1195,7 +1273,8 @@ export class PromptLibrary {
    * Shallow-merges `patch` into a run's metrics_json blob. Existing keys not
    * named in the patch (usage, costUsd, …) are preserved; a corrupt stored
    * blob is treated as empty. Values must be JSON-serializable. The reserved
-   * execution keys `usage`/`costUsd` are owned by recordModelRun — patches
+   * execution keys `usage`/`costUsd`/`promptContentCaptured` are owned by
+   * recordModelRun — patches
    * containing them are rejected so callers can't rewrite execution facts.
    */
   updateRunMetrics(runId: string, patch: Record<string, unknown>): RunRow {
@@ -1385,7 +1464,7 @@ export class PromptLibrary {
    * caller's job (packages/ai).
    */
   getCatalogCache(): { fetchedAt: string; json: string } | null {
-    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", "model_catalog");
+    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", MODEL_CATALOG_SETTING);
     if (!row) return null;
     try {
       const parsed = JSON.parse(row.value) as { fetchedAt?: unknown; json?: unknown };
@@ -1398,12 +1477,28 @@ export class PromptLibrary {
     return null;
   }
 
-  /** Stores the stringified parsed models.dev catalog in the settings table. */
-  setCatalogCache(json: string): void {
-    this.run(
-      "INSERT INTO settings (key, value) VALUES ('model_catalog', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      JSON.stringify({ fetchedAt: now(), json }),
-    );
+  /** Whether the current cache came from a models.dev refresh in this build. */
+  isCatalogCacheCredentialTrusted(): boolean {
+    return this.getSetting(MODEL_CATALOG_CREDENTIAL_TRUST_SETTING) === "1";
+  }
+
+  /** Stores the parsed catalog and its narrower authority over environment-key lookup. */
+  setCatalogCache(json: string, options: { credentialTrusted?: boolean } = {}): void {
+    this.db.transaction(() => {
+      this.run(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        MODEL_CATALOG_SETTING,
+        JSON.stringify({ fetchedAt: now(), json }),
+      );
+      if (options.credentialTrusted === true) {
+        this.run(
+          "INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          MODEL_CATALOG_CREDENTIAL_TRUST_SETTING,
+        );
+      } else {
+        this.run("DELETE FROM settings WHERE key = ?", MODEL_CATALOG_CREDENTIAL_TRUST_SETTING);
+      }
+    })();
   }
 
   // ----------------------------------------------------------------- search
@@ -1478,7 +1573,9 @@ export class PromptLibrary {
    * excluded entirely: share records hold plaintext delete tokens that should
    * not travel in export files, so migrating to a new library loses revoke
    * capability — revoke shares before migrating, or re-publish afterwards.
-   * Everything else round-trips losslessly.
+   * Device-local settings and derived caches are also excluded; importing a
+   * library must not change this device's network routes or runtime behavior.
+   * All portable library data round-trips losslessly.
    */
   exportLibrary(): LibraryExport {
     return {
@@ -1494,7 +1591,7 @@ export class PromptLibrary {
         collection_prompts: this.all<CollectionPromptRow>("SELECT * FROM collection_prompts"),
         ratings: this.all<RatingRow>("SELECT * FROM ratings ORDER BY created_at"),
         runs: this.all<RunRow>("SELECT * FROM runs ORDER BY created_at"),
-        settings: this.all<SettingRow>("SELECT * FROM settings ORDER BY key"),
+        settings: [],
         providers: this.all<ProviderRow>("SELECT * FROM providers ORDER BY created_at").map((row) => ({
           ...row,
           api_key_enc: null,
@@ -1602,7 +1699,17 @@ export class PromptLibrary {
       // -- prompts: inserted with current_version_id NULL, fixed up after versions
       const pendingCurrentVersion: Array<{ promptId: string; oldVersionId: string }> = [];
       for (const prompt of data.tables.prompts) {
-        const id = claimId("prompts", prompt.id, "SELECT id FROM prompts WHERE id = ?");
+        const id = claimId(
+          "prompts",
+          prompt.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM prompts WHERE prompts.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_prompt_tombstones
+                WHERE sync_prompt_tombstones.prompt_id = candidate.id
+              )`,
+        );
         this.run(
           `INSERT INTO prompts (id, title, description, icon, draft_content, current_version_id, is_starred, created_at, updated_at, deleted_at)
            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
@@ -1634,7 +1741,25 @@ export class PromptLibrary {
       }
 
       for (const version of data.tables.versions) {
-        const id = claimId("versions", version.id, "SELECT id FROM versions WHERE id = ?");
+        claimId(
+          "versions",
+          version.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM versions WHERE versions.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_ops
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM sync_dirty
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )`,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        const id = idMaps.versions.get(version.id)!;
         this.run(
           `INSERT INTO versions
              (id, prompt_id, branch_id, parent_version_id, number, label, content, content_format, change_note, author, status, source, created_at)
@@ -1642,7 +1767,7 @@ export class PromptLibrary {
           id,
           remap("prompts", version.prompt_id),
           remap("branches", version.branch_id),
-          remap("versions", version.parent_version_id),
+          null,
           version.number,
           version.label,
           version.content,
@@ -1653,6 +1778,15 @@ export class PromptLibrary {
           version.status ?? "active",
           version.source ?? "user",
           version.created_at,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        if (!version.parent_version_id) continue;
+        this.run(
+          "UPDATE versions SET parent_version_id = ? WHERE id = ?",
+          remap("versions", version.parent_version_id),
+          idMaps.versions.get(version.id),
         );
       }
 
@@ -1718,9 +1852,9 @@ export class PromptLibrary {
         const id = claimId("runs", run.id, "SELECT id FROM runs WHERE id = ?");
         this.run(
           `INSERT INTO runs
-             (id, prompt_id, version_id, tool, model, provider, status, output, error, latency_ms, run_group_id,
-              outcome_rating, result_summary, metrics_json, started_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+              latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           remap("prompts", run.prompt_id),
           remap("versions", run.version_id),
@@ -1732,6 +1866,7 @@ export class PromptLibrary {
           remap("providers", run.provider ?? null),
           run.status ?? "completed",
           run.output ?? null,
+          run.prompt_content ?? null,
           run.error ?? null,
           run.latency_ms ?? null,
           run.run_group_id ?? null,
@@ -1744,12 +1879,9 @@ export class PromptLibrary {
       }
 
       for (const setting of data.tables.settings) {
-        this.run(
-          "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-          setting.key,
-          setting.value,
-        );
-        bump("settings", "inserted");
+        // Settings are device-local. Default-deny imported keys so future
+        // endpoint or cache settings cannot silently become portable.
+        bump("settings", "skipped");
       }
 
       // Rebuild search rows for every prompt we touched.

@@ -20,6 +20,11 @@ export interface ListFilters {
 
 export const EMPTY_FILTERS: ListFilters = { tagIds: [], starredOnly: false };
 
+export interface NewPromptCollection {
+  id: string;
+  name: string;
+}
+
 interface AppStateValue {
   view: AppView;
   setView: (view: AppView) => void;
@@ -37,6 +42,8 @@ interface AppStateValue {
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
   newPromptOpen: boolean;
+  newPromptCollection: NewPromptCollection | null;
+  openNewPrompt: (collection?: NewPromptCollection) => void;
   setNewPromptOpen: (open: boolean) => void;
   aboutOpen: boolean;
   setAboutOpen: (open: boolean) => void;
@@ -62,7 +69,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [filters, setFilters] = useState<ListFilters>(EMPTY_FILTERS);
   const [listSearch, setListSearch] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [newPromptOpen, setNewPromptOpen] = useState(false);
+  const [newPromptOpen, setNewPromptOpenState] = useState(false);
+  const [newPromptCollection, setNewPromptCollection] = useState<NewPromptCollection | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
@@ -77,6 +85,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const openSettings = useCallback((section: SettingsSection = "appearance") => {
     setSettingsSection(section);
     setSettingsOpen(true);
+  }, []);
+
+  const openNewPrompt = useCallback((collection?: NewPromptCollection) => {
+    setNewPromptCollection(collection ?? null);
+    setNewPromptOpenState(true);
+  }, []);
+
+  const setNewPromptOpen = useCallback((open: boolean) => {
+    setNewPromptOpenState(open);
+    if (!open) setNewPromptCollection(null);
   }, []);
 
   const value = useMemo<AppStateValue>(
@@ -96,6 +114,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       paletteOpen,
       setPaletteOpen,
       newPromptOpen,
+      newPromptCollection,
+      openNewPrompt,
       setNewPromptOpen,
       aboutOpen,
       setAboutOpen,
@@ -108,7 +128,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       manageModelsOpen,
       setManageModelsOpen,
     }),
-    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
+    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, newPromptCollection, openNewPrompt, setNewPromptOpen, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

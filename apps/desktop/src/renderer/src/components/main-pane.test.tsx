@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -11,7 +11,27 @@ import type {
 } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
+import { useAppState } from "../state/app-state";
 import { MainPane } from "./MainPane";
+
+vi.mock("@uiw/react-codemirror", () => ({
+  default: ({
+    value,
+    onChange,
+    readOnly,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <textarea
+      aria-label="Prompt editor"
+      value={value}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
 
 // Render counter for the memoized Inspector: it renders TagEditor with the
 // `compact` prop (the MainPane tag row does not), so each compact render
@@ -139,6 +159,11 @@ async function startRun(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Run" }));
 }
 
+function HistoricalVersionControl({ versionId }: { versionId: string }) {
+  const { setViewingVersionId } = useAppState();
+  return <button onClick={() => setViewingVersionId(versionId)}>View historical version</button>;
+}
+
 describe("MainPane live run progress", () => {
   it("drives the live compare view through queued → streaming → completed", async () => {
     const user = userEvent.setup();
@@ -195,6 +220,34 @@ describe("MainPane live run progress", () => {
       expect(within(screen.getByRole("dialog")).getByText(/1\/1 succeeded/)).toBeInTheDocument(),
     );
     expect(within(screen.getByRole("dialog")).getByText("fresh output")).toBeInTheDocument();
+  });
+
+  it("reopens a dismissed running evaluation and cancels the same run group", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await screen.findByText(/waiting to start/i);
+
+    act(() => {
+      bridge.emitRunProgress({
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(/waiting to start/i)).toBeNull());
+
+    const runningButton = screen.getByRole("button", { name: /running 0\/1/i });
+    expect(runningButton).toBeEnabled();
+    await user.click(runningButton);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(bridge.ai.runCancel).toHaveBeenCalledWith({ runGroupId: "rg-live" }),
+    );
   });
 
   it("does not re-render the memoized Inspector on streamed deltas", async () => {
@@ -282,6 +335,118 @@ describe("MainPane share button", () => {
         includeHistory: false,
         content: "Unsaved editor content",
       }),
+    );
+  });
+
+  it("shares the historical version currently displayed instead of the current draft", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content:
+        versionId === historicalVersion.id ? "Historical content" : "Saved current content",
+      contentFormat: "markdown",
+    }));
+    bridge.share.preview.mockImplementation(async (input) => ({
+      payload: {
+        formatVersion: 1,
+        title: "Greeting",
+        content: input.content ?? "Saved current content",
+        tags: [],
+        publishedAt: "2026-08-26T12:00:00.000Z",
+      },
+      findings: [],
+    }));
+    bridge.share.publish.mockResolvedValue({
+      id: "V1StGXR8_Z5jdHi6B-myT",
+      url: "https://promptbranch.app/p/V1StGXR8_Z5jdHi6B-myT",
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane
+          prompt={{ ...prompt, currentVersionId: currentVersion.id, draftContent: "Current draft" }}
+        />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(await screen.findByText("Historical content")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Share prompt" }));
+    await waitFor(() =>
+      expect(bridge.share.preview).toHaveBeenCalledWith({
+        promptId: "prompt-1",
+        includeHistory: false,
+        content: "Historical content",
+      }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/"content": "Historical content"/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Current draft/)).toBeNull();
+
+    await user.click(within(dialog).getByRole("button", { name: "Publish" }));
+    await waitFor(() =>
+      expect(bridge.share.publish).toHaveBeenCalledWith({
+        promptId: "prompt-1",
+        includeHistory: false,
+        content: "Historical content",
+      }),
+    );
+  });
+
+  it("disables sharing until the selected historical content has loaded", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(screen.getByRole("button", { name: "Share prompt" })).toBeDisabled();
+  });
+});
+
+describe("MainPane restored prompt editing", () => {
+  it("autosaves an edit after restoring a trashed prompt without remounting the editor", async () => {
+    bridge.versions.get.mockResolvedValue({
+      ...version,
+      content: "Persisted version",
+      contentFormat: "markdown",
+    });
+    const trashedPrompt = { ...prompt, deletedAt: "2026-08-02T09:00:00Z" };
+    const view = renderApp(<MainPane prompt={trashedPrompt} />);
+
+    await screen.findByText("Persisted version");
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(bridge.prompts.restore).toHaveBeenCalledWith(prompt.id));
+
+    view.rerender(<MainPane prompt={prompt} />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const restoredEditor = screen.getByRole("textbox", { name: "Prompt editor" });
+    fireEvent.change(restoredEditor, { target: { value: "Restored edit" } });
+    view.unmount();
+
+    await waitFor(() =>
+      expect(bridge.drafts.set).toHaveBeenCalledWith(prompt.id, "Restored edit"),
     );
   });
 });

@@ -35,6 +35,36 @@ describe("listRecentActivity", () => {
     lib.softDeletePrompt(p.id);
     expect(lib.listRecentActivity(10)).toHaveLength(1);
   });
+
+  it("includes only active versions from the suggestion lifecycle", () => {
+    const prompt = lib.createPrompt({ title: "Review", content: "base" });
+    const baseVersionId = prompt.current_version_id!;
+    const pending = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId,
+      branchName: "pending-change",
+      newContent: "pending",
+      rationale: "await review",
+    });
+    const rejected = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId,
+      branchName: "rejected-change",
+      newContent: "rejected",
+      rationale: "not useful",
+    });
+    lib.rejectSuggestion(rejected.version.id);
+
+    expect(lib.listRecentActivity(10).map((item) => item.version_id)).toEqual([
+      baseVersionId,
+    ]);
+
+    lib.approveSuggestion(pending.version.id);
+    expect(lib.listRecentActivity(10).map((item) => item.version_id)).toEqual([
+      pending.version.id,
+      baseVersionId,
+    ]);
+  });
 });
 
 describe("notes deletion", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deleteSnapshot, describeShareError, fetchSnapshot, publishSnapshot } from "../src/client.js";
-import type { SnapshotPayload } from "../src/schema.js";
+import { MAX_PAYLOAD_BYTES, type SnapshotPayload } from "../src/schema.js";
 
 const BASE = "https://prompts.example.com";
 const ID = "V1StGXR8_Z5jdHi6B-myT";
@@ -96,6 +96,71 @@ describe("publishSnapshot", () => {
     const result = await publishSnapshot(BASE, payload, { fetchImpl });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid-response");
+  });
+
+  it("allows a request exactly at the portal byte limit", async () => {
+    const emptyBody = JSON.stringify({ snapshot: { ...payload, content: "" } });
+    const content = "x".repeat(MAX_PAYLOAD_BYTES - new TextEncoder().encode(emptyBody).byteLength);
+    const exactPayload = { ...payload, content };
+    const exactBody = JSON.stringify({ snapshot: exactPayload });
+    expect(new TextEncoder().encode(exactBody).byteLength).toBe(MAX_PAYLOAD_BYTES);
+
+    let sentBody = "";
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      sentBody = String(init?.body);
+      return jsonResponse(201, { id: ID, url: `${BASE}/p/${ID}`, deleteToken: "tok" });
+    };
+
+    const result = await publishSnapshot(BASE, exactPayload, { fetchImpl });
+    expect(result.ok).toBe(true);
+    expect(sentBody).toBe(exactBody);
+  });
+
+  it("rejects an oversized request before contacting the portal", async () => {
+    const emptyBody = JSON.stringify({ snapshot: { ...payload, content: "" } });
+    const content = "x".repeat(
+      MAX_PAYLOAD_BYTES - new TextEncoder().encode(emptyBody).byteLength + 1,
+    );
+    const oversizedPayload = { ...payload, content };
+    let requested = false;
+    const fetchImpl: typeof fetch = async () => {
+      requested = true;
+      return jsonResponse(201, { id: ID, url: `${BASE}/p/${ID}`, deleteToken: "tok" });
+    };
+
+    const result = await publishSnapshot(BASE, oversizedPayload, { fetchImpl });
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "too-large",
+        actualBytes: MAX_PAYLOAD_BYTES + 1,
+        maxBytes: MAX_PAYLOAD_BYTES,
+      },
+    });
+    expect(requested).toBe(false);
+  });
+
+  it("measures UTF-8 bytes rather than JavaScript string length", async () => {
+    const emptyBody = JSON.stringify({ snapshot: { ...payload, content: "" } });
+    const emptyBytes = new TextEncoder().encode(emptyBody).byteLength;
+    const emojiCount = Math.floor((MAX_PAYLOAD_BYTES - emptyBytes) / 4) + 1;
+    const unicodePayload = { ...payload, content: "😀".repeat(emojiCount) };
+    const unicodeBody = JSON.stringify({ snapshot: unicodePayload });
+    const actualBytes = new TextEncoder().encode(unicodeBody).byteLength;
+    expect(unicodeBody.length).toBeLessThan(MAX_PAYLOAD_BYTES);
+    expect(actualBytes).toBeGreaterThan(MAX_PAYLOAD_BYTES);
+
+    let requested = false;
+    const fetchImpl: typeof fetch = async () => {
+      requested = true;
+      return jsonResponse(201, { id: ID, url: `${BASE}/p/${ID}`, deleteToken: "tok" });
+    };
+
+    expect(await publishSnapshot(BASE, unicodePayload, { fetchImpl })).toEqual({
+      ok: false,
+      error: { kind: "too-large", actualBytes, maxBytes: MAX_PAYLOAD_BYTES },
+    });
+    expect(requested).toBe(false);
   });
 });
 
@@ -200,6 +265,13 @@ describe("describeShareError", () => {
     expect(describeShareError({ kind: "gone" })).toMatch(/deleted/);
     expect(describeShareError({ kind: "rate-limited", retryAfterSeconds: 30 })).toMatch(/30s/);
     expect(describeShareError({ kind: "http", status: 500, message: "boom" })).toMatch(/500/);
+    expect(
+      describeShareError({
+        kind: "too-large",
+        actualBytes: MAX_PAYLOAD_BYTES + 1,
+        maxBytes: MAX_PAYLOAD_BYTES,
+      }),
+    ).toMatch(/too large.*257 KiB.*256 KiB/i);
     expect(
       describeShareError({
         kind: "rejected",

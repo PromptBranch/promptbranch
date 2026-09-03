@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PromptLibrary, openMemoryDatabase } from "@promptbranch/core";
 import { parseCatalog } from "@promptbranch/ai";
 import { aiRunSchema, type AiRunProgressEvent } from "../shared/ipc.js";
@@ -43,6 +43,8 @@ let judgeInFlight = 0;
 let judgeMaxInFlight = 0;
 /** Request-URL log so tests can assert which model id actually went out. */
 const seenUrls: string[] = [];
+/** Judge request prompts captured at the fake provider boundary. */
+const judgeRequestPrompts: string[] = [];
 
 /** One OpenAI chat-completions SSE chunk (streaming responses). */
 function sseChunk(model: string, body: Record<string, unknown>): string {
@@ -132,6 +134,7 @@ beforeAll(async () => {
         // Judge stubs: structured verdict JSON, a flaky one that answers with
         // malformed JSON on its first call (retry path), and one always broken.
         if (parsed.model.startsWith("model-judge")) {
+          judgeRequestPrompts.push(parsed.messages[0]?.content ?? "");
           flakyJudgeCalls += parsed.model === "model-judge-flaky" ? 1 : 0;
           // Flaky stub: malformed on the FIRST call after a reset, valid after
           // — deterministic under the judge pool's concurrent interleaving.
@@ -274,6 +277,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function makeDeps(): AiServiceDeps & { lib: PromptLibrary } {
@@ -445,6 +452,28 @@ describe("catalog get/refresh", () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/ENOTFOUND/);
     expect(failed.catalog?.models.openai!).toHaveLength(1);
+  });
+
+  it("keeps an unprovenanced legacy cache usable for offline model execution", async () => {
+    const deps = makeDeps();
+    deps.lib.setCatalogCache(JSON.stringify(catalogFixture));
+    expect(getCatalog(deps.lib)?.models.openai).toHaveLength(1);
+    const provider = createProvider(deps, {
+      type: "openai",
+      name: "OpenAI through local stub",
+      apiKey: "explicitly-stored-key",
+      baseUrl,
+    });
+    const prompt = deps.lib.createPrompt({ title: "Offline catalog", content: "Hello" });
+
+    const group = await runModelGroup(deps, {
+      promptId: prompt.id,
+      content: "Hello",
+      variables: {},
+      modelRefs: [{ providerId: provider.id, modelId: "gpt-4o-mini" }],
+    });
+
+    expect(group.runs[0]?.status).toBe("completed");
   });
 });
 
@@ -669,6 +698,7 @@ describe("runModelGroup", () => {
     // Both rows persisted under the group, with provider/model/latency set.
     const rows = deps.lib.listRuns(prompt.id, { runGroupId: group.runGroupId });
     expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.prompt_content === "Say hello to Ada")).toBe(true);
     const okRow = rows.find((r) => r.status === "completed")!;
     expect(okRow.provider).toBe(providerId);
     expect(okRow.model).toBe("model-a");
@@ -676,6 +706,7 @@ describe("runModelGroup", () => {
     expect(JSON.parse(okRow.metrics_json!)).toEqual({
       usage: { inputTokens: 10, outputTokens: 5 },
       costUsd: null, // no catalog cached in this test
+      promptContentCaptured: true,
     });
     expect(deps.lib.listRunGroups(prompt.id)).toHaveLength(1);
   });
@@ -755,6 +786,82 @@ describe("judgeRunGroup", () => {
     const rows = deps.lib.listRuns(prompt.id, { runGroupId });
     expect(rows.every((r) => r.outcome_rating === null)).toBe(true);
     expect(rows.find((r) => r.id === completedA.id)!.metrics_json).toBeNull();
+  });
+
+  it("judges the substituted draft that produced the run instead of the saved template", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-judge"]);
+    const prompt = deps.lib.createPrompt({
+      title: "Launch",
+      content: "Saved template for {{name}}",
+    });
+    const group = await runModelGroup(deps, {
+      promptId: prompt.id,
+      content: "Executed draft for {{name}}",
+      variables: { name: "Ada" },
+      modelRefs: [{ providerId, modelId: "model-a" }],
+    });
+    judgeRequestPrompts.length = 0;
+
+    await judgeRunGroup(deps, {
+      runGroupId: group.runGroupId,
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(judgeRequestPrompts).toHaveLength(1);
+    expect(judgeRequestPrompts[0]).toContain('Prompt:\n"""\nExecuted draft for Ada\n"""');
+    expect(judgeRequestPrompts[0]).not.toContain("Saved template for {{name}}");
+  });
+
+  it("falls back to saved version content for legacy runs without an execution snapshot", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-c", "model-judge"]);
+    const { runGroupId } = seedRunGroup(deps, providerId);
+    judgeRequestPrompts.length = 0;
+
+    await judgeRunGroup(deps, {
+      runGroupId,
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(judgeRequestPrompts).toHaveLength(2);
+    expect(
+      judgeRequestPrompts.every((request) =>
+        request.includes('Prompt:\n"""\nSay hi politely\n"""'),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails closed when a synced run says its exact prompt snapshot stayed on another device", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-judge"]);
+    const prompt = deps.lib.createPrompt({ title: "Remote", content: "Saved fallback" });
+    const run = deps.lib.addRun({
+      promptId: prompt.id,
+      versionId: prompt.current_version_id!,
+      tool: "prompthub-run",
+      provider: providerId,
+      model: "model-a",
+      status: "completed",
+      output: "Remote output",
+      runGroupId: "remote-group",
+      metrics: { promptContentCaptured: true },
+    });
+    judgeRequestPrompts.length = 0;
+
+    const result = await judgeRunGroup(deps, {
+      runGroupId: "remote-group",
+      judge: { providerId, modelId: "model-judge" },
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        runId: run.id,
+        error: expect.stringMatching(/exact prompt snapshot is unavailable.*device that executed/i),
+      }),
+    ]);
+    expect(judgeRequestPrompts).toEqual([]);
   });
 
   it("retries once on malformed judge JSON (parse-and-validate fallback)", async () => {
@@ -1119,6 +1226,101 @@ describe("environment key detection", () => {
 });
 
 describe("connectEnvProvider", () => {
+  it("does not trust environment names or endpoints supplied by a library import", async () => {
+    const deps = makeDeps();
+    const crafted = deps.lib.exportLibrary();
+    const poisonedCatalog = parseCatalog({
+      imported: {
+        id: "imported",
+        name: "Imported provider",
+        env: ["AWS_SECRET_ACCESS_KEY"],
+        npm: "@ai-sdk/openai-compatible",
+        api: baseUrl,
+        models: { "model-a": { id: "model-a", name: "Model A" } },
+      },
+    });
+    crafted.tables.settings.push({
+      key: "model_catalog",
+      value: JSON.stringify({
+        fetchedAt: "2026-09-03T00:00:00.000Z",
+        json: JSON.stringify(poisonedCatalog),
+      }),
+    });
+    deps.lib.importLibrary(crafted);
+    const requestCount = seenUrls.length;
+
+    await expect(
+      connectEnvProvider(
+        { ...deps, env: { AWS_SECRET_ACCESS_KEY: "high-value-secret" } },
+        { catalogId: "imported", modelId: "model-a" },
+      ),
+    ).rejects.toThrow(/no environment variable convention/);
+
+    expect(deps.lib.listProviders()).toEqual([]);
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
+  it("does not give a legacy unprovenanced catalog authority over environment keys", async () => {
+    const deps = makeDeps();
+    const poisonedCatalog = parseCatalog({
+      imported: {
+        id: "imported",
+        name: "Imported provider",
+        env: ["AWS_SECRET_ACCESS_KEY"],
+        npm: "@ai-sdk/openai-compatible",
+        api: baseUrl,
+        models: { "model-a": { id: "model-a", name: "Model A" } },
+      },
+    });
+    deps.lib.setCatalogCache(JSON.stringify(poisonedCatalog));
+    const requestCount = seenUrls.length;
+
+    await expect(
+      connectEnvProvider(
+        { ...deps, env: { AWS_SECRET_ACCESS_KEY: "high-value-secret" } },
+        { catalogId: "imported", modelId: "model-a" },
+      ),
+    ).rejects.toThrow(/no environment variable convention/);
+
+    expect(deps.lib.listProviders()).toEqual([]);
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
+  it("does not let imported native drivers fall back to process environment keys", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "process-fallback-secret");
+    vi.stubEnv("ANTHROPIC_API_KEY", "process-fallback-secret");
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "process-fallback-secret");
+    const deps = makeDeps();
+    const crafted = deps.lib.exportLibrary();
+    const nativeDrivers = ["openai", "anthropic", "google"] as const;
+    crafted.tables.providers = nativeDrivers.map((driver) => ({
+      id: `imported-${driver}`,
+      type: "openai-compatible",
+      driver,
+      name: `Imported ${driver} route`,
+      api_key_enc: null,
+      base_url: baseUrl,
+      enabled: 1,
+      created_at: "2026-09-03T00:00:00.000Z",
+    }));
+    crafted.tables.provider_models = nativeDrivers.map((driver) => ({
+      provider_id: `imported-${driver}`,
+      model_id: "model-a",
+      display_name: "Model A",
+      enabled: 1,
+    }));
+    deps.lib.importLibrary(crafted);
+    const requestCount = seenUrls.length;
+
+    for (const driver of nativeDrivers) {
+      expect(await testProvider(deps, `imported-${driver}`, "model-a")).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/stored API key/),
+      });
+    }
+    expect(seenUrls).toHaveLength(requestCount);
+  });
+
   it("creates a provider from the env key and auto-tests it", async () => {
     const deps = makeDeps();
     const testImpl = vi.fn(async () => ({ ok: true }));

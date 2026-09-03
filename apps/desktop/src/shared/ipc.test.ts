@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  promptCreateSchema,
   shareDeleteSchema,
   shareImportPreviewSchema,
   sharePortalSetSchema,
@@ -54,6 +55,22 @@ describe("shareDeleteSchema / shareImportPreviewSchema", () => {
     expect(shareDeleteSchema.safeParse({ snapshotId: "" }).success).toBe(false);
     expect(shareImportPreviewSchema.safeParse({ url: "" }).success).toBe(false);
     expect(shareImportPreviewSchema.safeParse({ url: "https://x/p/abc" }).success).toBe(true);
+  });
+});
+
+describe("promptCreateSchema", () => {
+  it("accepts a collection target and rejects an empty one", () => {
+    expect(
+      promptCreateSchema.parse({
+        title: "Collected",
+        content: "",
+        collectionId: "collection-1",
+      }),
+    ).toEqual({ title: "Collected", content: "", collectionId: "collection-1" });
+    expect(
+      promptCreateSchema.safeParse({ title: "Collected", content: "", collectionId: "" })
+        .success,
+    ).toBe(false);
   });
 });
 

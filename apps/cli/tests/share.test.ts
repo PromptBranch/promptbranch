@@ -34,7 +34,7 @@ const importedSnapshot = {
   title: "security-audit",
   description: "Audit code",
   content: "You are a security auditor.",
-  tags: ["security"],
+  tags: ["security", "Security"],
   publishedAt: "2026-08-25T12:00:00.000Z",
 };
 

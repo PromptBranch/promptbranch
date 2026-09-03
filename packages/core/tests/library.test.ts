@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
 import { openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
 
 let db: Database;
@@ -220,6 +221,29 @@ describe("tags and collections", () => {
     lib.removePromptFromCollection(collection.id, p1.id);
     expect(lib.listCollections()[0]!.prompt_count).toBe(1);
   });
+
+  it("creates a prompt directly inside a collection", () => {
+    const collection = lib.createCollection({ name: "Favorites" });
+
+    const prompt = lib.createPrompt({
+      title: "Collected prompt",
+      content: "x",
+      collectionId: collection.id,
+    });
+
+    expect(lib.listCollectionIdsForPrompt(prompt.id)).toEqual([collection.id]);
+    expect(lib.listPrompts({ collectionId: collection.id }).map((row) => row.id)).toEqual([
+      prompt.id,
+    ]);
+  });
+
+  it("rolls back prompt creation when its collection does not exist", () => {
+    expect(() =>
+      lib.createPrompt({ title: "Orphan", content: "x", collectionId: "missing" }),
+    ).toThrow();
+
+    expect(lib.listPrompts()).toEqual([]);
+  });
 });
 
 describe("ratings", () => {
@@ -308,6 +332,39 @@ describe("ratings", () => {
     // Version-targeted ratings must not affect prompt-level filtering.
     lib.addRating({ targetType: "version", targetId: unrated.current_version_id!, effectiveness: 5 });
     expect(lib.listPrompts({ minRating: 4 }).map((p) => p.title)).toEqual(["High"]);
+  });
+
+  it("lists large rated libraries without per-prompt rating scans", () => {
+    const insertPrompt = db.prepare(
+      `INSERT INTO prompts (id, title, created_at, updated_at)
+       VALUES (?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+    );
+    const insertRating = db.prepare(
+      `INSERT INTO ratings (
+         id, target_type, target_id, effectiveness, clarity,
+         completeness, actionability, created_at
+       ) VALUES (?, 'prompt', ?, 5, 4, 3, 2, '2026-01-01T00:00:00.000Z')`,
+    );
+    db.transaction(() => {
+      for (let promptIndex = 0; promptIndex < 2_000; promptIndex++) {
+        const promptId = `perf-prompt-${promptIndex}`;
+        insertPrompt.run(promptId, `Prompt ${promptIndex}`);
+        for (let ratingIndex = 0; ratingIndex < 4; ratingIndex++) {
+          insertRating.run(`perf-rating-${promptIndex}-${ratingIndex}`, promptId);
+        }
+      }
+    })();
+
+    const plainStarted = performance.now();
+    expect(lib.listPrompts()).toHaveLength(2_000);
+    const plainElapsed = performance.now() - plainStarted;
+
+    const ratedStarted = performance.now();
+    expect(lib.listPrompts({ sort: "rating" })).toHaveLength(2_000);
+    const ratedElapsed = performance.now() - ratedStarted;
+
+    expect(plainElapsed).toBeLessThan(500);
+    expect(ratedElapsed).toBeLessThan(500);
   });
 });
 

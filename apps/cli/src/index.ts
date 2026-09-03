@@ -442,18 +442,15 @@ async function main(argv: string[]): Promise<void> {
         lib.listPrompts().map((p) => p.title),
         result.value.snapshot.title,
       );
-      const tagIds = result.value.snapshot.tags.map((name) => {
-        const existing = lib.listTags().find((t) => t.name.toLowerCase() === name.toLowerCase());
-        return existing ? existing.id : lib.createTag({ name }).id;
-      });
+      const provenance = `Imported from ${result.value.url}`;
       const prompt = lib.createPrompt({
         title,
         ...(result.value.snapshot.description ? { description: result.value.snapshot.description } : {}),
-        tagIds,
+        tagNames: result.value.snapshot.tags,
         content: result.value.snapshot.content,
-        changeNote: `Imported from ${result.value.url}`,
+        changeNote: provenance,
+        initialNote: provenance,
       });
-      lib.addNote({ promptId: prompt.id, body: `Imported from ${result.value.url}` });
       out(values.json ?? false, {
         ok: true,
         promptId: prompt.id,

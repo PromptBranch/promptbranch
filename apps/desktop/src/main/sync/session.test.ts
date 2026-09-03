@@ -83,6 +83,31 @@ function sessionPair(a: Rig, b: Rig, byteBudget?: number): [SyncSession, SyncSes
 }
 
 describe("sync session", () => {
+  it("fails the session immediately when a peer uses an incompatible protocol", () => {
+    const local = rig();
+    const [socket] = streamPair();
+    socket.on("error", () => undefined);
+    const log = vi.fn();
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+      log,
+    });
+
+    session.handleMessageFrame({
+      t: "hello",
+      v: 1,
+      deviceId: "old-device",
+      name: "Old device",
+      cursors: {},
+    });
+
+    expect(session.currentState).toBe("error");
+    expect(socket.destroyed).toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/protocol version 1/i));
+    local.db.close();
+  });
+
   it("converges both directions over an in-memory stream pair", async () => {
     const a = rig();
     const b = rig();

@@ -112,8 +112,16 @@ function configForProvider(cipher: KeyCipher, provider: ProviderRow): ProviderCo
       );
     }
   }
+  const driver = providerDriver(provider);
+  // Native SDKs read their standard process environment variables when
+  // apiKey is omitted. PromptBranch imports provider metadata without keys,
+  // so require the encrypted local credential before constructing a native
+  // client rather than allowing that implicit fallback.
+  if (driver !== "openai-compatible" && !apiKey?.trim()) {
+    throw new Error(`Provider "${provider.name}" has no stored API key — reconnect it in Settings`);
+  }
   return {
-    driver: providerDriver(provider),
+    driver,
     name: provider.name,
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(provider.base_url !== null ? { baseUrl: provider.base_url } : {}),
@@ -345,7 +353,9 @@ export function detectEnvKeys(
   env: Record<string, string | undefined> = process.env,
 ): AiEnvDetectResult {
   const catalog = cachedCatalog(lib);
-  if (catalog) return detectCatalogEnvKeys(catalog, env);
+  if (catalog && lib.isCatalogCacheCredentialTrusted()) {
+    return detectCatalogEnvKeys(catalog, env);
+  }
   const result: AiEnvDetectResult = {};
   for (const descriptor of PROVIDERS) {
     result[descriptor.id] = descriptor.envVarHint !== null && Boolean(env[descriptor.envVarHint]?.trim());
@@ -382,12 +392,13 @@ async function connectEnvProviderInner(
 ): Promise<AiProviderConnectResult> {
   const catalog = cachedCatalog(deps.lib);
   const entry = catalog ? findCatalogProvider(catalog, input.catalogId) : null;
+  const credentialEntry = deps.lib.isCatalogCacheCredentialTrusted() ? entry : null;
   const driver = driverForCatalogId(input.catalogId);
-  // Env var conventions come from the catalog; native providers fall back to
-  // the registry hint when no catalog is cached yet.
+  // Env var conventions come from a credential-trusted catalog; native
+  // providers fall back to the compiled registry hint.
   const envNames =
-    entry && entry.env.length > 0
-      ? entry.env
+    credentialEntry && credentialEntry.env.length > 0
+      ? credentialEntry.env
       : (() => {
           const hint = isProviderDriver(input.catalogId)
             ? getProviderDescriptor(driver).envVarHint
@@ -504,7 +515,7 @@ export function getCatalog(lib: PromptLibrary): AiCatalogDto | null {
 export async function refreshCatalog(deps: AiServiceDeps): Promise<AiCatalogRefreshResult> {
   try {
     const catalog = await (deps.fetchCatalogImpl ?? fetchCatalog)();
-    deps.lib.setCatalogCache(JSON.stringify(catalog));
+    deps.lib.setCatalogCache(JSON.stringify(catalog), { credentialTrusted: true });
     const cache = deps.lib.getCatalogCache()!;
     return { ok: true, catalog: toCatalogDto(cache.fetchedAt, catalog) };
   } catch (error) {
@@ -720,6 +731,7 @@ export async function runModelGroup(
             model: p.modelId,
             status: "completed",
             output: result.text,
+            promptContent: content,
             latencyMs: result.latencyMs,
             runGroupId,
             startedAt,
@@ -757,6 +769,7 @@ export async function runModelGroup(
             provider: p.provider.id,
             model: p.modelId,
             status: "error",
+            promptContent: content,
             error: message,
             runGroupId,
             startedAt,
@@ -850,9 +863,28 @@ export async function judgeRunGroup(deps: AiServiceDeps, input: AiJudgeInput): P
       try {
         const version = lib.getVersion(row.version_id);
         if (!version) throw new Error(`Version not found: ${row.version_id}`);
+        let promptContent = row.prompt_content;
+        if (promptContent === null) {
+          let capturedElsewhere = false;
+          try {
+            const metrics = row.metrics_json === null ? null : JSON.parse(row.metrics_json);
+            capturedElsewhere =
+              typeof metrics === "object" &&
+              metrics !== null &&
+              (metrics as Record<string, unknown>)["promptContentCaptured"] === true;
+          } catch {
+            // Legacy/corrupt metrics have no reliable snapshot marker.
+          }
+          if (capturedElsewhere) {
+            throw new Error(
+              "The exact prompt snapshot is unavailable on this device; judge this run on the device that executed it",
+            );
+          }
+          promptContent = version.content;
+        }
         const verdict = await runJudge({
           model,
-          promptContent: version.content,
+          promptContent,
           output: row.output!,
           ...(input.criteria !== undefined ? { criteria: input.criteria } : {}),
           signal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),

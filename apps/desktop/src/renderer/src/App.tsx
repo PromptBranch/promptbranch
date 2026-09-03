@@ -48,8 +48,21 @@ function useGlobalShortcuts() {
 }
 
 export default function App() {
-  const { view, selectedPromptId, selectPrompt, newPromptOpen, setNewPromptOpen, setView, aboutOpen, setAboutOpen, openSettings, manageModelsOpen, setManageModelsOpen, setImportUrl } =
-    useAppState();
+  const {
+    view,
+    selectedPromptId,
+    selectPrompt,
+    newPromptOpen,
+    newPromptCollection,
+    setNewPromptOpen,
+    setView,
+    aboutOpen,
+    setAboutOpen,
+    openSettings,
+    manageModelsOpen,
+    setManageModelsOpen,
+    setImportUrl,
+  } = useAppState();
   const { data: prompt } = usePromptDetail(selectedPromptId);
   const { data: allTags } = useTags();
   const { data: list } = usePromptList();
@@ -88,16 +101,32 @@ export default function App() {
   }, [isFullPageView, selectedPromptId, list, selectPrompt]);
 
   const createPrompt = useAppMutation(
-    (input: { title: string; description: string; content: string; tagIds: string[] }) =>
+    (input: {
+      title: string;
+      description: string;
+      content: string;
+      tagIds: string[];
+      collectionId?: string;
+      collectionName?: string;
+    }) =>
       window.promptBuilder.prompts.create({
         title: input.title,
         content: input.content,
         ...(input.description ? { description: input.description } : {}),
         ...(input.tagIds.length > 0 ? { tagIds: input.tagIds } : {}),
+        ...(input.collectionId ? { collectionId: input.collectionId } : {}),
       }),
     {
-      onSuccess: (created) => {
-        if (view.kind === "trash") setView({ kind: "library" });
+      onSuccess: (created, input) => {
+        if (input.collectionId) {
+          setView({
+            kind: "collection",
+            collectionId: input.collectionId,
+            collectionName: input.collectionName,
+          });
+        } else if (view.kind === "trash") {
+          setView({ kind: "library" });
+        }
         selectPrompt(created.id);
       },
       toast: (created) => `Created “${created.title}”`,
@@ -180,7 +209,17 @@ export default function App() {
         open={newPromptOpen}
         onOpenChange={setNewPromptOpen}
         allTags={allTags ?? []}
-        onCreate={(input) => createPrompt.mutate(input)}
+        onCreate={(input) =>
+          createPrompt.mutate({
+            ...input,
+            ...(newPromptCollection
+              ? {
+                  collectionId: newPromptCollection.id,
+                  collectionName: newPromptCollection.name,
+                }
+              : {}),
+          })
+        }
       />
     </>
   );

@@ -122,6 +122,28 @@ describe("markSharedSnapshotDeleted", () => {
   });
 });
 
+describe("removeRevokedSharedSnapshot", () => {
+  it("permanently removes a revoked share record", () => {
+    const { lib } = setup();
+    const prompt = seedPrompt(lib);
+    lib.recordSharedSnapshot({ ...RECORD, promptId: prompt.id });
+    lib.markSharedSnapshotDeleted(RECORD.snapshotId);
+
+    lib.removeRevokedSharedSnapshot(RECORD.snapshotId);
+
+    expect(lib.getSharedSnapshot(RECORD.snapshotId)).toBeNull();
+  });
+
+  it("refuses to remove an active share and preserves its revoke token", () => {
+    const { lib } = setup();
+    const prompt = seedPrompt(lib);
+    lib.recordSharedSnapshot({ ...RECORD, promptId: prompt.id });
+
+    expect(() => lib.removeRevokedSharedSnapshot(RECORD.snapshotId)).toThrow(/revoke/i);
+    expect(lib.getSharedSnapshot(RECORD.snapshotId)?.delete_token).toBe(RECORD.deleteToken);
+  });
+});
+
 describe("getSetting / setSetting", () => {
   it("returns null for missing keys, stores and overwrites values", () => {
     const { lib } = setup();

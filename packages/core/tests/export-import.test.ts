@@ -49,6 +49,7 @@ function populate(library: PromptLibrary) {
     versionId: v2.id,
     tool: "claude",
     model: "claude-opus",
+    promptContent: "Review the release candidate from 2026-09-02",
     outcomeRating: 5,
     resultSummary: "great",
     metrics: { tokens: 100 },
@@ -113,6 +114,9 @@ describe("export/import", () => {
     expect(freshLib.listCollections()[0]!.prompt_count).toBe(1);
     expect(freshLib.getAverageRatings("prompt", prompt.id).effectiveness).toBeCloseTo(4);
     expect(freshLib.listRuns(prompt.id)[0]!.model).toBe("claude-opus");
+    expect(freshLib.listRuns(prompt.id)[0]!.prompt_content).toBe(
+      "Review the release candidate from 2026-09-02",
+    );
     expect(JSON.parse(freshLib.listRuns(prompt.id)[0]!.metrics_json!)).toEqual({ tokens: 100 });
 
     // Search index rebuilt.
@@ -183,6 +187,49 @@ describe("export/import", () => {
     expect(hits.has(clone.id)).toBe(true);
   });
 
+  it("remaps colliding version parents when children appear first", () => {
+    const prompt = lib.createPrompt({ title: "Child first", content: "v1" });
+    const branch = lib.listBranches(prompt.id)[0]!;
+    const v2 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "v2",
+    });
+    const originalParentId = v2.parent_version_id!;
+    const exported = JSON.parse(JSON.stringify(lib.exportLibrary())) as LibraryExport;
+    exported.tables.versions.reverse();
+
+    lib.importLibrary(exported);
+
+    const clone = lib.listPrompts().find((row) => row.id !== prompt.id)!;
+    const cloneVersions = lib.listVersions(clone.id);
+    const cloneV1 = cloneVersions.find((version) => version.number === 1)!;
+    const cloneV2 = cloneVersions.find((version) => version.number === 2)!;
+    expect(cloneV2.parent_version_id).toBe(cloneV1.id);
+    expect(cloneV2.parent_version_id).not.toBe(originalParentId);
+  });
+
+  it("remaps a prompt id that was previously hard-deleted on this device", () => {
+    const sourceDb = openMemoryDatabase();
+    const sourceLib = new PromptLibrary(sourceDb);
+    const sourcePrompt = sourceLib.createPrompt({ title: "Imported again", content: "v1" });
+    const sourceVersionId = sourcePrompt.current_version_id!;
+    const exported = sourceLib.exportLibrary();
+
+    lib.importLibrary(exported);
+    lib.hardDeletePrompt(sourcePrompt.id);
+    const summary = lib.importLibrary(exported);
+
+    expect(lib.getPrompt(sourcePrompt.id)).toBeNull();
+    const replacement = lib.listPrompts().find((prompt) => prompt.title === "Imported again");
+    expect(replacement?.id).toBeDefined();
+    expect(replacement?.id).not.toBe(sourcePrompt.id);
+    expect(lib.listVersions(replacement!.id)[0]?.id).not.toBe(sourceVersionId);
+    expect(summary.prompts?.remapped).toBe(1);
+    expect(summary.versions?.remapped).toBe(1);
+    sourceDb.close();
+  });
+
   it("round-trips provider configuration without API keys", () => {
     const { prompt } = populate(lib);
     const provider = lib.createProvider({
@@ -232,6 +279,40 @@ describe("export/import", () => {
     // Runs still resolve their provider name in run groups.
     const group = freshLib.listRunGroups(prompt.id)[0]!;
     expect(group.runs[0]!.providerName).toBe("Groq");
+  });
+
+  it("keeps device-local settings out of library files", () => {
+    lib.setCatalogCache('{"providers":[],"models":{}}');
+    lib.setSetting("portal_base_url", "https://source.example");
+    lib.setSetting("sync.enabled", "1");
+
+    const exported = lib.exportLibrary();
+    expect(exported.tables.settings).toEqual([]);
+
+    const destination = new PromptLibrary(openMemoryDatabase());
+    destination.setCatalogCache('{"providers":[{"id":"trusted"}],"models":{}}');
+    destination.setSetting("portal_base_url", "https://destination.example");
+    destination.setSetting("sync.enabled", "0");
+    const trustedCache = destination.getCatalogCache();
+    const crafted = JSON.parse(JSON.stringify(exported)) as LibraryExport;
+    crafted.tables.settings.push({
+      key: "model_catalog",
+      value: JSON.stringify({
+        fetchedAt: "2026-09-03T00:00:00.000Z",
+        json: '{"providers":[{"id":"attacker"}],"models":{}}',
+      }),
+    });
+    crafted.tables.settings.push(
+      { key: "portal_base_url", value: "https://attacker.example" },
+      { key: "sync.enabled", value: "1" },
+    );
+
+    const summary = destination.importLibrary(crafted);
+
+    expect(destination.getCatalogCache()).toEqual(trustedCache);
+    expect(destination.getSetting("portal_base_url")).toBe("https://destination.example");
+    expect(destination.getSetting("sync.enabled")).toBe("0");
+    expect(summary.settings?.skipped).toBe(3);
   });
 
   it("remaps provider ids on collision, keeping runs wired to the clone", () => {
@@ -328,6 +409,7 @@ describe("export/import", () => {
     expect(run.status).toBe("completed");
     expect(run.provider).toBeNull();
     expect(run.output).toBeNull();
+    expect(run.prompt_content).toBeNull();
     expect(run.outcome_rating).toBe(4);
     expect(freshLib.getPrompt("p1")!.current_version_id).toBe("v1");
     expect(freshLib.listProviders()).toEqual([]);

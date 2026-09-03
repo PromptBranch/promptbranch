@@ -3,7 +3,15 @@ import { SqliteError } from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { reindexPrompt } from "../reindex.js";
 import { compareHlc, formatHlc, parseHlc } from "./hlc.js";
-import { SYNCED_TABLES, decodeRecordId, tableDef, type SyncedTableDef, type SyncedTableName } from "./tables.js";
+import {
+  SYNCED_TABLES,
+  decodeRecordId,
+  encodeRecordId,
+  recordKeySql,
+  tableDef,
+  type SyncedTableDef,
+  type SyncedTableName,
+} from "./tables.js";
 
 /** One record-level change, as it travels between devices. */
 export interface SyncOp {
@@ -14,7 +22,7 @@ export interface SyncOp {
   /** Unique per source; makes apply idempotent. */
   opId: string;
   table: SyncedTableName;
-  /** Composite pk values joined with ':' (junction tables). */
+  /** Stable encoded primary-key values. */
   recordId: string;
   kind: "upsert" | "delete";
   /** Full row snapshot for upserts (redacted), null for deletes. */
@@ -69,6 +77,59 @@ interface OpRow {
   created_at: string;
 }
 
+interface RemapRow {
+  remote_id: string;
+  local_id: string;
+}
+
+type NaturalKeyChildTable = "prompt_tags" | "collection_prompts";
+
+interface ChildHistoryEntry {
+  op: SyncOp;
+  values: string[];
+}
+
+interface NaturalKeyRepairContext {
+  childHistoryByParent: Map<NaturalKeyChildTable, Map<string, ChildHistoryEntry[]>>;
+  onChildHistoryLoad?: (table: NaturalKeyChildTable) => void;
+}
+
+/** Small union-find for the historical aliases that must reduce together. */
+class IdComponents {
+  private readonly parents = new Map<string, string>();
+
+  add(id: string): void {
+    if (!this.parents.has(id)) this.parents.set(id, id);
+  }
+
+  connect(left: string, right: string): void {
+    this.add(left);
+    this.add(right);
+    const leftRoot = this.root(left);
+    const rightRoot = this.root(right);
+    if (leftRoot !== rightRoot) this.parents.set(rightRoot, leftRoot);
+  }
+
+  groups(): string[][] {
+    const groups = new Map<string, string[]>();
+    for (const id of this.parents.keys()) {
+      const root = this.root(id);
+      const group = groups.get(root);
+      if (group === undefined) groups.set(root, [id]);
+      else group.push(id);
+    }
+    return [...groups.values()].map((group) => group.sort()).sort((left, right) => left[0]!.localeCompare(right[0]!));
+  }
+
+  private root(id: string): string {
+    const parent = this.parents.get(id);
+    if (parent === undefined || parent === id) return id;
+    const root = this.root(parent);
+    this.parents.set(id, root);
+    return root;
+  }
+}
+
 function opFromRow(row: OpRow): SyncOp {
   return {
     source: row.source_device_id,
@@ -103,6 +164,8 @@ const MERGE_TABLES = new Set<SyncedTableName>(["tags", "collections", "branches"
  * Convergence rules:
  * - append-only rows union by primary key (UUIDs never collide);
  * - mutable rows resolve by (HLC, deviceId) last-writer-wins;
+ * - prompt hard deletion is terminal for the prompt and its owned aggregate;
+ * - share revocation is grow-only and keeps the earliest non-null timestamp;
  * - unique-name collisions (tags/collections/branches) merge into the local
  *   row and record an id remap so later references follow it;
  * - ops are stored verbatim regardless of LWW outcome so gossip stays
@@ -294,7 +357,7 @@ export class SyncEngine {
   bootstrapDirty(): void {
     this.db.transaction(() => {
       for (const def of SYNCED_TABLES) {
-        const pk = def.pk.map((c) => `"${c}"`).join(" || ':' || ");
+        const pk = recordKeySql(def.pk);
         this.db
           .prepare(`INSERT INTO sync_dirty (table_name, record_id, kind) SELECT '${def.name}', ${pk}, 'upsert' FROM ${def.name}`)
           .run();
@@ -381,6 +444,10 @@ export class SyncEngine {
    */
   applyRemote(remoteOps: SyncOp[]): ApplySummary {
     if (remoteOps.length === 0) return { applied: 0, skipped: 0, stale: 0, deferred: 0 };
+    // Canonical rekeys change primary and composite keys. Preserve every local
+    // dirty snapshot before they can turn an unrefined upsert into an alias
+    // tombstone when refineDirty reads the old key afterwards.
+    if (this.pendingDirty() > 0) this.refineDirty();
     // Array#sort is stable in V8, so per-source seq order survives rank sorting.
     const sorted = [...remoteOps].sort((a, b) => tableRank(a.table) - tableRank(b.table));
     for (const op of sorted) {
@@ -402,6 +469,7 @@ export class SyncEngine {
           summary.applied += one.applied;
           summary.skipped += one.skipped;
           summary.stale += one.stale;
+          summary.deferred += one.deferred;
         } catch (opErr) {
           if (!isForeignKeyFailure(opErr)) throw opErr;
           summary.deferred += 1;
@@ -409,6 +477,86 @@ export class SyncEngine {
       }
       return summary;
     }
+  }
+
+  /**
+   * Reduces released natural-key collisions from immutable history. Migration
+   * v11 calls this after refining pending local writes; normal remote delivery
+   * continues through applyRemote so it can retain its cursor semantics.
+   */
+  repairNaturalKeyMerges(options: { onChildHistoryLoad?: (table: NaturalKeyChildTable) => void } = {}): void {
+    this.db.transaction(() => {
+      this.db.pragma("defer_foreign_keys = ON");
+      const alreadyApplying = this.getMeta("applying") !== null;
+      if (!alreadyApplying) this.setMeta("applying", "1");
+      try {
+        const touchedPrompts = new Set<string>();
+        const touchedBranches = new Set<string>();
+        // Migration v11 reduces every natural-key component in one pass. The
+        // junction histories are immutable, so grouping them once avoids an
+        // N components × M child-ops rescan during startup repair.
+        const repairContext: NaturalKeyRepairContext = {
+          childHistoryByParent: new Map(),
+          onChildHistoryLoad: options.onChildHistoryLoad,
+        };
+
+        for (const def of SYNCED_TABLES) {
+          if (!MERGE_TABLES.has(def.name)) continue;
+          for (const component of this.historicalMergeComponents(def)) {
+            const { canonical, members } = this.canonicalRemapComponent(def.name, component);
+            for (const member of members) {
+              this.rekeyMergeRow(def, member, canonical, touchedPrompts, touchedBranches);
+            }
+
+            const parentKeys = members.map((id) => encodeRecordId(def, [id]));
+            const canonicalRecordId = encodeRecordId(def, [canonical]);
+            const winner = this.winningMergeOp(def, members);
+            if (winner === null) {
+              this.normalizeHeads(def.name, parentKeys, canonicalRecordId);
+              continue;
+            }
+
+            const remapped = this.remapOp(def, winner);
+            if (winner.kind === "delete" || remapped.payload === null) {
+              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+            } else if (this.tombstonedPromptOwner(def, remapped.payload) !== null) {
+              // v10's terminal prompt cascade intentionally leaves historical
+              // descendant ops for gossip. Repair must consume their winner
+              // without recreating an FK child under the deleted prompt.
+              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+            } else {
+              this.applyUpsert(
+                def,
+                canonicalRecordId,
+                { ...remapped.payload, id: canonical },
+                touchedPrompts,
+                touchedBranches,
+                winner.hlc,
+              );
+            }
+            this.replaceHeads(def.name, parentKeys, canonicalRecordId, winner);
+            this.observeStamp(winner.hlc);
+
+            if (def.name === "tags" || def.name === "collections") {
+              this.reduceCanonicalChildren(
+                def,
+                members,
+                canonical,
+                winner.kind === "upsert",
+                touchedPrompts,
+                repairContext,
+              );
+            }
+            if (def.name === "branches") touchedBranches.add(canonical);
+          }
+        }
+
+        for (const branchId of touchedBranches) this.renumberBranch(branchId);
+        for (const promptId of touchedPrompts) reindexPrompt(this.db, promptId);
+      } finally {
+        if (!alreadyApplying) this.db.prepare("DELETE FROM sync_meta WHERE key = 'applying'").run();
+      }
+    })();
   }
 
   private applyInTransaction(sorted: SyncOp[]): ApplySummary {
@@ -455,7 +603,36 @@ export class SyncEngine {
             validatePayload(def, op);
           }
 
-          const { table, recordId, payload } = this.remapOp(def, op);
+          const remapped = this.remapOp(def, op);
+          const { table } = remapped;
+          let { recordId, payload } = remapped;
+          let structuralChange = false;
+          if (op.kind === "upsert" && payload !== null && MERGE_TABLES.has(table)) {
+            const canonicalized = this.canonicalizeMergeUpsert(
+              def,
+              recordId,
+              payload,
+              op,
+              touchedPrompts,
+              touchedBranches,
+            );
+            recordId = canonicalized.recordId;
+            payload = canonicalized.payload;
+            structuralChange = canonicalized.structuralChange;
+          }
+
+          if (
+            table === "ratings" &&
+            op.kind === "upsert" &&
+            payload?.["target_type"] === "version" &&
+            !this.knowsVersion(String(payload["target_id"]))
+          ) {
+            // Ratings have a polymorphic target rather than a SQLite FK. Do
+            // the same transient-parent deferral explicitly so a rating that
+            // arrives before its version cannot become an unowned orphan.
+            summary.deferred += 1;
+            continue;
+          }
           const localHead = head.get(table, recordId) as { hlc: string; device_id: string } | undefined;
           const wins =
             localHead === undefined ||
@@ -475,8 +652,72 @@ export class SyncEngine {
           );
           this.observeStamp(op.hlc);
 
-          if (!wins) {
-            summary.stale += 1;
+          const promptHardDelete = table === "prompts" && op.kind === "delete";
+          if (promptHardDelete) {
+            this.recordPromptTombstone(recordId);
+          }
+
+          if (op.kind === "upsert" && payload !== null) {
+            if (table === "shared_snapshots") {
+              payload = this.normalizeSharedSnapshot(payload);
+              const local = this.db
+                .prepare("SELECT deleted_at FROM shared_snapshots WHERE snapshot_id = ?")
+                .get(recordId) as { deleted_at: string | null } | undefined;
+              const incomingDeletedAt =
+                typeof payload["deleted_at"] === "string" ? payload["deleted_at"] : null;
+              const deletedAt =
+                local?.deleted_at && incomingDeletedAt
+                  ? [local.deleted_at, incomingDeletedAt].sort()[0]!
+                  : (local?.deleted_at ?? incomingDeletedAt);
+              payload = { ...payload, deleted_at: deletedAt };
+              if (!wins && local !== undefined && deletedAt !== local.deleted_at) {
+                // Revocation is an absorbing state. An older revoke may not
+                // replace newer share metadata, but it must still revoke the
+                // locally retained token. Keep the earliest timestamp so the
+                // merge is independent of delivery order.
+                this.db
+                  .prepare("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
+                  .run(deletedAt, recordId);
+                summary.applied += 1;
+                continue;
+              }
+            } else {
+              const owner = this.tombstonedPromptOwner(def, payload);
+              if (owner !== null) {
+                // Terminal aggregate deletion consumes later descendant ops
+                // for gossip/cursor continuity without rematerializing rows.
+                if (def.name === "versions") {
+                  // A polymorphic rating has no SQLite FK. It may have arrived
+                  // before ownership of this version was known, so remove it
+                  // when the terminally owned version is finally identified.
+                  this.db
+                    .prepare("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?")
+                    .run(recordId);
+                }
+                if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
+                summary.stale += 1;
+                continue;
+              }
+              if (this.hasWinningNaturalParentTombstone(def, payload, op)) {
+                // A natural-key parent may have been deleted after an older
+                // child op was authored. Its absent row is a known terminal
+                // parent state, not a transient FK orphan: retain the child
+                // verbatim and its canonical head for gossip/cursors, but do
+                // not recreate a row beneath the deleted parent.
+                if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
+                if (wins) summary.applied += 1;
+                else summary.stale += 1;
+                continue;
+              }
+            }
+          }
+
+          if (!wins && !promptHardDelete) {
+            // This op lost the mutable LWW race, but may still have merged an
+            // alias component or reduced child history. It remains one input
+            // classification either way, never both stale and applied.
+            if (structuralChange) summary.applied += 1;
+            else summary.stale += 1;
             continue;
           }
 
@@ -485,7 +726,7 @@ export class SyncEngine {
           } else {
             this.applyUpsert(def, recordId, payload!, touchedPrompts, touchedBranches, op.hlc);
           }
-          upsertHead.run(table, recordId, op.hlc, op.source);
+          if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
           summary.applied += 1;
         }
 
@@ -502,19 +743,678 @@ export class SyncEngine {
 
   // ------------------------------------------------------------------- helpers
 
+  /**
+   * Resolves the complete remap component, not just its first edge. Old
+   * releases could leave inverse or chained rows behind, so following one
+   * direction would make the surviving id depend on which peer we met first.
+   * Rewriting every alias directly to the smallest id keeps the relation
+   * idempotent even when a corrupt historical cycle is encountered.
+   */
+  private canonicalRemapComponent(
+    table: SyncedTableName,
+    ids: readonly string[],
+  ): { canonical: string; members: string[]; changed: boolean } {
+    const mappings = this.db
+      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+      .all(table) as Array<{ remote_id: string; local_id: string }>;
+    const neighbors = new Map<string, Set<string>>();
+    const connect = (left: string, right: string) => {
+      let leftNeighbors = neighbors.get(left);
+      if (!leftNeighbors) neighbors.set(left, (leftNeighbors = new Set()));
+      leftNeighbors.add(right);
+      let rightNeighbors = neighbors.get(right);
+      if (!rightNeighbors) neighbors.set(right, (rightNeighbors = new Set()));
+      rightNeighbors.add(left);
+    };
+    for (const { remote_id, local_id } of mappings) connect(remote_id, local_id);
+
+    const visited = new Set(ids);
+    const queue = [...visited];
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      for (const neighbor of neighbors.get(current) ?? []) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+    const members = [...visited].sort();
+    const canonical = members[0]!;
+
+    // Delete first so changing a historical inverse edge cannot conflict with
+    // its old primary key. Canonical self-maps are deliberately absent.
+    const aliases = members.filter((id) => id !== canonical);
+    const componentMappings = mappings.filter(
+      ({ remote_id, local_id }) => visited.has(remote_id) || visited.has(local_id),
+    );
+    const changed =
+      componentMappings.length !== aliases.length ||
+      aliases.some(
+        (alias) => !componentMappings.some(({ remote_id, local_id }) => remote_id === alias && local_id === canonical),
+      );
+    const affected = members;
+    if (affected.length > 0) {
+      const placeholders = affected.map(() => "?").join(", ");
+      this.db
+        .prepare(
+          `DELETE FROM sync_id_remaps
+           WHERE table_name = ? AND (remote_id IN (${placeholders}) OR local_id IN (${placeholders}))`,
+        )
+        .run(table, ...affected, ...affected);
+    }
+    const insert = this.db.prepare(
+      "INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES (?, ?, ?)",
+    );
+    for (const alias of aliases) insert.run(table, alias, canonical);
+    return { canonical, members, changed };
+  }
+
   private readRemap(table: SyncedTableName, remoteId: string): string | null {
-    const row = this.db
-      .prepare("SELECT local_id FROM sync_id_remaps WHERE table_name = ? AND remote_id = ?")
-      .get(table, remoteId) as { local_id: string } | undefined;
-    return row?.local_id ?? null;
+    const { canonical } = this.canonicalRemapComponent(table, [remoteId]);
+    return canonical === remoteId ? null : canonical;
   }
 
   private recordRemap(table: SyncedTableName, remoteId: string, localId: string): void {
-    this.db
+    this.canonicalRemapComponent(table, [remoteId, localId]);
+  }
+
+  /**
+   * Reads every released alias source before materialization changes any row.
+   * Natural-key upserts supply positive identity evidence; remap edges retain
+   * older aliases and tombstones whose payload is intentionally absent.
+   */
+  private historicalMergeComponents(def: SyncedTableDef): string[][] {
+    const components = new IdComponents();
+    const remaps = this.db
+      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+      .all(def.name) as RemapRow[];
+    for (const { remote_id, local_id } of remaps) components.connect(remote_id, local_id);
+    const canonicalPromptId = this.canonicalPromptIdResolver();
+    const byNaturalKey = new Map<string, string>();
+    const addNaturalKey = (id: string, payload: Record<string, unknown>): void => {
+      const key = this.mergeNaturalKey(def, payload, canonicalPromptId);
+      if (key === null) return;
+      components.add(id);
+      const existing = byNaturalKey.get(key);
+      if (existing === undefined) byNaturalKey.set(key, id);
+      else components.connect(existing, id);
+    };
+
+    const currentRows = this.db
       .prepare(
-        "INSERT OR IGNORE INTO sync_id_remaps (table_name, remote_id, local_id) VALUES (?, ?, ?)",
+        def.name === "branches"
+          ? "SELECT id, prompt_id, name FROM branches"
+          : `SELECT id, name FROM ${def.name}`,
       )
-      .run(table, remoteId, localId);
+      .all() as Array<Record<string, unknown>>;
+    for (const row of currentRows) {
+      const id = row["id"];
+      if (typeof id === "string") addNaturalKey(id, row);
+    }
+
+    const historical = this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(def.name) as OpRow[];
+    for (const row of historical) {
+      components.add(row.record_id);
+      const op = opFromRow(row);
+      if (op.payload === null || typeof op.payload["id"] !== "string") continue;
+      const id = op.payload["id"];
+      components.connect(row.record_id, id);
+      addNaturalKey(id, op.payload);
+    }
+
+    return components.groups();
+  }
+
+  /**
+   * Live delivery must retain a historical same-name identity even after its
+   * materialized row was removed by a newer tombstone. Query only candidates
+   * with the incoming name, then reuse the repair reducer's natural-key and
+   * remap rules to expand that one component.
+   */
+  private historicalNaturalKeyComponent(
+    def: SyncedTableDef,
+    incomingId: string,
+    payload: Record<string, unknown>,
+  ): string[] {
+    const canonicalPromptId = this.canonicalPromptIdResolver();
+    const incomingKey = this.mergeNaturalKey(def, payload, canonicalPromptId);
+    if (incomingKey === null) return [incomingId];
+
+    const components = new IdComponents();
+    components.add(incomingId);
+    const localId = this.naturalKeyLookup(def, payload);
+    if (localId !== null) components.connect(incomingId, localId);
+    const remaps = this.db
+      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+      .all(def.name) as RemapRow[];
+    for (const { remote_id, local_id } of remaps) components.connect(remote_id, local_id);
+
+    const historical = this.db
+      .prepare(
+        `SELECT * FROM sync_ops
+         WHERE table_name = ? AND payload_json IS NOT NULL
+           AND json_extract(payload_json, '$.name') = ?`,
+      )
+      .all(def.name, String(payload["name"])) as OpRow[];
+    for (const row of historical) {
+      const op = opFromRow(row);
+      if (op.payload === null || typeof op.payload["id"] !== "string") continue;
+      if (this.mergeNaturalKey(def, op.payload, canonicalPromptId) !== incomingKey) continue;
+      components.connect(incomingId, op.payload["id"]);
+      components.connect(row.record_id, op.payload["id"]);
+    }
+
+    return components.groups().find((component) => component.includes(incomingId)) ?? [incomingId];
+  }
+
+  /** Branch names are scoped by prompt identity; tags and collections use name alone. */
+  private mergeNaturalKey(
+    def: SyncedTableDef,
+    payload: Record<string, unknown>,
+    canonicalPromptId: (promptId: string) => string,
+  ): string | null {
+    const name = payload["name"];
+    if (typeof name !== "string") return null;
+    if (def.name !== "branches") return name;
+    const promptId = payload["prompt_id"];
+    return typeof promptId === "string" ? `${canonicalPromptId(promptId)}\u0000${name}` : null;
+  }
+
+  /** Resolves legacy prompt remap components without mutating them during a read. */
+  private canonicalPromptIdResolver(): (promptId: string) => string {
+    const mappings = this.db
+      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'prompts'")
+      .all() as RemapRow[];
+    const neighbors = new Map<string, Set<string>>();
+    const connect = (left: string, right: string) => {
+      let leftNeighbors = neighbors.get(left);
+      if (leftNeighbors === undefined) neighbors.set(left, (leftNeighbors = new Set()));
+      leftNeighbors.add(right);
+      let rightNeighbors = neighbors.get(right);
+      if (rightNeighbors === undefined) neighbors.set(right, (rightNeighbors = new Set()));
+      rightNeighbors.add(left);
+    };
+    for (const { remote_id, local_id } of mappings) connect(remote_id, local_id);
+    return (promptId: string): string => {
+      const visited = new Set([promptId]);
+      const queue = [promptId];
+      while (queue.length > 0) {
+        const current = queue.pop()!;
+        for (const neighbor of neighbors.get(current) ?? []) {
+          if (visited.has(neighbor)) continue;
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+      return [...visited].sort()[0]!;
+    };
+  }
+
+  /** Returns the newest recorded revision among equivalent record keys. */
+  private newestHead(table: SyncedTableName, recordIds: readonly string[]): { hlc: string; device_id: string } | null {
+    if (recordIds.length === 0) return null;
+    const placeholders = recordIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT hlc, device_id FROM sync_heads
+         WHERE table_name = ? AND record_id IN (${placeholders})`,
+      )
+      .all(table, ...recordIds) as Array<{ hlc: string; device_id: string }>;
+    let newest: { hlc: string; device_id: string } | null = null;
+    for (const row of rows) {
+      if (newest === null || compareRevisions(row.hlc, row.device_id, newest.hlc, newest.device_id) > 0) {
+        newest = row;
+      }
+    }
+    return newest;
+  }
+
+  /** Whether normalizing these aliases would actually change stored head state. */
+  private headsNeedNormalization(
+    table: SyncedTableName,
+    recordIds: readonly string[],
+    canonicalRecordId: string,
+  ): boolean {
+    const unique = [...new Set(recordIds)];
+    if (unique.length === 0) return false;
+    const placeholders = unique.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT record_id, hlc, device_id FROM sync_heads
+         WHERE table_name = ? AND record_id IN (${placeholders})`,
+      )
+      .all(table, ...unique) as Array<{ record_id: string; hlc: string; device_id: string }>;
+    const newest = this.newestHead(table, unique);
+    if (newest === null) return rows.length !== 0;
+    return (
+      rows.length !== 1 ||
+      rows[0]?.record_id !== canonicalRecordId ||
+      rows[0]?.hlc !== newest.hlc ||
+      rows[0]?.device_id !== newest.device_id
+    );
+  }
+
+  /** Moves all equivalent heads to one delimiter-safe key and keeps the LWW winner. */
+  private normalizeHeads(
+    table: SyncedTableName,
+    recordIds: readonly string[],
+    canonicalRecordId: string,
+  ): { hlc: string; device_id: string } | null {
+    const unique = [...new Set(recordIds)];
+    const newest = this.newestHead(table, unique);
+    if (unique.length === 0) return newest;
+    const placeholders = unique.map(() => "?").join(", ");
+    this.db
+      .prepare(`DELETE FROM sync_heads WHERE table_name = ? AND record_id IN (${placeholders})`)
+      .run(table, ...unique);
+    if (newest !== null) {
+      this.db
+        .prepare("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
+        .run(table, canonicalRecordId, newest.hlc, newest.device_id);
+    }
+    return newest;
+  }
+
+  /** Replaces equivalent heads with the immutable operation that won the reduction. */
+  private replaceHeads(
+    table: SyncedTableName,
+    recordIds: readonly string[],
+    canonicalRecordId: string,
+    winner: SyncOp,
+  ): void {
+    const unique = [...new Set(recordIds)];
+    if (unique.length > 0) {
+      const placeholders = unique.map(() => "?").join(", ");
+      this.db
+        .prepare(`DELETE FROM sync_heads WHERE table_name = ? AND record_id IN (${placeholders})`)
+        .run(table, ...unique);
+    }
+    this.db
+      .prepare("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
+      .run(table, canonicalRecordId, winner.hlc, winner.source);
+  }
+
+  private sourceRecordWins(
+    table: SyncedTableName,
+    sourceRecordId: string,
+    targetRecordId: string,
+  ): boolean {
+    const source = this.newestHead(table, [sourceRecordId]);
+    const target = this.newestHead(table, [targetRecordId]);
+    return (
+      source !== null &&
+      (target === null || compareRevisions(source.hlc, source.device_id, target.hlc, target.device_id) > 0)
+    );
+  }
+
+  /** The immutable operation reducer for one natural-key parent component. */
+  private winningMergeOp(def: SyncedTableDef, members: readonly string[], incoming?: SyncOp): SyncOp | null {
+    const placeholders = members.map(() => "?").join(", ");
+    const historical = this.db
+      .prepare(
+        `SELECT * FROM sync_ops WHERE table_name = ? AND record_id IN (${placeholders})`,
+      )
+      .all(def.name, ...members) as OpRow[];
+    let winner = incoming ?? null;
+    for (const row of historical) {
+      const candidate = opFromRow(row);
+      if (winner === null || compareRevisions(candidate.hlc, candidate.source, winner.hlc, winner.source) > 0) {
+        winner = candidate;
+      }
+    }
+    return winner;
+  }
+
+  /**
+   * Reduces every affected junction-key history, including head-only deletes.
+   * Physical rows alone are insufficient: a newer tombstone intentionally has
+   * none, but still decides the canonical membership and collection ordering.
+   */
+  private reduceCanonicalChildren(
+    def: SyncedTableDef,
+    members: readonly string[],
+    canonicalId: string,
+    parentExists: boolean,
+    touchedPrompts: Set<string>,
+    repairContext?: NaturalKeyRepairContext,
+  ): boolean {
+    const childDef = tableDef(def.name === "tags" ? "prompt_tags" : "collection_prompts")!;
+    const foreignColumn = def.name === "tags" ? "tag_id" : "collection_id";
+    const foreignIndex = childDef.pk.indexOf(foreignColumn);
+    const histories = this.childHistoryEntries(childDef, foreignIndex, members, repairContext);
+    const groups = new Map<string, { recordIds: Set<string>; winner: SyncOp; values: string[] }>();
+    for (const { op: candidate, values: originalValues } of histories) {
+      if (!members.includes(originalValues[foreignIndex]!)) continue;
+      const values = [...originalValues];
+      values[foreignIndex] = canonicalId;
+      const canonicalRecordId = encodeRecordId(childDef, values);
+      const group = groups.get(canonicalRecordId);
+      if (group === undefined) {
+        groups.set(canonicalRecordId, { recordIds: new Set([candidate.recordId]), winner: candidate, values });
+      } else {
+        group.recordIds.add(candidate.recordId);
+        if (compareRevisions(candidate.hlc, candidate.source, group.winner.hlc, group.winner.source) > 0) {
+          group.winner = candidate;
+        }
+      }
+    }
+
+    let changed = false;
+    for (const [recordId, group] of groups) {
+      changed =
+        this.headsNeedNormalization(childDef.name, [...group.recordIds, recordId], recordId) || changed;
+      this.replaceHeads(childDef.name, [...group.recordIds, recordId], recordId, group.winner);
+      const promptIndex = childDef.pk.indexOf("prompt_id");
+      const promptId = group.values[promptIndex]!;
+      const payload =
+        group.winner.kind === "upsert" && group.winner.payload !== null
+          ? { ...group.winner.payload, [foreignColumn]: canonicalId }
+          : null;
+      const terminalOwner = payload === null ? null : this.tombstonedPromptOwner(childDef, payload);
+      if (!parentExists || group.winner.kind === "delete" || terminalOwner !== null || payload === null) {
+        changed = changed || this.readRow(childDef, recordId) !== null;
+        this.applyDelete(childDef, recordId, touchedPrompts, new Set());
+      } else {
+        const current = this.readRow(childDef, recordId);
+        changed =
+          changed ||
+          current === null ||
+          childDef.columns.some((column) => current[column] !== (payload[column] ?? null));
+        this.upsertRow(childDef, payload, []);
+        touchedPrompts.add(promptId);
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Live canonicalization reads the affected table on demand. Migration repair
+   * shares a parent-key index across components so each immutable child op is
+   * decoded once, then visited only for its own natural-key component.
+   */
+  private childHistoryEntries(
+    childDef: SyncedTableDef,
+    foreignIndex: number,
+    members: readonly string[],
+    repairContext?: NaturalKeyRepairContext,
+  ): ChildHistoryEntry[] {
+    if (repairContext === undefined) {
+      return (this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(childDef.name) as OpRow[]).map(
+        (row) => ({ op: opFromRow(row), values: decodeRecordId(childDef, row.record_id) }),
+      );
+    }
+
+    const table = childDef.name as NaturalKeyChildTable;
+    let byParent = repairContext.childHistoryByParent.get(table);
+    if (byParent === undefined) {
+      repairContext.onChildHistoryLoad?.(table);
+      byParent = new Map();
+      const rows = this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(table) as OpRow[];
+      for (const row of rows) {
+        const values = decodeRecordId(childDef, row.record_id);
+        const parentId = values[foreignIndex]!;
+        const entries = byParent.get(parentId);
+        const entry = { op: opFromRow(row), values };
+        if (entries === undefined) byParent.set(parentId, [entry]);
+        else entries.push(entry);
+      }
+      repairContext.childHistoryByParent.set(table, byParent);
+    }
+
+    return members.flatMap((member) => byParent.get(member) ?? []);
+  }
+
+  /** Repoints a tag's junction rows before retiring an alias row. */
+  private rekeyTagChildren(fromId: string, toId: string, touchedPrompts: Set<string>): void {
+    const def = tableDef("prompt_tags")!;
+    const rows = this.db
+      .prepare("SELECT prompt_id, tag_id FROM prompt_tags WHERE tag_id = ?")
+      .all(fromId) as Array<{ prompt_id: string; tag_id: string }>;
+    for (const row of rows) {
+      const oldRecordId = encodeRecordId(def, [row.prompt_id, fromId]);
+      const canonicalRecordId = encodeRecordId(def, [row.prompt_id, toId]);
+      this.db
+        .prepare("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)")
+        .run(row.prompt_id, toId);
+      this.db.prepare("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?").run(row.prompt_id, fromId);
+      this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
+      touchedPrompts.add(row.prompt_id);
+    }
+  }
+
+  /** Rekeys a collection's junction rows without letting PK conflicts drop membership. */
+  private rekeyCollectionChildren(fromId: string, toId: string, touchedPrompts: Set<string>): void {
+    const def = tableDef("collection_prompts")!;
+    const rows = this.db
+      .prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts WHERE collection_id = ?")
+      .all(fromId) as Array<{ collection_id: string; prompt_id: string; sort_order: number }>;
+    for (const row of rows) {
+      const oldRecordId = encodeRecordId(def, [fromId, row.prompt_id]);
+      const canonicalRecordId = encodeRecordId(def, [toId, row.prompt_id]);
+      const target = this.db
+        .prepare("SELECT 1 FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
+        .get(toId, row.prompt_id);
+      if (target === undefined || this.sourceRecordWins(def.name, oldRecordId, canonicalRecordId)) {
+        this.upsertRow(def, { ...row, collection_id: toId }, []);
+      }
+      this.db
+        .prepare("DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
+        .run(fromId, row.prompt_id);
+      this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
+      touchedPrompts.add(row.prompt_id);
+    }
+  }
+
+  /** Versions are not keyed by branch, but their FK must move before retiring a branch alias. */
+  private rekeyBranchChildren(
+    fromId: string,
+    toId: string,
+    touchedPrompts: Set<string>,
+    touchedBranches: Set<string>,
+  ): void {
+    const rows = this.db
+      .prepare("SELECT DISTINCT prompt_id FROM versions WHERE branch_id = ?")
+      .all(fromId) as Array<{ prompt_id: string }>;
+    this.db.prepare("UPDATE versions SET branch_id = ? WHERE branch_id = ?").run(toId, fromId);
+    for (const row of rows) touchedPrompts.add(row.prompt_id);
+    touchedBranches.add(toId);
+  }
+
+  /**
+   * Materializes one component at its canonical id. The FK moves deliberately
+   * precede parent deletion: SQLite's cascades would otherwise erase the
+   * child rows before their canonical composite keys can be installed.
+   */
+  private rekeyMergeRow(
+    def: SyncedTableDef,
+    fromId: string,
+    toId: string,
+    touchedPrompts: Set<string>,
+    touchedBranches: Set<string>,
+  ): boolean {
+    if (fromId === toId) return false;
+    const source = this.db
+      .prepare(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
+      .get(fromId) as Record<string, unknown> | undefined;
+    if (source === undefined) return false;
+    const target = this.db
+      .prepare(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
+      .get(toId) as Record<string, unknown> | undefined;
+    const sourceRecordId = encodeRecordId(def, [fromId]);
+    const targetRecordId = encodeRecordId(def, [toId]);
+    const sourceWins = target === undefined || this.sourceRecordWins(def.name, sourceRecordId, targetRecordId);
+
+    switch (def.name) {
+      case "tags":
+        this.rekeyTagChildren(fromId, toId, touchedPrompts);
+        break;
+      case "collections":
+        this.rekeyCollectionChildren(fromId, toId, touchedPrompts);
+        break;
+      case "branches":
+        this.rekeyBranchChildren(fromId, toId, touchedPrompts, touchedBranches);
+        break;
+      default:
+        return false;
+    }
+
+    if (target === undefined) {
+      this.db.prepare(`UPDATE ${def.name} SET id = ? WHERE id = ?`).run(toId, fromId);
+    } else {
+      if (sourceWins) this.updateColumns(def, toId, source, def.columns.filter((column) => column !== "id"));
+      this.db.prepare(`DELETE FROM ${def.name} WHERE id = ?`).run(fromId);
+    }
+    this.normalizeHeads(def.name, [sourceRecordId, targetRecordId], targetRecordId);
+    return true;
+  }
+
+  /**
+   * Merge-table identity is chosen before the ordinary LWW lookup. That keeps
+   * identity (minimum id) independent from mutable state (maximum revision).
+   */
+  private canonicalizeMergeUpsert(
+    def: SyncedTableDef,
+    recordId: string,
+    payload: Record<string, unknown>,
+    incoming: SyncOp,
+    touchedPrompts: Set<string>,
+    touchedBranches: Set<string>,
+  ): { recordId: string; payload: Record<string, unknown>; structuralChange: boolean } {
+    const incomingId = String(payload["id"]);
+    const historicalMembers = this.historicalNaturalKeyComponent(def, incomingId, payload);
+    const { canonical, members, changed: remapsChanged } = this.canonicalRemapComponent(
+      def.name,
+      historicalMembers,
+    );
+    let structuralChange = remapsChanged;
+    for (const member of members) {
+      structuralChange = this.rekeyMergeRow(def, member, canonical, touchedPrompts, touchedBranches) || structuralChange;
+    }
+    const parentKeys = members.map((id) => encodeRecordId(def, [id]));
+    const canonicalRecordId = encodeRecordId(def, [canonical]);
+    this.normalizeHeads(def.name, parentKeys, canonicalRecordId);
+    const winner = this.winningMergeOp(def, members, incoming)!;
+    const parentExists = winner.kind === "upsert";
+    if (!parentExists) {
+      const before = this.readRow(def, canonicalRecordId) !== null;
+      this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+      structuralChange = structuralChange || before;
+    }
+    if (def.name === "tags" || def.name === "collections") {
+      structuralChange =
+        this.reduceCanonicalChildren(def, members, canonical, parentExists, touchedPrompts) || structuralChange;
+    }
+    if (def.name === "branches") touchedBranches.add(canonical);
+    return { recordId: canonicalRecordId, payload: { ...payload, id: canonical }, structuralChange };
+  }
+
+  private isPromptTombstoned(promptId: string): boolean {
+    return this.db
+      .prepare("SELECT 1 FROM sync_prompt_tombstones WHERE prompt_id = ?")
+      .get(promptId) !== undefined;
+  }
+
+  private recordPromptTombstone(promptId: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id) VALUES (?)")
+      .run(promptId);
+    this.db.prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ?").run(promptId);
+  }
+
+  /** Returns the terminally deleted prompt that owns this incoming row. */
+  private tombstonedPromptOwner(
+    def: SyncedTableDef,
+    payload: Record<string, unknown>,
+  ): string | null {
+    if (def.name === "prompts") {
+      const promptId = String(payload["id"]);
+      return this.isPromptTombstoned(promptId) ? promptId : null;
+    }
+
+    if (
+      def.name === "branches" ||
+      def.name === "versions" ||
+      def.name === "prompt_tags" ||
+      def.name === "collection_prompts" ||
+      def.name === "notes" ||
+      def.name === "runs"
+    ) {
+      const promptId = String(payload["prompt_id"]);
+      return this.isPromptTombstoned(promptId) ? promptId : null;
+    }
+
+    if (def.name !== "ratings") return null;
+    const targetId = String(payload["target_id"]);
+    if (payload["target_type"] === "prompt") {
+      return this.isPromptTombstoned(targetId) ? targetId : null;
+    }
+    if (payload["target_type"] !== "version") return null;
+    const current = this.db.prepare("SELECT prompt_id FROM versions WHERE id = ?").get(targetId) as
+      | { prompt_id: string }
+      | undefined;
+    if (current && this.isPromptTombstoned(current.prompt_id)) return current.prompt_id;
+    const historical = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.prompt_id') AS prompt_id
+         FROM sync_ops
+         WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
+         ORDER BY hlc DESC, source_device_id DESC
+         LIMIT 1`,
+      )
+      .get(targetId) as { prompt_id: string | null } | undefined;
+    return historical?.prompt_id && this.isPromptTombstoned(historical.prompt_id)
+      ? historical.prompt_id
+      : null;
+  }
+
+  /**
+   * A known merge-parent tombstone consumes only children that predate it.
+   * Later children stay FK-deferred: they may still be paired with a parent
+   * upsert in a future source tail, while an older child cannot materialize
+   * under the parent state that already won its natural-key component.
+   */
+  private hasWinningNaturalParentTombstone(
+    def: SyncedTableDef,
+    payload: Record<string, unknown>,
+    child: SyncOp,
+  ): boolean {
+    const parent =
+      def.name === "prompt_tags"
+        ? { table: "tags" as const, foreignColumn: "tag_id" }
+        : def.name === "collection_prompts"
+          ? { table: "collections" as const, foreignColumn: "collection_id" }
+          : def.name === "versions"
+            ? { table: "branches" as const, foreignColumn: "branch_id" }
+            : null;
+    if (parent === null) return false;
+    const parentId = payload[parent.foreignColumn];
+    if (typeof parentId !== "string") return false;
+    const parentDef = tableDef(parent.table)!;
+    if (this.readRow(parentDef, encodeRecordId(parentDef, [parentId])) !== null) return false;
+    const { members } = this.canonicalRemapComponent(parent.table, [parentId]);
+    const winner = this.winningMergeOp(parentDef, members);
+    return (
+      winner !== null &&
+      winner.kind === "delete" &&
+      compareRevisions(winner.hlc, winner.source, child.hlc, child.source) >= 0
+    );
+  }
+
+  private normalizeSharedSnapshot(payload: Record<string, unknown>): Record<string, unknown> {
+    const promptId = payload["prompt_id"];
+    if (typeof promptId !== "string" || !this.isPromptTombstoned(promptId)) return payload;
+    return { ...payload, prompt_id: null };
+  }
+
+  private knowsVersion(versionId: string): boolean {
+    if (this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(versionId)) return true;
+    return this.db
+      .prepare(
+        `SELECT 1 FROM sync_ops
+         WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
+         LIMIT 1`,
+      )
+      .get(versionId) !== undefined;
   }
 
   /** Applies recorded id remaps to an op's record key and payload references. */
@@ -531,7 +1431,10 @@ export class SyncEngine {
     if (op.payload !== null) {
       const payload = { ...op.payload };
       for (const column of Object.keys(refs)) payload[column] = remapValue(column, payload[column]);
-      const recordId = def.pk.map((c) => String(payload[c])).join(":");
+      if (MERGE_TABLES.has(def.name) && typeof payload["id"] === "string") {
+        payload["id"] = this.readRemap(def.name, payload["id"]) ?? payload["id"];
+      }
+      const recordId = encodeRecordId(def, def.pk.map((c) => String(payload[c])));
       return { table: def.name, recordId, payload };
     }
     // Tombstones: FK columns remap as usual, and a merge table's own id also
@@ -546,7 +1449,7 @@ export class SyncEngine {
       const remapped = this.readRemap(def.name, values[0]!);
       if (remapped !== null) values[0] = remapped;
     }
-    return { table: def.name, recordId: values.join(":"), payload: null };
+    return { table: def.name, recordId: encodeRecordId(def, values), payload: null };
   }
 
   private applyUpsert(
@@ -575,8 +1478,25 @@ export class SyncEngine {
         return;
       }
       case "providers": {
-        // API keys never travel; never let a remote (null) key erase one.
+        const local = this.db
+          .prepare("SELECT type, driver, base_url FROM providers WHERE id = ?")
+          .get(String(payload["id"])) as
+          | { type: string; driver: string; base_url: string | null }
+          | undefined;
+        const routeChanged =
+          local !== undefined &&
+          (local.type !== payload["type"] ||
+            local.driver !== payload["driver"] ||
+            local.base_url !== (payload["base_url"] ?? null));
+        // API keys never travel. Preserve the local key for metadata edits,
+        // but clear it when a synced execution route changes so the old
+        // credential cannot be silently sent to a new destination.
         this.upsertRow(def, payload, ["api_key_enc"]);
+        if (routeChanged) {
+          this.db
+            .prepare("UPDATE providers SET api_key_enc = NULL WHERE id = ?")
+            .run(String(payload["id"]));
+        }
         return;
       }
       case "prompts": {
@@ -797,6 +1717,10 @@ export class SyncEngine {
       .prepare("SELECT prompt_id, hlc FROM sync_pending_pointers WHERE version_id = ?")
       .get(versionId) as { prompt_id: string; hlc: string } | undefined;
     if (!stash) return;
+    if (this.isPromptTombstoned(stash.prompt_id)) {
+      this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
+      return;
+    }
     // Belt and braces: never let a stash older than the prompt row's winning
     // revision resurrect a stale pointer.
     const head = this.db
@@ -887,10 +1811,15 @@ function redactPayload(table: SyncedTableName, row: Record<string, unknown>): Re
     return { ...row, api_key_enc: null };
   }
   if (table === "runs") {
-    const output = row["output"];
+    // Exact substituted prompts were added after wire protocol v1. Keep them
+    // device-local until peers can negotiate optional columns; otherwise a
+    // rolling upgrade wedges older peers on schema-drift validation.
+    const { prompt_content: _promptContent, ...portable } = row;
+    const output = portable["output"];
     if (typeof output === "string" && output.length > RUN_OUTPUT_CAP) {
-      return { ...row, output: output.slice(0, RUN_OUTPUT_CAP) + TRUNCATION_MARKER };
+      return { ...portable, output: output.slice(0, RUN_OUTPUT_CAP) + TRUNCATION_MARKER };
     }
+    return portable;
   }
   return row;
 }

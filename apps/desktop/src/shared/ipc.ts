@@ -35,6 +35,7 @@ export const promptCreateSchema = z.object({
   title: shortText,
   description: z.string().max(5_000).optional(),
   tagIds: z.array(id).max(100).optional(),
+  collectionId: id.optional(),
   content: longText,
   changeNote: z.string().max(2_000).optional(),
 });
@@ -1015,6 +1016,7 @@ export interface PromptBuilderApi {
     publish(input: ShareScopeInput): Promise<SharePublishResult>;
     list(): Promise<SharedSnapshotDto[]>;
     delete(snapshotId: string): Promise<void>;
+    removeRevoked(snapshotId: string): Promise<void>;
     getPortalBaseUrl(): Promise<string>;
     /** Pass "" to reset to the official instance; resolves to the effective URL. */
     setPortalBaseUrl(baseUrl: string): Promise<string>;

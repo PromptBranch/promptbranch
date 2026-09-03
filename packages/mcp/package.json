@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "description": "MCP stdio server exposing the PromptBranch library to AI agents (agents propose, humans approve).",

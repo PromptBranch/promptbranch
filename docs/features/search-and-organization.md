@@ -23,9 +23,12 @@ by rating. Selecting a collection in the left rail shows its prompts.
 
 - Create a **tag** with the **+** beside Tags, then attach it to related
   prompts. A prompt can have several tags.
-- Create a **collection** with the **+** beside Collections. Add or remove the
-  current prompt through **More actions → Move to collection…**. A prompt can
-  belong to more than one collection.
+- Create a **collection** with the **+** beside Collections. To create a prompt
+  inside it, right-click the collection and choose **New Prompt**, or select
+  the collection and use the **New prompt** button above the prompt list.
+- Add or remove an existing prompt through **More actions → Move to
+  collection…**, or right-click it in the prompt list. A prompt can belong to
+  more than one collection.
 - Select the star on a prompt to put it in the **Starred** view.
 
 ## Notes

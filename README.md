@@ -182,7 +182,8 @@ official portal, <https://promptbranch.app>.
 - **Publishing** happens from the Share dialog on the prompt toolbar (scope
   choice, pre-publish secret scan, exact-payload preview). Delete tokens are
   stored locally so shares can be revoked later from the **Shares view** in
-  the left rail (search, status filtering, copy link, revoke).
+  the left rail (search, status filtering, copy link, revoke, and remove
+  revoked entries).
 - **Importing** works via `promptbranch://import?url=` deep links or
   `promptbranch import`; the snapshot becomes a new local prompt with its
   tags and a provenance note. A shared history remains viewable on the portal;

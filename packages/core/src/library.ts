@@ -981,6 +981,7 @@ export class PromptLibrary {
        FROM versions v
        JOIN prompts p ON p.id = v.prompt_id
        JOIN branches b ON b.id = v.branch_id
+       WHERE v.status = 'active'
        ORDER BY v.created_at DESC, v.rowid DESC
        LIMIT ?`,
       limit,

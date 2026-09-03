@@ -1,67 +1,92 @@
 # PromptBranch CLI
 
-[![esbuild](https://img.shields.io/badge/bundled%20with-esbuild-CFD62E?logo=esbuild&logoColor=black)](./package.json)
-[![pnpm](https://img.shields.io/badge/pnpm-11-F69220?logo=pnpm&logoColor=white)](../../pnpm-workspace.yaml)
+[![npm version](https://img.shields.io/npm/v/%40promptbranch%2Fcli?logo=npm&logoColor=white)](https://www.npmjs.com/package/@promptbranch/cli)
+[![esbuild](https://img.shields.io/badge/bundled%20with-esbuild-CFD62E?logo=esbuild&logoColor=black)](https://esbuild.github.io/)
+[![pnpm](https://img.shields.io/badge/pnpm-11-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 
-`promptbranch` (`@promptbranch/cli`) — command-line interface to the local
-PromptBranch library, for shell pipelines and AI coding agents that don't
-speak MCP. Thin adapter over `@promptbranch/core`; shares the desktop app's
-database.
+`promptbranch` (`@promptbranch/cli`) is a local-first prompt library CLI for
+shell pipelines, scripts, and AI coding agents that do not speak MCP. Use it
+to search and retrieve prompts, keep version history, record evaluations, and
+share snapshots from the terminal. It works with the same local library as
+the [PromptBranch desktop app](https://promptbranch.app).
 
-Requires Node.js 22 or later.
+Requires Node.js 22 or later. No account is required for local library work.
 
-> Part of [PromptBranch](../../README.md#agent-integration)
+Source: [GitHub](https://github.com/PromptBranch/promptbranch/tree/main/apps/cli) ·
+[documentation](https://promptbranch.app/docs/integrations/cli) ·
+[report an issue](https://github.com/PromptBranch/promptbranch/issues)
 
-## Quick start
+## Install
 
-The CLI is published as the public `@promptbranch/cli` npm package.
+Run a command without a global install:
 
 ```sh
 npx -y @promptbranch/cli list --tag security
-npx -y @promptbranch/cli get "security-audit" --json
-npx -y @promptbranch/cli db-path
 ```
 
-Install the package globally to use the shorter `promptbranch` command. Every
-command supports `--json` for machine-readable output;
-`db-path --json` returns `{ "path": "/absolute/path/to/library.db" }` without
-creating or migrating the database.
-
-## Sharing (human-only; MCP has no equivalent)
+Or install the `promptbranch` command globally:
 
 ```sh
-promptbranch publish "security-audit" --full-history   # scan → publish → prints URL + delete token
-promptbranch import https://promptbranch.app/p/<id>    # imports the snapshot as a new prompt with an 'Imported from <url>' change note
+npm install --global @promptbranch/cli
+promptbranch list --tag security
 ```
 
-`publish` blocks on high-severity secret findings (exit 1 with the finding
-list) and stores the delete token in the library's `shared_snapshots` table so
-the share can be revoked from the desktop app. `--portal <base-url>` overrides
-the portal for one call; otherwise the library's `portal_base_url` setting
-(default `https://promptbranch.app`) is used. A full snapshot URL supplies its
-own portal origin, so importing it needs no extra flag. Imports create a new
-local prompt with the snapshot content, tags, and a provenance note; they do
-not recreate a shared version history. Portal requests time out after 30
-seconds instead of waiting indefinitely.
+Every command supports `--json` for machine-readable output. For example:
+
+```sh
+promptbranch get "security-audit" --json
+promptbranch search "sanitize inputs" --limit 5
+promptbranch db-path --json
+```
+
+`db-path --json` returns the resolved database path without creating or
+migrating the database.
+
+## Agent-safe prompt workflow
+
+Use the CLI as a small prompt version-control layer in scripts and coding-agent
+harnesses:
+
+- `list`, `search`, and `get` browse the local prompt library.
+- `report-run` records an execution outcome, rating, summary, or metrics.
+- `suggest` proposes a variation as **pending**; a human approves it in the
+  desktop app before it can become current.
+- `suggestions` lists the pending review queue.
+
+Prompt references resolve by id or title (exact, case-insensitive, or unique
+substring). See the [CLI integration guide](https://promptbranch.app/docs/integrations/cli)
+for all commands and options.
+
+## Sharing from the terminal
+
+Sharing is a human-only action; the MCP server has no equivalent publish or
+import tool.
+
+```sh
+promptbranch publish "security-audit" --full-history
+promptbranch import https://promptbranch.app/p/<id>
+```
+
+Before publishing, PromptBranch scans the snapshot for secrets. Imports create
+a new local prompt with its tags and provenance note; they do not recreate the
+remote version history. Use `--portal <base-url>` to override the sharing
+portal for one command.
 
 ## Environment
 
-Agents propose, humans approve: `suggest` creates a pending variation reviewed
-in the desktop app's Suggestions view. Set `PROMPTBRANCH_DB` to point at a
-different library (the PromptHub-era `PROMPTHUB_DB` and the pre-rename
-`PROMPTBUILDER_DB` are still honored as deprecated fallbacks).
-
-See the [main README](../../README.md#agent-integration) for tool semantics,
-title resolution and onboarding.
+Set `PROMPTBRANCH_DB=/path/to.db` to use a different library. The desktop app,
+CLI, and MCP server can share the same SQLite database; legacy
+`PROMPTHUB_DB` and `PROMPTBUILDER_DB` variables remain supported as deprecated
+fallbacks.
 
 ## Build from source
 
-From the repository root, with Node.js 22 and pnpm 11.7.0 available:
+From the [PromptBranch repository](https://github.com/PromptBranch/promptbranch),
+with pnpm 11.7.0 available:
 
 ```sh
 pnpm install
 pnpm --filter @promptbranch/cli build
 ```
 
-The built command is `dist/index.js`. For every command and option, see the
-[CLI guide](../../docs/integrations/cli.md).
+The bundled command is `dist/index.js`.

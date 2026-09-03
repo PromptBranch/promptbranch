@@ -3,7 +3,30 @@
   "version": "0.2.0",
   "license": "MIT",
   "type": "module",
-  "description": "PromptBranch CLI for shell pipelines and AI coding agents (agents propose, humans approve).",
+  "description": "Local-first CLI for versioning, searching, evaluating, and sharing AI prompts in shell pipelines and coding-agent workflows.",
+  "keywords": [
+    "promptbranch",
+    "prompt-library",
+    "prompt-management",
+    "prompt-engineering",
+    "prompt-versioning",
+    "prompt-version-control",
+    "prompt-evaluation",
+    "prompt-cli",
+    "local-first",
+    "ai",
+    "llm",
+    "coding-agents"
+  ],
+  "homepage": "https://promptbranch.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PromptBranch/promptbranch.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/PromptBranch/promptbranch/issues"
+  },
   "bin": {
     "promptbranch": "dist/index.js"
   },

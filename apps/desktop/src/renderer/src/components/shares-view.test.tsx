@@ -131,18 +131,34 @@ describe("SharesView", () => {
     expect(bridge.app.openExternal).toHaveBeenCalledWith(activeShare.url);
   });
 
-  it("deletes a share after confirmation", async () => {
+  it("revokes an active share after confirmation", async () => {
     seed(activeShare, revokedShare);
     const user = userEvent.setup();
     renderApp(<SharesView />);
     await screen.findByText("Greeting");
 
-    // Only the active share offers a delete action.
-    expect(screen.getAllByRole("button", { name: /Delete share/ })).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: `Delete share of ${activeShare.promptTitle}` }));
+    await user.click(screen.getByRole("button", { name: `Revoke share of ${activeShare.promptTitle}` }));
     const confirm = await screen.findByRole("alertdialog");
-    await user.click(within(confirm).getByRole("button", { name: "Delete share" }));
+    await user.click(within(confirm).getByRole("button", { name: "Revoke share" }));
     await waitFor(() => expect(bridge.share.delete).toHaveBeenCalledWith(activeShare.snapshotId));
+  });
+
+  it("permanently removes a revoked share after confirmation", async () => {
+    seed(activeShare, revokedShare);
+    const user = userEvent.setup();
+    renderApp(<SharesView />);
+    await screen.findByText("Old prompt");
+
+    await user.click(
+      screen.getByRole("button", { name: `Permanently remove share of ${revokedShare.promptTitle}` }),
+    );
+    const confirm = await screen.findByRole("alertdialog");
+    await user.click(within(confirm).getByRole("button", { name: "Remove permanently" }));
+
+    await waitFor(() =>
+      expect(bridge.share.removeRevoked).toHaveBeenCalledWith(revokedShare.snapshotId),
+    );
+    expect(bridge.share.delete).not.toHaveBeenCalledWith(revokedShare.snapshotId);
   });
 
   it("shows the empty state when nothing is published", async () => {

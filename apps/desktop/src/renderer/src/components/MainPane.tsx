@@ -621,9 +621,18 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
               />
               <button
                 type="button"
-                onClick={() => startRun(modelSelection)}
-                disabled={runModels.isPending}
-                title="Run with selected models"
+                onClick={() => {
+                  if (runModels.isPending) {
+                    setCompare(null);
+                    setLive((current) =>
+                      current ? { ...current, dismissed: false } : current,
+                    );
+                    return;
+                  }
+                  startRun(modelSelection);
+                }}
+                disabled={runModels.isPending && live === null}
+                title={runModels.isPending ? "Open running evaluation" : "Run with selected models"}
                 className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {runModels.isPending ? (

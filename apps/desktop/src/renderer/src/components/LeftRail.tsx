@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BookOpen,
   Clock,
@@ -94,7 +94,7 @@ export function LeftRail({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, setView, selectPrompt, openSettings } = useAppState();
+  const { view, setView, selectPrompt, openSettings, openNewPrompt } = useAppState();
   const { data: tags } = useTags();
   const { data: collections } = useCollections();
   const { data: appInfo } = useAppInfo();
@@ -105,6 +105,27 @@ export function LeftRail({
   const [showAllTags, setShowAllTags] = useState(false);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [collectionDialogOpen, setCollectionDialogOpen] = useState(false);
+  const [collectionMenu, setCollectionMenu] = useState<{
+    collection: { id: string; name: string };
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!collectionMenu) return;
+    const close = () => setCollectionMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [collectionMenu]);
 
   const createTag = useAppMutation((name: string) => window.promptBuilder.tags.create({ name, color: colorForName(name) }), {
     toast: (t) => `Tag "${t.name}" created`,
@@ -212,6 +233,14 @@ export function LeftRail({
                   setView({ kind: "collection", collectionId: c.id, collectionName: c.name });
                   selectPrompt(null);
                 }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setCollectionMenu({
+                    collection: { id: c.id, name: c.name },
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }}
                 className={cx(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] transition-colors",
                   active ? "bg-accent-soft font-medium text-accent" : "text-ink-dim hover:bg-hover hover:text-ink",
@@ -309,6 +338,32 @@ export function LeftRail({
         submitLabel="Create collection"
         onSubmit={(name) => createCollection.mutate(name)}
       />
+      {collectionMenu && (
+        <div
+          role="menu"
+          aria-label={`${collectionMenu.collection.name} actions`}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="pb-menu fixed z-50 w-40 rounded-lg border border-line-strong bg-raised p-1 shadow-xl shadow-black/40"
+          style={{
+            left: Math.max(8, Math.min(collectionMenu.x, window.innerWidth - 168)),
+            top: Math.max(8, Math.min(collectionMenu.y, window.innerHeight - 48)),
+          }}
+        >
+          <button
+            autoFocus
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              openNewPrompt(collectionMenu.collection);
+              setCollectionMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-ink-dim outline-none hover:bg-hover hover:text-ink focus:bg-hover focus:text-ink"
+          >
+            <Plus size={13} />
+            New Prompt
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

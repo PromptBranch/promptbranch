@@ -85,6 +85,7 @@ export const IPC_CHANNELS = {
   sharePublish: "share:publish",
   shareList: "share:list",
   shareDelete: "share:delete",
+  shareRemoveRevoked: "share:remove-revoked",
   sharePortalGet: "share:portal-get",
   sharePortalSet: "share:portal-set",
   shareImportPreview: "share:import-preview",

@@ -28,7 +28,8 @@ export function CommandPalette() {
   const {
     paletteOpen,
     setPaletteOpen,
-    setNewPromptOpen,
+    openNewPrompt,
+    view,
     setView,
     selectPrompt,
     selectedPromptId,
@@ -83,7 +84,11 @@ export function CommandPalette() {
         icon: <Plus size={14} />,
         run: () => {
           close();
-          setNewPromptOpen(true);
+          openNewPrompt(
+            view.kind === "collection" && view.collectionId
+              ? { id: view.collectionId, name: view.collectionName ?? "Collection" }
+              : undefined,
+          );
         },
       },
       {
@@ -139,7 +144,7 @@ export function CommandPalette() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedPromptId],
+    [selectedPromptId, openNewPrompt, view],
   );
 
   const items = useMemo<CommandItem[]>(() => {

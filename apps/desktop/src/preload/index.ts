@@ -83,6 +83,7 @@ const api: PromptBuilderApi = {
     publish: (input) => invoke(IPC_CHANNELS.sharePublish, input),
     list: () => invoke(IPC_CHANNELS.shareList),
     delete: (snapshotId) => invoke(IPC_CHANNELS.shareDelete, { snapshotId }),
+    removeRevoked: (snapshotId) => invoke(IPC_CHANNELS.shareRemoveRevoked, { snapshotId }),
     getPortalBaseUrl: () => invoke(IPC_CHANNELS.sharePortalGet),
     setPortalBaseUrl: (baseUrl) => invoke(IPC_CHANNELS.sharePortalSet, { baseUrl }),
     importPreview: (url) => invoke(IPC_CHANNELS.shareImportPreview, { url }),

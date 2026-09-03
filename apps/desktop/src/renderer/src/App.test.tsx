@@ -3,7 +3,7 @@ import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PropsWithChildren, Ref } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UpdateStateDto } from "../../shared/ipc.js";
+import type { PromptDetail, UpdateStateDto } from "../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "./test/mock-bridge";
 import { renderApp } from "./test/render";
 import App from "./App";
@@ -45,6 +45,22 @@ const AVAILABLE_UPDATE: UpdateStateDto = {
     },
   ],
   errorMessage: null,
+};
+
+const CREATED_PROMPT: PromptDetail = {
+  id: "created-prompt",
+  title: "Inside collection",
+  description: null,
+  icon: null,
+  isStarred: false,
+  versionLabel: "v1",
+  tags: [],
+  createdAt: "2026-09-03T10:00:00.000Z",
+  updatedAt: "2026-09-03T10:00:00.000Z",
+  deletedAt: null,
+  currentVersionId: "version-1",
+  draftContent: null,
+  collectionIds: ["collection-1"],
 };
 
 // The live Electron regression occurs when an imperative expand changes the
@@ -147,6 +163,50 @@ describe("App prompt-list empty states", () => {
 
     expect(await screen.findByText("No matching prompts")).toBeInTheDocument();
     expect(screen.queryByText("Trash is empty")).not.toBeInTheDocument();
+  });
+});
+
+describe("App collection prompt creation", () => {
+  beforeEach(() => {
+    bridge.collections.list.mockResolvedValue([
+      { id: "collection-1", name: "Work", sortOrder: 0, promptCount: 0 },
+    ]);
+    bridge.prompts.create.mockResolvedValue(CREATED_PROMPT);
+  });
+
+  it("creates a prompt in the collection currently being viewed", async () => {
+    const user = userEvent.setup();
+    renderApp(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Work/ }));
+    await user.click(screen.getByRole("button", { name: "New prompt" }));
+    await user.type(await screen.findByLabelText("Title"), "Inside collection");
+    await user.click(screen.getByRole("button", { name: "Create prompt" }));
+
+    expect(bridge.prompts.create).toHaveBeenCalledWith({
+      title: "Inside collection",
+      content: "",
+      collectionId: "collection-1",
+    });
+  });
+
+  it("offers New Prompt when a collection is right-clicked", async () => {
+    const user = userEvent.setup();
+    renderApp(<App />);
+
+    await user.pointer({
+      target: await screen.findByRole("button", { name: /Work/ }),
+      keys: "[MouseRight]",
+    });
+    await user.click(await screen.findByRole("menuitem", { name: "New Prompt" }));
+    await user.type(await screen.findByLabelText("Title"), "Inside collection");
+    await user.click(screen.getByRole("button", { name: "Create prompt" }));
+
+    expect(bridge.prompts.create).toHaveBeenCalledWith({
+      title: "Inside collection",
+      content: "",
+      collectionId: "collection-1",
+    });
   });
 });
 

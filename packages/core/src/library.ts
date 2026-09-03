@@ -253,6 +253,8 @@ export class PromptLibrary {
     tagIds?: string[];
     /** Tag names to resolve or create inside the prompt transaction. */
     tagNames?: string[];
+    /** Collection to attach atomically with the new prompt. */
+    collectionId?: string;
     content: string;
     changeNote?: string;
     /** Optional first note, committed atomically with the prompt. */
@@ -316,6 +318,14 @@ export class PromptLibrary {
 
       for (const tagId of tagIds) {
         this.run("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      }
+
+      if (input.collectionId !== undefined) {
+        this.run(
+          "INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, 0)",
+          input.collectionId,
+          promptId,
+        );
       }
 
       if (input.initialNote !== undefined) {
@@ -967,6 +977,16 @@ export class PromptLibrary {
       now(),
       snapshotId,
     );
+  }
+
+  /** Permanently removes local history only after the portal share was revoked. */
+  removeRevokedSharedSnapshot(snapshotId: string): void {
+    const snapshot = this.getSharedSnapshot(snapshotId);
+    if (!snapshot) throw new Error(`Shared snapshot not found: ${snapshotId}`);
+    if (snapshot.deleted_at === null) {
+      throw new Error("Revoke the share before removing its local record");
+    }
+    this.run("DELETE FROM shared_snapshots WHERE snapshot_id = ?", snapshotId);
   }
 
   // -------------------------------------------------------------- settings

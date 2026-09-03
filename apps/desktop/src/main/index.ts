@@ -655,6 +655,12 @@ function registerIpcHandlers(): void {
     console.log(`[main] revoked shared snapshot ${snapshotId}`);
   });
 
+  ipcMain.handle(IPC_CHANNELS.shareRemoveRevoked, (_e, payload: unknown) => {
+    const { snapshotId } = shareDeleteSchema.parse(payload);
+    lib.removeRevokedSharedSnapshot(snapshotId);
+    console.log(`[main] removed revoked shared snapshot ${snapshotId}`);
+  });
+
   ipcMain.handle(IPC_CHANNELS.sharePortalGet, () => getPortalBaseUrl(shareDeps));
 
   ipcMain.handle(IPC_CHANNELS.sharePortalSet, (_e, payload: unknown) => {

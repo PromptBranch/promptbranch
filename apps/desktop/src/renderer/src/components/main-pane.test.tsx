@@ -222,6 +222,34 @@ describe("MainPane live run progress", () => {
     expect(within(screen.getByRole("dialog")).getByText("fresh output")).toBeInTheDocument();
   });
 
+  it("reopens a dismissed running evaluation and cancels the same run group", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await screen.findByText(/waiting to start/i);
+
+    act(() => {
+      bridge.emitRunProgress({
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(/waiting to start/i)).toBeNull());
+
+    const runningButton = screen.getByRole("button", { name: /running 0\/1/i });
+    expect(runningButton).toBeEnabled();
+    await user.click(runningButton);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(bridge.ai.runCancel).toHaveBeenCalledWith({ runGroupId: "rg-live" }),
+    );
+  });
+
   it("does not re-render the memoized Inspector on streamed deltas", async () => {
     const user = userEvent.setup();
     renderApp(<MainPane prompt={prompt} />);

@@ -2125,6 +2125,34 @@ describe("sync engine", () => {
     expect(a.lib.getSharedSnapshot("V1StGXR8_Z5jdHi6B-myT")?.deleted_at).not.toBeNull();
   });
 
+  it("syncs permanent removal of a revoked share", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Removed share", content: "x" });
+    a.lib.recordSharedSnapshot({
+      snapshotId: "REMOVEXR8_Z5jdHi6B-myT",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/REMOVEXR8_Z5jdHi6B-myT",
+      deleteToken: "remove-token",
+      fullHistory: false,
+      publishedAt: "2026-09-03T00:00:00.000Z",
+    });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.markSharedSnapshotDeleted("REMOVEXR8_Z5jdHi6B-myT");
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+    a.lib.removeRevokedSharedSnapshot("REMOVEXR8_Z5jdHi6B-myT");
+    a.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 2; round++) syncBoth(a, b);
+
+    expect(a.lib.getSharedSnapshot("REMOVEXR8_Z5jdHi6B-myT")).toBeNull();
+    expect(b.lib.getSharedSnapshot("REMOVEXR8_Z5jdHi6B-myT")).toBeNull();
+  });
+
   it("keeps the share revocable when its prompt is hard-deleted elsewhere", () => {
     const a = rig();
     const b = rig();

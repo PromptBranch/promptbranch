@@ -221,6 +221,29 @@ describe("tags and collections", () => {
     lib.removePromptFromCollection(collection.id, p1.id);
     expect(lib.listCollections()[0]!.prompt_count).toBe(1);
   });
+
+  it("creates a prompt directly inside a collection", () => {
+    const collection = lib.createCollection({ name: "Favorites" });
+
+    const prompt = lib.createPrompt({
+      title: "Collected prompt",
+      content: "x",
+      collectionId: collection.id,
+    });
+
+    expect(lib.listCollectionIdsForPrompt(prompt.id)).toEqual([collection.id]);
+    expect(lib.listPrompts({ collectionId: collection.id }).map((row) => row.id)).toEqual([
+      prompt.id,
+    ]);
+  });
+
+  it("rolls back prompt creation when its collection does not exist", () => {
+    expect(() =>
+      lib.createPrompt({ title: "Orphan", content: "x", collectionId: "missing" }),
+    ).toThrow();
+
+    expect(lib.listPrompts()).toEqual([]);
+  });
 });
 
 describe("ratings", () => {

@@ -25,7 +25,15 @@ function portalHost(url: string): string {
   }
 }
 
-function ShareRow({ share, onDelete }: { share: SharedSnapshotDto; onDelete: (share: SharedSnapshotDto) => void }) {
+function ShareRow({
+  share,
+  onDelete,
+  onRemove,
+}: {
+  share: SharedSnapshotDto;
+  onDelete: (share: SharedSnapshotDto) => void;
+  onRemove: (share: SharedSnapshotDto) => void;
+}) {
   const { toast } = useToast();
   const { selectPrompt, setView } = useAppState();
   const revoked = share.deletedAt !== null;
@@ -108,8 +116,18 @@ function ShareRow({ share, onDelete }: { share: SharedSnapshotDto; onDelete: (sh
         {!revoked && (
           <button
             type="button"
-            aria-label={`Delete share of ${share.promptTitle}`}
+            aria-label={`Revoke share of ${share.promptTitle}`}
             onClick={() => onDelete(share)}
+            className={cx(iconButtonClass, "hover:text-danger")}
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+        {revoked && (
+          <button
+            type="button"
+            aria-label={`Permanently remove share of ${share.promptTitle}`}
+            onClick={() => onRemove(share)}
             className={cx(iconButtonClass, "hover:text-danger")}
           >
             <Trash2 size={12} />
@@ -132,10 +150,15 @@ export function SharesView() {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("recent");
   const [deleteTarget, setDeleteTarget] = useState<SharedSnapshotDto | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<SharedSnapshotDto | null>(null);
 
   const deleteShare = useAppMutation(
     (snapshotId: string) => window.promptBuilder.share.delete(snapshotId),
-    { toast: "Share deleted" },
+    { toast: "Share revoked" },
+  );
+  const removeRevokedShare = useAppMutation(
+    (snapshotId: string) => window.promptBuilder.share.removeRevoked(snapshotId),
+    { toast: "Share removed" },
   );
 
   const all = shares ?? [];
@@ -235,7 +258,12 @@ export function SharesView() {
         )}
         <ul className="space-y-2">
           {visible.map((share) => (
-            <ShareRow key={share.snapshotId} share={share} onDelete={setDeleteTarget} />
+            <ShareRow
+              key={share.snapshotId}
+              share={share}
+              onDelete={setDeleteTarget}
+              onRemove={setRemoveTarget}
+            />
           ))}
         </ul>
         {!isLoading && all.length === 0 && (
@@ -251,13 +279,27 @@ export function SharesView() {
         onOpenChange={(next) => {
           if (!next) setDeleteTarget(null);
         }}
-        title={`Delete the share of "${deleteTarget?.promptTitle}"?`}
-        description="The snapshot is deleted on the portal (its link stops working) and the local record is marked as revoked. This cannot be undone."
-        confirmLabel="Delete share"
+        title={`Revoke the share of "${deleteTarget?.promptTitle}"?`}
+        description="The snapshot is deleted on the portal, its link stops working, and the local entry is marked as revoked. This cannot be undone."
+        confirmLabel="Revoke share"
         danger
         onConfirm={() => {
           if (deleteTarget) deleteShare.mutate(deleteTarget.snapshotId);
           setDeleteTarget(null);
+        }}
+      />
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onOpenChange={(next) => {
+          if (!next) setRemoveTarget(null);
+        }}
+        title={`Remove the revoked share of "${removeTarget?.promptTitle}"?`}
+        description="This permanently removes the revoked entry from this library. The public link is already disabled."
+        confirmLabel="Remove permanently"
+        danger
+        onConfirm={() => {
+          if (removeTarget) removeRevokedShare.mutate(removeTarget.snapshotId);
+          setRemoveTarget(null);
         }}
       />
     </div>

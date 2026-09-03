@@ -178,6 +178,7 @@ export function createMockBridge(): MockBridge {
       publish: vi.fn(notStubbed),
       list: vi.fn(async () => []),
       delete: vi.fn(async () => {}),
+      removeRevoked: vi.fn(async () => {}),
       getPortalBaseUrl: vi.fn(async () => "https://promptbranch.app"),
       setPortalBaseUrl: vi.fn(async () => "https://promptbranch.app"),
       importPreview: vi.fn(notStubbed),

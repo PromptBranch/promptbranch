@@ -253,8 +253,15 @@ export function PromptListPane({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, listSearch, setListSearch, setNewPromptOpen, filters } = useAppState();
+  const { view, listSearch, setListSearch, openNewPrompt, filters } = useAppState();
   const { data: prompts, isLoading } = usePromptList();
+
+  const createPrompt = () =>
+    openNewPrompt(
+      view.kind === "collection" && view.collectionId
+        ? { id: view.collectionId, name: view.collectionName ?? "Collection" }
+        : undefined,
+    );
 
   const filtered = useMemo(() => {
     const list = prompts ?? [];
@@ -296,7 +303,7 @@ export function PromptListPane({
         </button>
         <button
           type="button"
-          onClick={() => setNewPromptOpen(true)}
+          onClick={createPrompt}
           title="New prompt"
           aria-label="New prompt"
           className="flex h-7 w-7 items-center justify-center rounded-md text-ink-dim transition-colors hover:bg-hover hover:text-ink"
@@ -316,7 +323,7 @@ export function PromptListPane({
             {view.kind === "library" && <FilterPopover />}
             <button
               type="button"
-              onClick={() => setNewPromptOpen(true)}
+              onClick={createPrompt}
               className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-strong"
               aria-label="New prompt"
             >

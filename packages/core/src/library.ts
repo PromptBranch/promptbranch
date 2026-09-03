@@ -1686,7 +1686,7 @@ export class PromptLibrary {
       }
 
       for (const version of data.tables.versions) {
-        const id = claimId(
+        claimId(
           "versions",
           version.id,
           `WITH candidate(id) AS (VALUES (?))
@@ -1701,6 +1701,10 @@ export class PromptLibrary {
                 WHERE table_name = 'versions' AND record_id = candidate.id
               )`,
         );
+      }
+
+      for (const version of data.tables.versions) {
+        const id = idMaps.versions.get(version.id)!;
         this.run(
           `INSERT INTO versions
              (id, prompt_id, branch_id, parent_version_id, number, label, content, content_format, change_note, author, status, source, created_at)
@@ -1708,7 +1712,7 @@ export class PromptLibrary {
           id,
           remap("prompts", version.prompt_id),
           remap("branches", version.branch_id),
-          remap("versions", version.parent_version_id),
+          null,
           version.number,
           version.label,
           version.content,
@@ -1719,6 +1723,15 @@ export class PromptLibrary {
           version.status ?? "active",
           version.source ?? "user",
           version.created_at,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        if (!version.parent_version_id) continue;
+        this.run(
+          "UPDATE versions SET parent_version_id = ? WHERE id = ?",
+          remap("versions", version.parent_version_id),
+          idMaps.versions.get(version.id),
         );
       }
 

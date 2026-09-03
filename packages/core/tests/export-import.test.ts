@@ -187,6 +187,28 @@ describe("export/import", () => {
     expect(hits.has(clone.id)).toBe(true);
   });
 
+  it("remaps colliding version parents when children appear first", () => {
+    const prompt = lib.createPrompt({ title: "Child first", content: "v1" });
+    const branch = lib.listBranches(prompt.id)[0]!;
+    const v2 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "v2",
+    });
+    const originalParentId = v2.parent_version_id!;
+    const exported = JSON.parse(JSON.stringify(lib.exportLibrary())) as LibraryExport;
+    exported.tables.versions.reverse();
+
+    lib.importLibrary(exported);
+
+    const clone = lib.listPrompts().find((row) => row.id !== prompt.id)!;
+    const cloneVersions = lib.listVersions(clone.id);
+    const cloneV1 = cloneVersions.find((version) => version.number === 1)!;
+    const cloneV2 = cloneVersions.find((version) => version.number === 2)!;
+    expect(cloneV2.parent_version_id).toBe(cloneV1.id);
+    expect(cloneV2.parent_version_id).not.toBe(originalParentId);
+  });
+
   it("remaps a prompt id that was previously hard-deleted on this device", () => {
     const sourceDb = openMemoryDatabase();
     const sourceLib = new PromptLibrary(sourceDb);

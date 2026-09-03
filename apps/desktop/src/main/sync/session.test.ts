@@ -166,30 +166,35 @@ describe("sync session", () => {
   });
 
   it("converges when tiny junctions exceed the per-frame op cap", async () => {
-    // 4,600 junction ops fit well under the 1 MB byte budget but exceed the
-    // protocol's 5,000-op frame limit — the exact scenario where an uncapped
-    // serve() emitted a frame the receiver silently dropped, forever.
+    // The tags and junctions fit well under the 1 MB byte budget but together
+    // exceed the protocol's 5,000-op frame limit — the exact scenario where
+    // an uncapped serve() emitted a frame the receiver silently dropped.
     const a = rig();
     const b = rig();
     const prompt = a.lib.createPrompt({ title: "Flood", content: "x" });
-    const tags = Array.from({ length: 4_600 }, (_, i) =>
-      a.db.prepare("INSERT INTO tags (id, name) VALUES (?, ?)").run(crypto.randomUUID(), `tag-${i}`),
+    const insertTag = a.db.prepare("INSERT INTO tags (id, name) VALUES (?, ?)");
+    const insertPromptTag = a.db.prepare(
+      "INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)",
     );
-    void tags;
-    for (const tag of a.lib.listTags()) {
-      a.db.prepare("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)").run(
-        prompt.id,
-        tag.id,
-      );
-    }
+    a.db.transaction(() => {
+      const tagIds: string[] = [];
+      for (let i = 0; i < 2_600; i += 1) {
+        const tagId = crypto.randomUUID();
+        tagIds.push(tagId);
+        insertTag.run(tagId, `tag-${i}`);
+      }
+      for (const tagId of tagIds) {
+        insertPromptTag.run(prompt.id, tagId);
+      }
+    })();
     a.engine.refineDirty();
-    expect(a.engine.opsSince({}, 10_000_000).ops.length).toBeGreaterThan(4_500);
+    expect(a.engine.opsSince({}, 10_000_000).ops.length).toBeGreaterThan(5_000);
 
     const [sessionA, sessionB] = sessionPair(a, b);
     await vi.waitFor(() => expect(sessionA.currentState).toBe("steady"), { timeout: 15_000 });
     await vi.waitFor(() => expect(sessionB.currentState).toBe("steady"), { timeout: 15_000 });
 
-    expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(4_600);
+    expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(2_600);
     sessionA.close();
     sessionB.close();
   }, 20_000);

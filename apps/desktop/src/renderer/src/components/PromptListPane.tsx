@@ -1,11 +1,33 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
-import { ArrowDownWideNarrow, Check, FileText, PanelLeftClose, PanelLeftOpen, Plus, Search, SlidersHorizontal, Star, Trash2 } from "lucide-react";
-import type { PromptSummary, SortKey } from "../../../shared/ipc.js";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowDownWideNarrow,
+  Check,
+  Download,
+  FileText,
+  FolderInput,
+  FolderMinus,
+  GitFork,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Search,
+  SlidersHorizontal,
+  Star,
+  Trash2,
+} from "lucide-react";
+import type { PromptDetail, PromptSummary, SortKey } from "../../../shared/ipc.js";
 import { useAppMutation, useCollections, usePromptList, useTags } from "../hooks/use-data";
+import { userErrorMessage } from "../lib/errors";
 import { cx, relativeTime } from "../lib/time";
+import { useToast } from "../lib/toast";
 import { useAppState, EMPTY_FILTERS } from "../state/app-state";
+import { ConfirmDialog, DuplicateBranchDialog, NameDialog } from "./dialogs";
+import { MoveToCollectionDialog } from "./MoveToCollectionDialog";
 import { colorForName, EmptyState, Spinner, TagChip } from "./ui";
 
 const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
@@ -182,7 +204,13 @@ function SortDropdown() {
   );
 }
 
-function PromptCard({ prompt }: { prompt: PromptSummary }) {
+function PromptCard({
+  prompt,
+  onContextMenu,
+}: {
+  prompt: PromptSummary;
+  onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
   const { selectedPromptId, selectPrompt } = useAppState();
   const setStarred = useAppMutation(
     (starred: boolean) => window.promptBuilder.prompts.setStarred(prompt.id, starred),
@@ -194,6 +222,7 @@ function PromptCard({ prompt }: { prompt: PromptSummary }) {
     <button
       type="button"
       onClick={() => selectPrompt(prompt.id)}
+      onContextMenu={onContextMenu}
       className={cx(
         "group relative w-full rounded-lg border bg-panel p-3 text-left transition-colors",
         selected
@@ -246,6 +275,38 @@ function PromptCard({ prompt }: { prompt: PromptSummary }) {
   );
 }
 
+function PromptMenuItem({
+  icon,
+  label,
+  danger,
+  autoFocus,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  danger?: boolean;
+  autoFocus?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      autoFocus={autoFocus}
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={cx(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] outline-none",
+        danger
+          ? "text-danger hover:bg-danger-soft focus:bg-danger-soft"
+          : "text-ink-dim hover:bg-hover hover:text-ink focus:bg-hover focus:text-ink",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 export function PromptListPane({
   collapsed = false,
   onToggleCollapse,
@@ -253,8 +314,96 @@ export function PromptListPane({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, listSearch, setListSearch, openNewPrompt, filters } = useAppState();
+  const { view, listSearch, setListSearch, openNewPrompt, filters, selectPrompt } = useAppState();
   const { data: prompts, isLoading } = usePromptList();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [contextMenu, setContextMenu] = useState<{
+    prompt: PromptSummary;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<PromptSummary | null>(null);
+  const [moveTarget, setMoveTarget] = useState<PromptDetail | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<PromptDetail | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PromptSummary | null>(null);
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<PromptSummary | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [contextMenu]);
+
+  const setStarred = useAppMutation(
+    ({ promptId, starred }: { promptId: string; starred: boolean }) =>
+      window.promptBuilder.prompts.setStarred(promptId, starred),
+    { quiet: true },
+  );
+  const rename = useAppMutation(
+    ({ promptId, title }: { promptId: string; title: string }) =>
+      window.promptBuilder.prompts.update(promptId, { title }),
+    { toast: "Prompt renamed" },
+  );
+  const exportPrompt = useAppMutation(
+    (promptId: string) => window.promptBuilder.prompts.exportJson(promptId),
+    { toast: (result) => (result.canceled ? "Export canceled" : `Exported to ${result.path}`) },
+  );
+  const softDelete = useAppMutation(
+    (promptId: string) => window.promptBuilder.prompts.softDelete(promptId),
+    { toast: "Moved to Trash", onSuccess: () => selectPrompt(null) },
+  );
+  const restore = useAppMutation(
+    (promptId: string) => window.promptBuilder.prompts.restore(promptId),
+    { toast: "Prompt restored" },
+  );
+  const hardDelete = useAppMutation(
+    (promptId: string) => window.promptBuilder.prompts.hardDelete(promptId),
+    { toast: "Prompt permanently deleted", onSuccess: () => selectPrompt(null) },
+  );
+  const removeFromCollection = useAppMutation(
+    ({ collectionId, promptId }: { collectionId: string; promptId: string }) =>
+      window.promptBuilder.collections.removePrompt(collectionId, promptId),
+    { toast: "Removed from collection" },
+  );
+
+  const loadPrompt = async (
+    summary: PromptSummary,
+    usePrompt: (prompt: PromptDetail) => void,
+  ) => {
+    try {
+      const prompt = await window.promptBuilder.prompts.get(summary.id);
+      if (!prompt) throw new Error("Prompt not found");
+      usePrompt(prompt);
+    } catch (error) {
+      toast(userErrorMessage(error), "error");
+    }
+  };
+
+  const duplicateAsVariation = async (name: string, description: string) => {
+    const prompt = duplicateTarget;
+    if (!prompt?.currentVersionId) throw new Error("This prompt has no current version to duplicate");
+    const result = await window.promptBuilder.branches.create({
+      promptId: prompt.id,
+      name,
+      fromVersionId: prompt.currentVersionId,
+      ...(description ? { description } : {}),
+    });
+    await window.promptBuilder.versions.setCurrent(prompt.id, result.version.id);
+    await queryClient.invalidateQueries();
+    void window.promptBuilder.sync.now().catch(() => undefined);
+    toast(`Variation "${name}" created`);
+  };
 
   const createPrompt = () =>
     openNewPrompt(
@@ -386,9 +535,184 @@ export function PromptListPane({
           />
         )}
         {filtered.map((prompt) => (
-          <PromptCard key={prompt.id} prompt={prompt} />
+          <PromptCard
+            key={prompt.id}
+            prompt={prompt}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              selectPrompt(prompt.id);
+              setContextMenu({ prompt, x: event.clientX, y: event.clientY });
+            }}
+          />
         ))}
       </div>
+
+      {contextMenu && (
+        <div
+          role="menu"
+          aria-label={`${contextMenu.prompt.title} actions`}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="pb-menu fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-1 shadow-xl shadow-black/40"
+          style={{
+            left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 264)),
+            top: Math.max(
+              8,
+              Math.min(contextMenu.y, window.innerHeight - (view.kind === "trash" ? 88 : 304)),
+            ),
+          }}
+        >
+          {view.kind === "trash" ? (
+            <>
+              <PromptMenuItem
+                autoFocus
+                icon={<RotateCcw size={13} />}
+                label="Restore"
+                onClick={() => {
+                  restore.mutate(contextMenu.prompt.id);
+                  setContextMenu(null);
+                }}
+              />
+              <div className="my-1 h-px bg-line" />
+              <PromptMenuItem
+                icon={<Trash2 size={13} />}
+                label="Delete permanently"
+                danger
+                onClick={() => {
+                  setHardDeleteTarget(contextMenu.prompt);
+                  setContextMenu(null);
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <PromptMenuItem
+                autoFocus
+                icon={<Star size={13} />}
+                label={contextMenu.prompt.isStarred ? "Unstar" : "Star"}
+                onClick={() => {
+                  setStarred.mutate({
+                    promptId: contextMenu.prompt.id,
+                    starred: !contextMenu.prompt.isStarred,
+                  });
+                  setContextMenu(null);
+                }}
+              />
+              <PromptMenuItem
+                icon={<Pencil size={13} />}
+                label="Rename"
+                onClick={() => {
+                  setRenameTarget(contextMenu.prompt);
+                  setContextMenu(null);
+                }}
+              />
+              <PromptMenuItem
+                icon={<FolderInput size={13} />}
+                label="Move to collection…"
+                onClick={() => {
+                  void loadPrompt(contextMenu.prompt, setMoveTarget);
+                  setContextMenu(null);
+                }}
+              />
+              {view.kind === "collection" && view.collectionId && (
+                <PromptMenuItem
+                  icon={<FolderMinus size={13} />}
+                  label="Remove from this collection"
+                  onClick={() => {
+                    removeFromCollection.mutate({
+                      collectionId: view.collectionId!,
+                      promptId: contextMenu.prompt.id,
+                    });
+                    setContextMenu(null);
+                  }}
+                />
+              )}
+              <PromptMenuItem
+                icon={<GitFork size={13} />}
+                label="Duplicate current version as variation…"
+                onClick={() => {
+                  void loadPrompt(contextMenu.prompt, setDuplicateTarget);
+                  setContextMenu(null);
+                }}
+              />
+              <PromptMenuItem
+                icon={<Download size={13} />}
+                label="Export prompt JSON"
+                onClick={() => {
+                  exportPrompt.mutate(contextMenu.prompt.id);
+                  setContextMenu(null);
+                }}
+              />
+              <div className="my-1 h-px bg-line" />
+              <PromptMenuItem
+                icon={<Trash2 size={13} />}
+                label="Delete"
+                danger
+                onClick={() => {
+                  setDeleteTarget(contextMenu.prompt);
+                  setContextMenu(null);
+                }}
+              />
+            </>
+          )}
+        </div>
+      )}
+
+      <NameDialog
+        open={renameTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenameTarget(null);
+        }}
+        title="Rename prompt"
+        label="Title"
+        initialValue={renameTarget?.title ?? ""}
+        submitLabel="Rename"
+        onSubmit={(title) => {
+          if (renameTarget) rename.mutate({ promptId: renameTarget.id, title });
+        }}
+      />
+      {moveTarget && (
+        <MoveToCollectionDialog
+          prompt={moveTarget}
+          open
+          onOpenChange={(open) => {
+            if (!open) setMoveTarget(null);
+          }}
+        />
+      )}
+      <DuplicateBranchDialog
+        open={duplicateTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDuplicateTarget(null);
+        }}
+        sourceLabel={duplicateTarget?.versionLabel ?? "current version"}
+        onSubmit={duplicateAsVariation}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title={`Delete “${deleteTarget?.title ?? "prompt"}”?`}
+        description="The prompt moves to Trash with its full history. You can restore it from there."
+        confirmLabel="Move to Trash"
+        danger
+        onConfirm={() => {
+          if (deleteTarget) softDelete.mutate(deleteTarget.id);
+        }}
+      />
+      <ConfirmDialog
+        open={hardDeleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setHardDeleteTarget(null);
+        }}
+        title={`Permanently delete “${hardDeleteTarget?.title ?? "prompt"}”?`}
+        description="All versions, notes, ratings and runs are removed. This cannot be undone."
+        confirmLabel="Delete permanently"
+        danger
+        onConfirm={() => {
+          if (hardDeleteTarget) hardDelete.mutate(hardDeleteTarget.id);
+        }}
+      />
     </section>
   );
 }

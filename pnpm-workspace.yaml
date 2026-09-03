@@ -7,6 +7,9 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   sharp: false
+overrides:
+  fast-uri: 3.1.6
+  qs: 6.16.0
 minimumReleaseAgeExclude:
   - '@ai-sdk/anthropic@3.0.112'
   - '@ai-sdk/gateway@3.0.180'

@@ -251,11 +251,35 @@ export class PromptLibrary {
     icon?: string;
     /** Existing tag ids to attach. */
     tagIds?: string[];
+    /** Tag names to resolve or create inside the prompt transaction. */
+    tagNames?: string[];
     content: string;
     changeNote?: string;
+    /** Optional first note, committed atomically with the prompt. */
+    initialNote?: string;
   }): PromptRow {
     if (!input.title.trim()) throw new Error("Prompt title must not be empty");
+    if (input.initialNote !== undefined && !input.initialNote.trim()) {
+      throw new Error("Note body must not be empty");
+    }
     return this.db.transaction((): PromptRow => {
+      const tagIds = new Set(input.tagIds ?? []);
+      const tagsByName = new Map<string, string>();
+      for (const tag of this.all<TagRow>("SELECT * FROM tags ORDER BY rowid")) {
+        const key = tag.name.toLowerCase();
+        if (!tagsByName.has(key)) tagsByName.set(key, tag.id);
+      }
+      for (const name of input.tagNames ?? []) {
+        if (!name.trim()) throw new Error("Tag name must not be empty");
+        const key = name.toLowerCase();
+        let tagId = tagsByName.get(key);
+        if (!tagId) {
+          tagId = this.createTag({ name }).id;
+          tagsByName.set(key, tagId);
+        }
+        tagIds.add(tagId);
+      }
+
       const ts = now();
       const promptId = randomUUID();
       this.run(
@@ -290,8 +314,18 @@ export class PromptLibrary {
       );
       this.run("UPDATE prompts SET current_version_id = ? WHERE id = ?", versionId, promptId);
 
-      for (const tagId of input.tagIds ?? []) {
+      for (const tagId of tagIds) {
         this.run("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      }
+
+      if (input.initialNote !== undefined) {
+        this.run(
+          "INSERT INTO notes (id, prompt_id, version_id, body, created_at) VALUES (?, ?, NULL, ?, ?)",
+          randomUUID(),
+          promptId,
+          input.initialNote,
+          ts,
+        );
       }
 
       this.reindexPrompt(promptId);

@@ -460,4 +460,38 @@ describe("importSnapshot", () => {
     const { title } = importSnapshot(makeDeps(lib), importPreviewResponse);
     expect(title).toBe("security-audit (imported)");
   });
+
+  it("deduplicates snapshot tags case-insensitively", () => {
+    const { lib } = setup();
+    const preview = {
+      ...importPreviewResponse,
+      snapshot: {
+        ...importPreviewResponse.snapshot,
+        tags: ["Security", "security"],
+      },
+    };
+
+    const { promptId } = importSnapshot(makeDeps(lib), preview);
+
+    expect(lib.listTagsForPrompt(promptId).map((tag) => tag.name)).toEqual(["Security"]);
+    expect(lib.listTags().filter((tag) => tag.name.toLowerCase() === "security")).toHaveLength(1);
+  });
+
+  it("rolls back new tags when prompt creation fails", () => {
+    const { db, lib } = setup();
+    db.exec(`
+      CREATE TRIGGER abort_snapshot_import
+      BEFORE INSERT ON prompts
+      WHEN NEW.title = 'security-audit'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced prompt failure');
+      END
+    `);
+    const before = lib.listTags().map((tag) => tag.name);
+
+    expect(() => importSnapshot(makeDeps(lib), importPreviewResponse)).toThrow(
+      /forced prompt failure/,
+    );
+    expect(lib.listTags().map((tag) => tag.name)).toEqual(before);
+  });
 });

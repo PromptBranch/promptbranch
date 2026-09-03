@@ -122,6 +122,32 @@ describe("sync engine", () => {
     expect(b.engine.pendingDirty()).toBe(0);
   });
 
+  it("propagates content committed into an empty version 1 placeholder", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Drafted prompt", content: "" });
+    const branch = a.lib.listBranches(prompt.id)[0]!;
+    const v1Id = prompt.current_version_id!;
+
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    expect(b.lib.getVersion(v1Id)?.content).toBe("");
+
+    const saved = a.lib.createVersion({
+      promptId: prompt.id,
+      branchId: branch.id,
+      content: "First committed sync content",
+    });
+    expect(saved.id).toBe(v1Id);
+
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+
+    expect(b.lib.getVersion(v1Id)?.content).toBe("First committed sync content");
+    expect(b.lib.listVersions(prompt.id)).toHaveLength(1);
+    expect(b.lib.search("sync content").map((result) => result.promptId)).toEqual([prompt.id]);
+  });
+
   it("syncs provider model ids that contain the composite-key delimiter", () => {
     const a = rig();
     const b = rig();

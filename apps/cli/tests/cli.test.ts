@@ -11,6 +11,11 @@ import { openDatabase, PromptLibrary } from "@promptbranch/core";
  */
 
 const CLI = path.join(import.meta.dirname, "..", "dist", "index.js");
+const CLI_PACKAGE_VERSION = (
+  JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 
 let tmpDir: string;
 let dbPath: string;
@@ -56,6 +61,16 @@ afterAll(() => {
 });
 
 describe("promptbranch cli", () => {
+  it("--version reports the package version without creating a database", () => {
+    const versionOnlyDb = path.join(tmpDir, "version-only", "library.db");
+    const result = runWithDb(["--version"], versionOnlyDb);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`promptbranch-cli/${CLI_PACKAGE_VERSION}\n`);
+    expect(result.stderr).toBe("");
+    expect(fs.existsSync(versionOnlyDb)).toBe(false);
+  });
+
   it("db-path is side-effect free and emits valid JSON when requested", () => {
     const pathOnlyDb = path.join(tmpDir, "path-only", "library.db");
 

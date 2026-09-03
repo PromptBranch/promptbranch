@@ -91,6 +91,32 @@ beforeEach(() => {
 });
 
 describe("EditorTab draft durability", () => {
+  it("presents the first save of an empty placeholder as version 1", async () => {
+    const firstContent = "First committed prompt content";
+    const emptyV1 = { ...versionA, content: "" };
+    const savedV1: VersionContentDto = { ...emptyV1, content: firstContent };
+    bridge.versions.create.mockResolvedValue(savedV1);
+    renderApp(
+      <EditorTab
+        prompt={{ ...promptA, draftContent: firstContent }}
+        version={emptyV1}
+        isCurrent
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save version 1" }));
+    expect(await screen.findByText("Save as v1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+
+    await waitFor(() =>
+      expect(bridge.versions.create).toHaveBeenCalledWith({
+        promptId: promptA.id,
+        branchId: versionA.branchId,
+        content: firstContent,
+      }),
+    );
+  });
+
   it("revisits the successfully saved draft from cached prompt data after A to B to A navigation", async () => {
     const queryClient = createTestQueryClient();
     queryClient.setQueryDefaults(qk.prompt(promptA.id), { gcTime: Infinity });

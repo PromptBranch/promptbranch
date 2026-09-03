@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import packageJson from "../package.json" with { type: "json" };
 import {
   openDatabase,
   PromptLibrary,
@@ -43,6 +44,7 @@ Usage:
 
 Global flags:
   --json    Machine-readable JSON output
+  --version Print the CLI package version
 
 Database: ${resolveDatabasePath()}
 (override with the PROMPTBRANCH_DB environment variable)
@@ -70,8 +72,7 @@ function currentVersionLabel(lib: PromptLibrary, prompt: PromptRow): string | nu
   }
 }
 
-/** CLI builds are versioned with the app; keep in sync with package.json. */
-const CLI_APP_VERSION = "promptbranch-cli/0.1.0";
+const CLI_APP_VERSION = `promptbranch-cli/${packageJson.version}`;
 
 /** --portal flag wins; then the library setting; then the official instance. */
 function portalBaseUrl(lib: PromptLibrary, flag: string | undefined): string {
@@ -182,6 +183,11 @@ async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(USAGE);
+    return;
+  }
+
+  if (command === "--version") {
+    process.stdout.write(`${CLI_APP_VERSION}\n`);
     return;
   }
 

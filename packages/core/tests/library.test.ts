@@ -80,6 +80,37 @@ describe("prompts", () => {
 });
 
 describe("versions", () => {
+  it("commits the first non-empty save into an empty version 1 placeholder", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const v1Id = prompt.current_version_id!;
+
+    const saved = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "first committed content",
+      changeNote: "initial prompt",
+    });
+
+    expect(saved.id).toBe(v1Id);
+    expect(saved.number).toBe(1);
+    expect(saved.parent_version_id).toBeNull();
+    expect(saved.content).toBe("first committed content");
+    expect(saved.change_note).toBe("initial prompt");
+    expect(lib.listVersions(prompt.id)).toHaveLength(1);
+    expect(lib.getPrompt(prompt.id)!.current_version_id).toBe(v1Id);
+    expect(lib.search("committed content").map((result) => result.promptId)).toEqual([prompt.id]);
+
+    const v2 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "second committed content",
+    });
+    expect(v2.number).toBe(2);
+    expect(v2.parent_version_id).toBe(v1Id);
+    expect(lib.listVersions(prompt.id)).toHaveLength(2);
+  });
+
   it("auto-increments per-branch numbers, updates current pointer and stores change notes", () => {
     const prompt = lib.createPrompt({ title: "P", content: "v1 content" });
     const main = lib.listBranches(prompt.id)[0]!;

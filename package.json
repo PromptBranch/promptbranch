@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:npm-packages": "node scripts/test/npm-package-smoke.mjs",
     "notices": "node scripts/generate-notices.mjs",
     "license-check": "node scripts/check-licenses.mjs",
     "typecheck": "pnpm -r typecheck",

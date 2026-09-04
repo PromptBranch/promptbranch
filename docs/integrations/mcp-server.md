@@ -19,15 +19,15 @@ Configure a stdio server with this command:
   "mcpServers": {
     "promptbranch": {
       "command": "npx",
-      "args": ["-y", "@promptbranch/mcp"]
+      "args": ["-y", "@promptbranch/mcp@latest"]
     }
   }
 }
 ```
 
 For an agent harness with separate command and argument fields, use `npx` as
-the command and `-y`, `@promptbranch/mcp` as the arguments. Restart or reload
-the client after saving its configuration.
+the command and `-y`, `@promptbranch/mcp@latest` as the arguments. Restart or
+reload the client after saving its configuration.
 
 To connect a client to a different library, set `PROMPTBRANCH_DB` in that
 client's MCP environment. See [configuration](../reference/configuration-and-env.md).

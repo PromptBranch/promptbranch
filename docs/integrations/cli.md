@@ -7,13 +7,13 @@ It requires **Node.js 22** or later.
 Run a command without installing anything globally:
 
 ```bash
-npx -y @promptbranch/cli db-path
+npx -y @promptbranch/cli@latest db-path
 ```
 
 Or install the package globally so the examples below work with the shorter command:
 
 ```bash
-npm install --global @promptbranch/cli
+npm install --global @promptbranch/cli@latest
 ```
 
 ---

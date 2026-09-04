@@ -108,7 +108,7 @@ at it with this configuration:
   "mcpServers": {
     "promptbranch": {
       "command": "npx",
-      "args": ["-y", "@promptbranch/mcp"]
+      "args": ["-y", "@promptbranch/mcp@latest"]
     }
   }
 }
@@ -123,9 +123,10 @@ your human to open the Suggestions view to review it.
 ### CLI
 
 The CLI provides the same surface for shell pipelines. Run the public package
-without a global install as `npx -y @promptbranch/cli`, or install it globally
-to use the shorter `promptbranch` command. All commands accept `--json` for
-machine-readable output:
+without a global install as `npx -y @promptbranch/cli@latest`, or install it
+globally with `npm install -g @promptbranch/cli@latest` to use the shorter
+`promptbranch` command. All commands accept `--json` for machine-readable
+output:
 
 ```sh
 promptbranch list --tag security

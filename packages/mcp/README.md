@@ -28,7 +28,7 @@ Add the stdio server to any MCP client that supports a command and arguments:
   "mcpServers": {
     "promptbranch": {
       "command": "npx",
-      "args": ["-y", "@promptbranch/mcp"]
+      "args": ["-y", "@promptbranch/mcp@latest"]
     }
   }
 }
@@ -38,7 +38,7 @@ This works with MCP-capable tools such as Claude Desktop, Cursor, Windsurf,
 Cline, and other agent harnesses. The package can also be installed globally:
 
 ```sh
-npm install --global @promptbranch/mcp
+npm install --global @promptbranch/mcp@latest
 ```
 
 ## Tools

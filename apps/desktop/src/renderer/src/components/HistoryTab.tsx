@@ -129,7 +129,16 @@ export function HistoryTab({
                           )}
                           <span className="text-[11px] text-ink-faint">{relativeTime(version.createdAt)}</span>
                         </div>
-                        <div className="flex shrink-0 flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                        <div
+                          className="items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
+                          style={{
+                            display: "flex",
+                            width: "100%",
+                            minWidth: 0,
+                            maxWidth: "100%",
+                            flexWrap: "wrap",
+                          }}
+                        >
                           <button
                             type="button"
                             onClick={() => onView(version.id)}

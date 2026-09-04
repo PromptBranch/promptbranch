@@ -1,5 +1,16 @@
-import { useState } from "react";
-import { Eye, GitBranch, GitCompare, GitFork, History, RotateCcw, Star } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Copy,
+  Eye,
+  GitBranch,
+  GitCompare,
+  GitFork,
+  History,
+  Pencil,
+  RotateCcw,
+  Star,
+  Trash2,
+} from "lucide-react";
 import type { PromptDetail, VersionDto } from "../../../shared/ipc.js";
 import { useAppMutation, useVersionRatingSummaries } from "../hooks/use-data";
 import { cx, relativeTime } from "../lib/time";
@@ -13,17 +24,29 @@ export function HistoryTab({
   onView,
   onCompare,
   onDuplicate,
+  onDuplicateAsPrompt,
+  onRename,
+  onDelete,
 }: {
   prompt: PromptDetail;
   versions: VersionDto[];
   onView: (versionId: string) => void;
   onCompare: (base: VersionDto, other: VersionDto) => void;
   onDuplicate: (version: VersionDto) => void;
+  onDuplicateAsPrompt: (version: VersionDto) => void;
+  onRename: (version: VersionDto) => void;
+  onDelete: (version: VersionDto) => void;
 }) {
   const { viewingVersionId } = useAppState();
   const [confirmVersion, setConfirmVersion] = useState<VersionDto | null>(null);
   const [compareSelection, setCompareSelection] = useState<string[]>([]);
   const { data: ratingsByVersion } = useVersionRatingSummaries(prompt.id);
+
+  useEffect(() => {
+    const liveIds = new Set(versions.map((version) => version.id));
+    setConfirmVersion((target) => (target && liveIds.has(target.id) ? target : null));
+    setCompareSelection((selection) => selection.filter((id) => liveIds.has(id)));
+  }, [versions]);
 
   const setCurrent = useAppMutation(
     (versionId: string) => window.promptBuilder.versions.setCurrent(prompt.id, versionId),
@@ -128,11 +151,41 @@ export function HistoryTab({
                           <button
                             type="button"
                             onClick={() => onDuplicate(version)}
+                            aria-label={`Duplicate ${version.displayLabel} as variation`}
                             className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
                           >
                             <GitFork size={12} />
-                            Duplicate
+                            Variation
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => onDuplicateAsPrompt(version)}
+                            aria-label={`Duplicate ${version.displayLabel} as new prompt`}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                          >
+                            <Copy size={12} />
+                            New prompt
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRename(version)}
+                            aria-label={`Rename ${version.displayLabel}`}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                          >
+                            <Pencil size={12} />
+                            Rename
+                          </button>
+                          {!isCurrent && (
+                            <button
+                              type="button"
+                              onClick={() => onDelete(version)}
+                              aria-label={`Delete ${version.displayLabel}`}
+                              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-danger transition-colors hover:bg-danger-soft"
+                            >
+                              <Trash2 size={12} />
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </div>
                       <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">
@@ -159,7 +212,7 @@ export function HistoryTab({
       </div>
 
       {/* Compare bar */}
-      {compareSelection.length > 0 && (
+      {selectedVersions.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t border-line bg-panel px-5 py-2.5">
           <span className="min-w-0 text-[12px] text-ink-dim">
             {compareOther

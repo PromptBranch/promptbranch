@@ -343,6 +343,41 @@ export class PromptLibrary {
     })();
   }
 
+  /** Creates a standalone prompt whose v1 copies one active source version. */
+  duplicatePrompt(input: { promptId: string; versionId: string; title: string }): PromptRow {
+    const sourcePrompt = this.mustGetPrompt(input.promptId);
+    const sourceVersion = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'",
+      input.versionId,
+      input.promptId,
+    );
+    if (!sourceVersion) {
+      throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    }
+
+    return this.db.transaction((): PromptRow => {
+      const duplicate = this.createPrompt({
+        title: input.title,
+        description: sourcePrompt.description ?? undefined,
+        icon: sourcePrompt.icon ?? undefined,
+        tagIds: this.listTagsForPrompt(input.promptId).map((tag) => tag.id),
+        content: sourceVersion.content,
+      });
+      this.run(
+        "UPDATE versions SET content_format = ? WHERE id = ?",
+        sourceVersion.content_format,
+        duplicate.current_version_id,
+      );
+      for (const membership of this.all<{ collection_id: string; sort_order: number }>(
+        "SELECT collection_id, sort_order FROM collection_prompts WHERE prompt_id = ?",
+        input.promptId,
+      )) {
+        this.addPromptToCollection(membership.collection_id, duplicate.id, membership.sort_order);
+      }
+      return duplicate;
+    })();
+  }
+
   getPrompt(promptId: string): PromptRow | null {
     return this.get<PromptRow>("SELECT * FROM prompts WHERE id = ?", promptId) ?? null;
   }
@@ -561,6 +596,63 @@ export class PromptLibrary {
 
   getVersion(versionId: string): VersionRow | null {
     return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId) ?? null;
+  }
+
+  /** Permanently deletes one non-current version and its dependent execution data. */
+  deleteVersion(versionId: string): void {
+    this.db.transaction(() => {
+      const version = this.getVersion(versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "active") {
+        throw new Error(
+          `Version ${versionId} is ${version.status} — only active versions can be deleted`,
+        );
+      }
+      const prompt = this.mustGetPrompt(version.prompt_id);
+      if (prompt.current_version_id === versionId) {
+        throw new Error("The current version cannot be deleted");
+      }
+
+      this.run("DELETE FROM runs WHERE version_id = ?", versionId);
+      this.run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", versionId);
+      this.run("UPDATE notes SET version_id = NULL WHERE version_id = ?", versionId);
+      this.run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", versionId);
+      const deleted = this.db.prepare("DELETE FROM versions WHERE id = ?").run(versionId);
+      if (deleted.changes !== 1) throw new Error(`Version not found: ${versionId}`);
+
+      const remaining = this.all<{ id: string }>(
+        "SELECT id FROM versions WHERE branch_id = ? ORDER BY number, created_at, id",
+        version.branch_id,
+      );
+      if (remaining.length === 0) {
+        this.run("DELETE FROM branches WHERE id = ?", version.branch_id);
+        // A branch delete means subtree deletion to the sync engine. This
+        // branch removal is only cleanup derived from the version tombstone,
+        // so peers repeat it after applying that tombstone instead.
+        this.run(
+          "DELETE FROM sync_dirty WHERE table_name = 'branches' AND record_id = ?",
+          version.branch_id,
+        );
+      } else {
+        remaining.forEach((row, index) => {
+          this.run("UPDATE versions SET number = ? WHERE id = ?", index + 1, row.id);
+        });
+      }
+
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      this.reindexPrompt(version.prompt_id);
+    }).immediate();
+  }
+
+  /** Sets a custom display label, or clears it to restore the automatic vN label. */
+  updateVersionLabel(versionId: string, label: string | null): VersionRow {
+    const version = this.getVersion(versionId);
+    if (!version) throw new Error(`Version not found: ${versionId}`);
+    return this.db.transaction((): VersionRow => {
+      this.run("UPDATE versions SET label = ? WHERE id = ?", label?.trim() || null, versionId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      return this.getVersion(versionId)!;
+    })();
   }
 
   /**

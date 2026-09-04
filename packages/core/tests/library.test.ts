@@ -38,6 +38,78 @@ describe("prompts", () => {
     expect(() => lib.updatePromptMetadata(prompt.id, { title: "  " })).toThrow();
   });
 
+  it("duplicates one selected version into a fresh prompt with prompt organization", () => {
+    const source = lib.createPrompt({
+      title: "Security review",
+      description: "Reviews a target",
+      icon: "shield",
+      content: "Review version one",
+    });
+    const sourceV1 = lib.listVersions(source.id)[0]!;
+    db.prepare("UPDATE versions SET content_format = 'text' WHERE id = ?").run(sourceV1.id);
+    const main = lib.listBranches(source.id)[0]!;
+    lib.createVersion({ promptId: source.id, branchId: main.id, content: "Review version two" });
+    lib.createBranch({
+      promptId: source.id,
+      name: "concise",
+      fromVersionId: sourceV1.id,
+    });
+    lib.setStarred(source.id, true);
+    const tag = lib.createTag({ name: "security" });
+    lib.addTagToPrompt(source.id, tag.id);
+    const firstCollection = lib.createCollection({ name: "Work" });
+    const secondCollection = lib.createCollection({ name: "Favorites" });
+    lib.addPromptToCollection(firstCollection.id, source.id, 2);
+    lib.addPromptToCollection(secondCollection.id, source.id, 7);
+    lib.addNote({ promptId: source.id, body: "Source-only note" });
+
+    const duplicate = lib.duplicatePrompt({
+      promptId: source.id,
+      versionId: sourceV1.id,
+      title: "Security review copy",
+    });
+
+    expect(duplicate.id).not.toBe(source.id);
+    expect(duplicate).toMatchObject({
+      title: "Security review copy",
+      description: "Reviews a target",
+      icon: "shield",
+      is_starred: 0,
+      deleted_at: null,
+    });
+    expect(lib.listVersions(duplicate.id)).toMatchObject([
+      {
+        number: 1,
+        branch_name: "main",
+        content: "Review version one",
+        content_format: "text",
+        label: null,
+      },
+    ]);
+    expect(lib.listBranches(duplicate.id).map((branch) => branch.name)).toEqual(["main"]);
+    expect(lib.listTagsForPrompt(duplicate.id).map((item) => item.id)).toEqual([tag.id]);
+    expect(lib.listCollectionIdsForPrompt(duplicate.id)).toEqual([
+      firstCollection.id,
+      secondCollection.id,
+    ]);
+    expect(lib.listNotes(duplicate.id)).toEqual([]);
+  });
+
+  it("rejects duplicating a version from another prompt", () => {
+    const source = lib.createPrompt({ title: "Source", content: "source" });
+    const other = lib.createPrompt({ title: "Other", content: "other" });
+    const otherVersion = lib.listVersions(other.id)[0]!;
+
+    expect(() =>
+      lib.duplicatePrompt({
+        promptId: source.id,
+        versionId: otherVersion.id,
+        title: "Invalid copy",
+      }),
+    ).toThrow(`Version ${otherVersion.id} not found on prompt ${source.id}`);
+    expect(lib.listPrompts()).toHaveLength(2);
+  });
+
   it("lists prompts with filters and sorting", () => {
     const a = lib.createPrompt({ title: "Alpha", content: "a" });
     const b = lib.createPrompt({ title: "Beta", content: "b" });
@@ -80,6 +152,160 @@ describe("prompts", () => {
 });
 
 describe("versions", () => {
+  it("rejects deleting the current or a missing version without changing history", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const currentId = prompt.current_version_id!;
+
+    expect(() => lib.deleteVersion(currentId)).toThrow(/current version/i);
+    expect(() => lib.deleteVersion("missing-version")).toThrow("Version not found: missing-version");
+    expect(lib.listVersions(prompt.id).map((version) => version.id)).toEqual([currentId]);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(currentId);
+  });
+
+  it("rejects deleting pending and rejected suggestion versions", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const suggestion = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId: prompt.current_version_id!,
+      newContent: "candidate",
+      rationale: "test",
+    }).version;
+
+    expect(() => lib.deleteVersion(suggestion.id)).toThrow(/pending/i);
+    lib.rejectSuggestion(suggestion.id);
+    expect(() => lib.deleteVersion(suggestion.id)).toThrow(/rejected/i);
+    expect(lib.getVersion(suggestion.id)?.status).toBe("rejected");
+  });
+
+  it("rechecks version status after acquiring the deletion transaction", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const historical = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "v2",
+    });
+    lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" });
+    const transaction = db.transaction.bind(db);
+    let injectStatusChange = true;
+    db.transaction = ((fn) => {
+      if (injectStatusChange) {
+        injectStatusChange = false;
+        db.prepare("UPDATE versions SET status = 'rejected' WHERE id = ?").run(historical.id);
+      }
+      return transaction(fn);
+    }) as Database["transaction"];
+
+    expect(() => lib.deleteVersion(historical.id)).toThrow(/rejected/i);
+    expect(lib.getVersion(historical.id)?.status).toBe("rejected");
+  });
+
+  it("deletes a historical version and cleans up every dependent record", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1 searchable" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const v2 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "obsolete needle",
+    });
+    const v3 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" });
+    lib.setDraft(prompt.id, "draft stays");
+    const note = lib.addNote({ promptId: prompt.id, versionId: v2.id, body: "keep this note" });
+    lib.addRun({ promptId: prompt.id, versionId: v2.id, tool: "manual" });
+    lib.addRating({ targetType: "version", targetId: v2.id, clarity: 4 });
+    lib.recordSharedSnapshot({
+      snapshotId: "delete-version-share",
+      promptId: prompt.id,
+      portalBaseUrl: "https://promptbranch.app",
+      url: "https://promptbranch.app/p/delete-version-share",
+      deleteToken: "delete-token",
+      fullHistory: true,
+      publishedAt: "2026-09-04T12:00:00.000Z",
+    });
+
+    lib.deleteVersion(v2.id);
+
+    expect(lib.getVersion(v2.id)).toBeNull();
+    expect(lib.listVersions(prompt.id).map(({ id, number }) => ({ id, number }))).toEqual([
+      { id: prompt.current_version_id, number: 1 },
+      { id: v3.id, number: 2 },
+    ]);
+    expect(lib.getVersion(v3.id)?.parent_version_id).toBeNull();
+    expect(lib.getPrompt(prompt.id)).toMatchObject({
+      current_version_id: v3.id,
+      draft_content: "draft stays",
+    });
+    expect(lib.listNotes(prompt.id)).toMatchObject([{ id: note.id, version_id: null }]);
+    expect(lib.listRuns(prompt.id)).toEqual([]);
+    expect(lib.getLatestRating("version", v2.id)).toBeNull();
+    expect(lib.search("obsolete needle")).toEqual([]);
+    expect(lib.getSharedSnapshot("delete-version-share")).toMatchObject({
+      prompt_id: prompt.id,
+      delete_token: "delete-token",
+      deleted_at: null,
+    });
+  });
+
+  it("preserves branch sequence when surviving versions share a timestamp", () => {
+    db.transaction(() => {
+      db.pragma("defer_foreign_keys = ON");
+      db.prepare(
+        `INSERT INTO prompts (id, title, current_version_id, created_at, updated_at)
+         VALUES ('fixed-prompt', 'Fixed', 'z-first', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO branches (id, prompt_id, name, created_at)
+         VALUES ('fixed-branch', 'fixed-prompt', 'main', '2026-09-04T00:00:00.000Z')`,
+      ).run();
+      const insert = db.prepare(
+        `INSERT INTO versions
+           (id, prompt_id, branch_id, parent_version_id, number, content, created_at)
+         VALUES (?, 'fixed-prompt', 'fixed-branch', ?, ?, ?, '2026-09-04T00:00:00.000Z')`,
+      );
+      insert.run("z-first", null, 1, "first");
+      insert.run("m-delete", "z-first", 2, "middle");
+      insert.run("a-last", "m-delete", 3, "last");
+    })();
+
+    lib.deleteVersion("m-delete");
+
+    expect(lib.listVersions("fixed-prompt").map(({ id, number }) => ({ id, number }))).toEqual([
+      { id: "z-first", number: 1 },
+      { id: "a-last", number: 2 },
+    ]);
+  });
+
+  it("removes a variation when its only version is deleted", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "main" });
+    const { branch, version } = lib.createBranch({
+      promptId: prompt.id,
+      name: "temporary",
+      fromVersionId: prompt.current_version_id!,
+    });
+
+    lib.deleteVersion(version.id);
+
+    expect(lib.getVersion(version.id)).toBeNull();
+    expect(lib.listBranches(prompt.id).map((item) => item.id)).not.toContain(branch.id);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(prompt.current_version_id);
+  });
+
+  it("sets and clears a version's custom display label", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const version = lib.listVersions(prompt.id)[0]!;
+
+    expect(lib.updateVersionLabel(version.id, "  Production  ").label).toBe("Production");
+    expect(lib.updateVersionLabel(version.id, "   ").label).toBeNull();
+    expect(lib.getVersion(version.id)?.number).toBe(1);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(version.id);
+  });
+
+  it("rejects renaming a missing version", () => {
+    expect(() => lib.updateVersionLabel("missing-version", "Production")).toThrow(
+      "Version not found: missing-version",
+    );
+  });
+
   it("commits the first non-empty save into an empty version 1 placeholder", () => {
     const prompt = lib.createPrompt({ title: "P", content: "" });
     const main = lib.listBranches(prompt.id)[0]!;

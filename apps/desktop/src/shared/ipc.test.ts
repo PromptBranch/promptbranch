@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   promptCreateSchema,
+  promptDuplicateSchema,
   shareDeleteSchema,
   shareImportPreviewSchema,
   sharePortalSetSchema,
@@ -11,6 +12,8 @@ import {
   updateOpenDownloadSchema,
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
+  versionDeleteSchema,
+  versionUpdateLabelSchema,
 } from "./ipc.js";
 
 describe("shareScopeSchema", () => {
@@ -71,6 +74,42 @@ describe("promptCreateSchema", () => {
       promptCreateSchema.safeParse({ title: "Collected", content: "", collectionId: "" })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("promptDuplicateSchema / versionUpdateLabelSchema / versionDeleteSchema", () => {
+  it("requires a source prompt, source version and non-empty duplicate title", () => {
+    expect(
+      promptDuplicateSchema.parse({
+        promptId: "prompt-1",
+        versionId: "version-2",
+        title: "Prompt copy",
+      }),
+    ).toEqual({ promptId: "prompt-1", versionId: "version-2", title: "Prompt copy" });
+    expect(
+      promptDuplicateSchema.safeParse({
+        promptId: "prompt-1",
+        versionId: "version-2",
+        title: "  ",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a trimmed custom version label or null to clear it", () => {
+    expect(
+      versionUpdateLabelSchema.parse({ versionId: "version-2", label: "  Production  " }),
+    ).toEqual({ versionId: "version-2", label: "Production" });
+    expect(versionUpdateLabelSchema.parse({ versionId: "version-2", label: null })).toEqual({
+      versionId: "version-2",
+      label: null,
+    });
+  });
+
+  it("requires a non-empty version id for deletion", () => {
+    expect(versionDeleteSchema.parse({ versionId: "version-2" })).toEqual({
+      versionId: "version-2",
+    });
+    expect(versionDeleteSchema.safeParse({ versionId: "  " }).success).toBe(false);
   });
 });
 

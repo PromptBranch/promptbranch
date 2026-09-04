@@ -1075,6 +1075,77 @@ describe("runModelGroup progress + cancel", () => {
     expect(rows[0]!.error).toBe("Cancelled by user");
   });
 
+  it("discards a late result when its version is deleted during the run", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-slow"]);
+    const prompt = deps.lib.createPrompt({ title: "Greet", content: "v1" });
+    const historicalVersionId = prompt.current_version_id!;
+    const mainBranch = deps.lib.listBranches(prompt.id)[0]!;
+    deps.lib.createVersion({ promptId: prompt.id, branchId: mainBranch.id, content: "v2" });
+    const events: AiRunProgressEvent[] = [];
+    let deleted = false;
+
+    const run = runModelGroup(
+      deps,
+      {
+        promptId: prompt.id,
+        versionId: historicalVersionId,
+        content: "v1",
+        variables: {},
+        modelRefs: [{ providerId, modelId: "model-slow" }],
+      },
+      (event) => {
+        events.push(event);
+        if (!deleted && event.phase === "delta") {
+          deleted = true;
+          deps.lib.deleteVersion(historicalVersionId);
+        }
+      },
+    );
+
+    await expect(run).rejects.toThrow(/version was deleted/i);
+    expect(deleted).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      phase: "error",
+      error: expect.stringMatching(/version was deleted/i),
+    });
+    expect(deps.lib.listRuns(prompt.id)).toEqual([]);
+  });
+
+  it("does not return results that completed before the running version was deleted", async () => {
+    const deps = makeDeps();
+    const providerId = addStubProvider(deps, ["model-a", "model-slow"]);
+    const prompt = deps.lib.createPrompt({ title: "Greet", content: "v1" });
+    const historicalVersionId = prompt.current_version_id!;
+    const mainBranch = deps.lib.listBranches(prompt.id)[0]!;
+    deps.lib.createVersion({ promptId: prompt.id, branchId: mainBranch.id, content: "v2" });
+    let deleted = false;
+
+    const run = runModelGroup(
+      deps,
+      {
+        promptId: prompt.id,
+        versionId: historicalVersionId,
+        content: "v1",
+        variables: {},
+        modelRefs: [
+          { providerId, modelId: "model-a" },
+          { providerId, modelId: "model-slow" },
+        ],
+      },
+      (event) => {
+        if (!deleted && event.modelId === "model-a" && event.phase === "completed") {
+          deleted = true;
+          deps.lib.deleteVersion(historicalVersionId);
+        }
+      },
+    );
+
+    await expect(run).rejects.toThrow(/version was deleted/i);
+    expect(deleted).toBe(true);
+    expect(deps.lib.listRuns(prompt.id)).toEqual([]);
+  });
+
   it("cancelRunGroup returns false for unknown groups", () => {
     expect(cancelRunGroup("no-such-group")).toBe(false);
   });

@@ -10,6 +10,7 @@ import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/cor
 import { createBonjourDiscovery, type DiscoveredPeer, type Discovery } from "./discovery.js";
 import { encodeFrame } from "./frames.js";
 import { derivePairingCode, loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
+import { PROTOCOL_VERSION } from "./messages.js";
 import { PeerService, type PeerServiceDeps } from "./peers-service.js";
 
 const dirs: string[] = [];
@@ -604,11 +605,11 @@ describe("peer service over real TLS (loopback)", () => {
     let second: tls.TLSSocket | null = null;
 
     try {
-      first.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "First owner" }));
+      first.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "First owner" }));
       await vi.waitFor(() => expect(requests).toHaveLength(1));
 
       second = await connectWithIdentity(port, remoteIdentity);
-      second.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Duplicate" }));
+      second.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Duplicate" }));
       await vi.waitFor(() => expect(second?.destroyed).toBe(true));
       expect(requests).toEqual([
         { fingerprint: remoteIdentity.fingerprint, name: "First owner" },
@@ -643,7 +644,7 @@ describe("peer service over real TLS (loopback)", () => {
     local.service.beginPairing();
     const remote = await connectWithIdentity(port, remoteIdentity);
 
-    remote.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
+    remote.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
     await vi.waitFor(() => expect(signal).toBeDefined());
     remote.destroy();
     await once(remote, "close");
@@ -673,7 +674,7 @@ describe("peer service over real TLS (loopback)", () => {
       local.service.beginPairing();
       const remote = await connectWithIdentity(port, remoteIdentity);
 
-      remote.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
+      remote.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
       await vi.waitFor(() => expect(signal).toBeDefined());
       if (action === "cancel") local.service.cancelPairing();
       else await local.service.stop();
@@ -1853,7 +1854,7 @@ describe("peer service over real TLS (loopback)", () => {
       const remoteIdentity = await loadOrCreateIdentity(tempDir());
       local.service.beginPairing();
       remoteSocket = await connectWithIdentity(port, remoteIdentity);
-      remoteSocket.write(encodeFrame({ t: "pair-introduce-v2", v: 2, name: "Remote" }));
+      remoteSocket.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
       await confirmationStarted;
 
       await advanceLiveClock(clock, 50, 10);

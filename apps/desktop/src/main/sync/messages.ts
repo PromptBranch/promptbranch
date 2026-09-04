@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Peer wire protocol, version 2. Every message is a length-prefixed JSON
+ * Peer wire protocol, version 3. Every message is a length-prefixed JSON
  * frame (see frames.ts). Anti-entropy is hello-driven: either side may send
  * `hello` at any time (on connect, or as a "pull me" notification after new
  * local ops); the receiver answers with `ops` batches and a final `flush`.
@@ -9,7 +9,9 @@ import { z } from "zod";
  * locally against the server certificate, then introduces itself.
  */
 
-export const PROTOCOL_VERSION = 2;
+// v3 makes version tombstones terminal and derives empty-branch cleanup from
+// them. Mixing v2 and v3 peers could otherwise resurrect or over-delete data.
+export const PROTOCOL_VERSION = 3;
 
 const cursorsSchema = z.record(z.string(), z.number().int().min(0));
 

@@ -4,9 +4,9 @@ PromptBranch lets you make quick edits while keeping reliable versions to
 return to later.
 
 Right-click a prompt in the list for quick access to star, rename, collection,
-duplicate-as-variation, export, and delete actions. In a collection, the menu
-also removes the prompt from that collection. In Trash, it instead offers
-**Restore** and **Delete permanently**.
+duplication, export, and delete actions. In a collection, the menu also removes
+the prompt from that collection. In Trash, it instead offers **Restore** and
+**Delete permanently**.
 
 ## Edit and save a version
 
@@ -21,8 +21,9 @@ kept when you switch prompts or close the app. When a change is ready to keep:
 3. Select **Save version**.
 
 Saved versions cannot be edited. Open an older version from the version menu or
-the **History** tab to review it. The History tab also lets you compare two
-versions side by side or as a unified diff.
+the **History** tab to review it. The History tab also lets you rename versions,
+duplicate one as a new prompt, or compare two versions side by side or as a
+unified diff.
 
 ## Use variations
 
@@ -40,10 +41,17 @@ one returned by the CLI and MCP server by default.
 
 ## Delete and recover
 
-**More actions → Delete** moves a prompt to **Trash**. Restore it from Trash to
-bring back its versions, notes, and runs. Permanently deleting a prompt, or
-choosing **Permanently empty Trash** in **Settings → Data & Backup**, cannot be
-undone.
+**More actions → Delete prompt** moves a prompt to **Trash**. Restore it from
+Trash to bring back its versions, notes, and runs. Permanently deleting a
+prompt, or choosing **Permanently empty Trash** in **Settings → Data & Backup**,
+cannot be undone.
+
+To permanently remove an older version, use **Delete** beside that version in
+the **History** tab, or open the version and choose **More actions → Delete
+version…**. The current version cannot be deleted. Deleting an older version
+removes its run results and ratings, keeps its notes as prompt-level notes,
+keeps already-published shares live, and renumbers the remaining versions in
+that variation.
 
 For exporting, importing, backups, and the library-wide activity feed, see
 [Library data, backups, and transfer](library-data-and-backups.md).

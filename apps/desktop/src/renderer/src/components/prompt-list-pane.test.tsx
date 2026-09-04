@@ -70,6 +70,7 @@ describe("PromptListPane context menu", () => {
     const menu = await openPromptMenu(user);
     expect(menu.getByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Move to collection…" })).toBeInTheDocument();
+    expect(menu.getByRole("menuitem", { name: "Duplicate as new prompt…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Duplicate current version as variation…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Export prompt JSON" })).toBeInTheDocument();
     await user.click(menu.getByRole("menuitem", { name: "Star" }));
@@ -144,6 +145,33 @@ describe("PromptListPane context menu", () => {
       }),
     );
     expect(bridge.versions.setCurrent).toHaveBeenCalledWith(beta.id, "version-new");
+  });
+
+  it("duplicates the current version as a new prompt", async () => {
+    bridge.prompts.duplicate.mockResolvedValue({
+      ...betaDetail,
+      id: "prompt-copy",
+      title: "Beta standalone",
+      currentVersionId: "copy-v1",
+    });
+    const user = userEvent.setup();
+    renderApp(<PaneInView view={{ kind: "library" }} />);
+
+    const menu = await openPromptMenu(user);
+    await user.click(menu.getByRole("menuitem", { name: "Duplicate as new prompt…" }));
+    const title = await screen.findByLabelText("Title");
+    expect(title).toHaveValue("Beta copy");
+    await user.clear(title);
+    await user.type(title, "Beta standalone");
+    await user.click(screen.getByRole("button", { name: "Duplicate" }));
+
+    await waitFor(() =>
+      expect(bridge.prompts.duplicate).toHaveBeenCalledWith({
+        promptId: beta.id,
+        versionId: "version-b3",
+        title: "Beta standalone",
+      }),
+    );
   });
 
   it("exports and deletes the right-clicked prompt", async () => {

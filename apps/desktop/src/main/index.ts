@@ -31,6 +31,7 @@ import {
   draftSetSchema,
   noteAddSchema,
   promptCreateSchema,
+  promptDuplicateSchema,
   promptListSchema,
   promptUpdateSchema,
   ratingAddSchema,
@@ -58,7 +59,9 @@ import {
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
   versionCreateSchema,
+  versionDeleteSchema,
   versionSetCurrentSchema,
+  versionUpdateLabelSchema,
   type ActivityItemDto,
   type BranchCreateResult,
   type FileOpResult,
@@ -303,6 +306,13 @@ function registerIpcHandlers(): void {
     return toDetail(prompt);
   });
 
+  ipcMain.handle(IPC_CHANNELS.promptDuplicate, (_e, payload: unknown) => {
+    const input = promptDuplicateSchema.parse(payload);
+    const prompt = lib.duplicatePrompt(input);
+    console.log(`[main] duplicated prompt ${input.promptId} as ${prompt.id} (${prompt.title})`);
+    return toDetail(prompt);
+  });
+
   ipcMain.handle(IPC_CHANNELS.promptUpdate, (_e, payload: unknown) => {
     const { id, patch } = promptUpdateSchema.parse(payload);
     return toDetail(lib.updatePromptMetadata(id, patch));
@@ -376,6 +386,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.versionSetCurrent, (_e, payload: unknown) => {
     const { promptId, versionId } = versionSetCurrentSchema.parse(payload);
     lib.setCurrentVersion(promptId, versionId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.versionUpdateLabel, (_e, payload: unknown) => {
+    const { versionId, label } = versionUpdateLabelSchema.parse(payload);
+    const version = lib.updateVersionLabel(versionId, label);
+    const prompt = lib.getPrompt(version.prompt_id);
+    return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.versionDelete, (_e, payload: unknown) => {
+    const { versionId } = versionDeleteSchema.parse(payload);
+    lib.deleteVersion(versionId);
   });
 
   function branchNameFor(branchId: string): string {

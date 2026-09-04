@@ -311,7 +311,11 @@ function AgentSection() {
   };
 
   const mcpConfig = JSON.stringify(
-    { mcpServers: { promptbranch: { command: "npx", args: ["-y", "@promptbranch/mcp"] } } },
+    {
+      mcpServers: {
+        promptbranch: { command: "npx", args: ["-y", "@promptbranch/mcp@latest"] },
+      },
+    },
     null,
     2,
   );
@@ -350,7 +354,8 @@ function AgentSection() {
           Copy MCP client config
         </button>
         <p className="text-[11px] leading-snug text-ink-faint">
-          Or use the CLI: <span className="font-mono">npx -y @promptbranch/cli get &lt;name&gt; --json</span>.
+          Or use the CLI: <span className="font-mono">npx -y @promptbranch/cli@latest get
+          &lt;name&gt; --json</span>.
           The <span className="font-mono">@promptbranch/mcp</span> package also includes an agent skill file.
         </p>
       </div>

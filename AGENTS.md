@@ -53,10 +53,12 @@ The system is split into two repositories:
 
 1. **`promptbranch` (this repository)** — The client, agent, and core domain monorepo:
    - `apps/desktop` — Electron + React desktop application (`@promptbranch/desktop`)
-   - `apps/cli` — `promptbranch` CLI (`@promptbranch/cli`, runnable via `npx @promptbranch/cli`)
+   - `apps/cli` — `promptbranch` CLI (`@promptbranch/cli`, runnable via
+     `npx @promptbranch/cli@latest`)
    - `packages/core` — SQLite database, migrations, sync engine (`@promptbranch/core`)
    - `packages/ai` — Multi-model runner and LLM judge (`@promptbranch/ai`)
-   - `packages/mcp` — MCP stdio server (`@promptbranch/mcp`, runnable via `npx -y @promptbranch/mcp`)
+   - `packages/mcp` — MCP stdio server (`@promptbranch/mcp`, runnable via
+     `npx -y @promptbranch/mcp@latest`)
    - `packages/share` — Sharing contract, schemas, secret scanner (`@promptbranch/share`)
 2. **`promptbranch-portal` (companion private repository)** — The self-hosted web sharing service:
    - `apps/portal` — Next.js SSR viewer and JSON API

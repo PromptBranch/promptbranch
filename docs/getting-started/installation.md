@@ -72,13 +72,13 @@ The CLI needs **Node.js 22** or later.
 Run `@promptbranch/cli` directly from npm without a global installation:
 
 ```bash
-npx -y @promptbranch/cli db-path
+npx -y @promptbranch/cli@latest db-path
 ```
 
 For a persistent `promptbranch` command, install it globally:
 
 ```bash
-npm install --global @promptbranch/cli
+npm install --global @promptbranch/cli@latest
 ```
 
 Once set up, verify the installation by printing the resolved database path:
@@ -94,7 +94,7 @@ The MCP server needs **Node.js 22** or later.
 
 PromptBranch provides a stdio MCP server that enables AI assistants (such as Claude Desktop, Cursor, Windsurf, or Cline) to read prompts, log run metrics, and suggest variations.
 
-Run the MCP server from npm with `npx -y @promptbranch/mcp`.
+Run the MCP server from npm with `npx -y @promptbranch/mcp@latest`.
 
 ### Claude Desktop Configuration
 
@@ -108,7 +108,7 @@ Add the following configuration to your `claude_desktop_config.json`:
   "mcpServers": {
     "promptbranch": {
       "command": "npx",
-      "args": ["-y", "@promptbranch/mcp"]
+      "args": ["-y", "@promptbranch/mcp@latest"]
     }
   }
 }
@@ -119,7 +119,7 @@ Add the following configuration to your `claude_desktop_config.json`:
 In Cursor or Windsurf MCP settings, add a stdio MCP server:
 - **Name**: `promptbranch`
 - **Command**: `npx`
-- **Args**: `["-y", "@promptbranch/mcp"]`
+- **Args**: `["-y", "@promptbranch/mcp@latest"]`
 
 > [!TIP]
 > The desktop app prints this configuration ready-to-paste in **Settings → Agent integration**.

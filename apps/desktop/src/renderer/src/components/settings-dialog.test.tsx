@@ -31,9 +31,11 @@ describe("SettingsDialog Agent integration section", () => {
     const config = await screen.findByText(/"mcpServers"/);
     expect(config.textContent).toContain('"promptbranch"');
     expect(config.textContent).toContain('"command": "npx"');
-    expect(config.textContent).toContain('"@promptbranch/mcp"');
+    expect(config.textContent).toContain('"@promptbranch/mcp@latest"');
+    expect(config.textContent).not.toContain('"@promptbranch/mcp"');
     expect(config.textContent).not.toContain("/repo/packages/mcp/dist/index.js");
     expect(config.textContent).not.toContain("prompthub");
+    expect(screen.getByText(/npx -y @promptbranch\/cli@latest get/)).toBeInTheDocument();
   });
 });
 

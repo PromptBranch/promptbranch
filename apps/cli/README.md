@@ -21,13 +21,13 @@ Source: [GitHub](https://github.com/PromptBranch/promptbranch/tree/main/apps/cli
 Run a command without a global install:
 
 ```sh
-npx -y @promptbranch/cli list --tag security
+npx -y @promptbranch/cli@latest list --tag security
 ```
 
 Or install the `promptbranch` command globally:
 
 ```sh
-npm install --global @promptbranch/cli
+npm install --global @promptbranch/cli@latest
 promptbranch list --tag security
 ```
 

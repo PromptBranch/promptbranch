@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, GitBranch, GitCompare, GitFork, History, RotateCcw, Star } from "lucide-react";
+import { Copy, Eye, GitBranch, GitCompare, GitFork, History, Pencil, RotateCcw, Star } from "lucide-react";
 import type { PromptDetail, VersionDto } from "../../../shared/ipc.js";
 import { useAppMutation, useVersionRatingSummaries } from "../hooks/use-data";
 import { cx, relativeTime } from "../lib/time";
@@ -13,12 +13,16 @@ export function HistoryTab({
   onView,
   onCompare,
   onDuplicate,
+  onDuplicateAsPrompt,
+  onRename,
 }: {
   prompt: PromptDetail;
   versions: VersionDto[];
   onView: (versionId: string) => void;
   onCompare: (base: VersionDto, other: VersionDto) => void;
   onDuplicate: (version: VersionDto) => void;
+  onDuplicateAsPrompt: (version: VersionDto) => void;
+  onRename: (version: VersionDto) => void;
 }) {
   const { viewingVersionId } = useAppState();
   const [confirmVersion, setConfirmVersion] = useState<VersionDto | null>(null);
@@ -128,10 +132,29 @@ export function HistoryTab({
                           <button
                             type="button"
                             onClick={() => onDuplicate(version)}
+                            aria-label={`Duplicate ${version.displayLabel} as variation`}
                             className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
                           >
                             <GitFork size={12} />
-                            Duplicate
+                            Variation
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDuplicateAsPrompt(version)}
+                            aria-label={`Duplicate ${version.displayLabel} as new prompt`}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                          >
+                            <Copy size={12} />
+                            New prompt
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRename(version)}
+                            aria-label={`Rename ${version.displayLabel}`}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                          >
+                            <Pencil size={12} />
+                            Rename
                           </button>
                         </div>
                       </div>

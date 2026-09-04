@@ -122,6 +122,43 @@ describe("sync engine", () => {
     expect(b.engine.pendingDirty()).toBe(0);
   });
 
+  it("propagates version names and standalone prompt duplicates", () => {
+    const a = rig();
+    const b = rig();
+    const tag = a.lib.createTag({ name: "review" });
+    const collection = a.lib.createCollection({ name: "Work" });
+    const source = a.lib.createPrompt({
+      title: "Reviewer",
+      description: "Reviews a change",
+      content: "Review this change",
+      tagIds: [tag.id],
+    });
+    a.lib.addPromptToCollection(collection.id, source.id, 4);
+    const sourceVersion = a.lib.listVersions(source.id)[0]!;
+
+    a.lib.updateVersionLabel(sourceVersion.id, "Production");
+    const duplicate = a.lib.duplicatePrompt({
+      promptId: source.id,
+      versionId: sourceVersion.id,
+      title: "Reviewer copy",
+    });
+
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+
+    expect(b.lib.getVersion(sourceVersion.id)?.label).toBe("Production");
+    expect(b.lib.getPrompt(duplicate.id)).toMatchObject({
+      title: "Reviewer copy",
+      description: "Reviews a change",
+      is_starred: 0,
+    });
+    expect(b.lib.listVersions(duplicate.id)).toMatchObject([
+      { number: 1, label: null, content: "Review this change" },
+    ]);
+    expect(b.lib.listTagsForPrompt(duplicate.id).map((item) => item.id)).toEqual([tag.id]);
+    expect(b.lib.listCollectionIdsForPrompt(duplicate.id)).toEqual([collection.id]);
+  });
+
   it("propagates content committed into an empty version 1 placeholder", () => {
     const a = rig();
     const b = rig();

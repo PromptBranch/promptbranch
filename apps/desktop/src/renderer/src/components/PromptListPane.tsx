@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownWideNarrow,
   Check,
+  Copy,
   Download,
   FileText,
   FolderInput,
@@ -326,6 +327,7 @@ export function PromptListPane({
   const [renameTarget, setRenameTarget] = useState<PromptSummary | null>(null);
   const [moveTarget, setMoveTarget] = useState<PromptDetail | null>(null);
   const [duplicateTarget, setDuplicateTarget] = useState<PromptDetail | null>(null);
+  const [duplicatePromptTarget, setDuplicatePromptTarget] = useState<PromptDetail | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PromptSummary | null>(null);
   const [hardDeleteTarget, setHardDeleteTarget] = useState<PromptSummary | null>(null);
 
@@ -370,6 +372,14 @@ export function PromptListPane({
   const hardDelete = useAppMutation(
     (promptId: string) => window.promptBuilder.prompts.hardDelete(promptId),
     { toast: "Prompt permanently deleted", onSuccess: () => selectPrompt(null) },
+  );
+  const duplicatePrompt = useAppMutation(
+    ({ promptId, versionId, title }: { promptId: string; versionId: string; title: string }) =>
+      window.promptBuilder.prompts.duplicate({ promptId, versionId, title }),
+    {
+      toast: "Prompt duplicated",
+      onSuccess: (created) => selectPrompt(created.id),
+    },
   );
   const removeFromCollection = useAppMutation(
     ({ collectionId, promptId }: { collectionId: string; promptId: string }) =>
@@ -627,6 +637,14 @@ export function PromptListPane({
                 />
               )}
               <PromptMenuItem
+                icon={<Copy size={13} />}
+                label="Duplicate as new prompt…"
+                onClick={() => {
+                  void loadPrompt(contextMenu.prompt, setDuplicatePromptTarget);
+                  setContextMenu(null);
+                }}
+              />
+              <PromptMenuItem
                 icon={<GitFork size={13} />}
                 label="Duplicate current version as variation…"
                 onClick={() => {
@@ -686,6 +704,25 @@ export function PromptListPane({
         }}
         sourceLabel={duplicateTarget?.versionLabel ?? "current version"}
         onSubmit={duplicateAsVariation}
+      />
+      <NameDialog
+        open={duplicatePromptTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDuplicatePromptTarget(null);
+        }}
+        title="Duplicate as new prompt"
+        label="Title"
+        initialValue={`${duplicatePromptTarget?.title ?? "Prompt"} copy`}
+        submitLabel="Duplicate"
+        onSubmit={(title) => {
+          if (duplicatePromptTarget?.currentVersionId) {
+            duplicatePrompt.mutate({
+              promptId: duplicatePromptTarget.id,
+              versionId: duplicatePromptTarget.currentVersionId,
+              title,
+            });
+          }
+        }}
       />
       <ConfirmDialog
         open={deleteTarget !== null}

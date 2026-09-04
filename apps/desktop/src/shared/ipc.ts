@@ -41,6 +41,13 @@ export const promptCreateSchema = z.object({
 });
 export type PromptCreateInput = z.infer<typeof promptCreateSchema>;
 
+export const promptDuplicateSchema = z.object({
+  promptId: id,
+  versionId: id,
+  title: shortText,
+});
+export type PromptDuplicateInput = z.infer<typeof promptDuplicateSchema>;
+
 export const promptUpdateSchema = z.object({
   id,
   patch: z.object({
@@ -59,6 +66,11 @@ export const versionCreateSchema = z.object({
 export type VersionCreateInput = z.infer<typeof versionCreateSchema>;
 
 export const versionSetCurrentSchema = z.object({ promptId: id, versionId: id });
+
+export const versionUpdateLabelSchema = z.object({
+  versionId: id,
+  label: z.string().trim().max(500).nullable(),
+});
 
 export const draftSetSchema = z.object({ promptId: id, content: longText.nullable() });
 
@@ -939,6 +951,7 @@ export interface PromptBuilderApi {
     list(query?: PromptListQuery): Promise<PromptSummary[]>;
     get(id: string): Promise<PromptDetail | null>;
     create(input: PromptCreateInput): Promise<PromptDetail>;
+    duplicate(input: PromptDuplicateInput): Promise<PromptDetail>;
     update(id: string, patch: { title?: string; description?: string | null; icon?: string | null }): Promise<PromptDetail>;
     setStarred(id: string, starred: boolean): Promise<void>;
     softDelete(id: string): Promise<void>;
@@ -951,6 +964,7 @@ export interface PromptBuilderApi {
     list(promptId: string): Promise<VersionDto[]>;
     get(versionId: string): Promise<VersionContentDto | null>;
     setCurrent(promptId: string, versionId: string): Promise<void>;
+    updateLabel(versionId: string, label: string | null): Promise<VersionDto>;
   };
   drafts: {
     get(promptId: string): Promise<string | null>;

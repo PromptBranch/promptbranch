@@ -38,6 +38,78 @@ describe("prompts", () => {
     expect(() => lib.updatePromptMetadata(prompt.id, { title: "  " })).toThrow();
   });
 
+  it("duplicates one selected version into a fresh prompt with prompt organization", () => {
+    const source = lib.createPrompt({
+      title: "Security review",
+      description: "Reviews a target",
+      icon: "shield",
+      content: "Review version one",
+    });
+    const sourceV1 = lib.listVersions(source.id)[0]!;
+    db.prepare("UPDATE versions SET content_format = 'text' WHERE id = ?").run(sourceV1.id);
+    const main = lib.listBranches(source.id)[0]!;
+    lib.createVersion({ promptId: source.id, branchId: main.id, content: "Review version two" });
+    lib.createBranch({
+      promptId: source.id,
+      name: "concise",
+      fromVersionId: sourceV1.id,
+    });
+    lib.setStarred(source.id, true);
+    const tag = lib.createTag({ name: "security" });
+    lib.addTagToPrompt(source.id, tag.id);
+    const firstCollection = lib.createCollection({ name: "Work" });
+    const secondCollection = lib.createCollection({ name: "Favorites" });
+    lib.addPromptToCollection(firstCollection.id, source.id, 2);
+    lib.addPromptToCollection(secondCollection.id, source.id, 7);
+    lib.addNote({ promptId: source.id, body: "Source-only note" });
+
+    const duplicate = lib.duplicatePrompt({
+      promptId: source.id,
+      versionId: sourceV1.id,
+      title: "Security review copy",
+    });
+
+    expect(duplicate.id).not.toBe(source.id);
+    expect(duplicate).toMatchObject({
+      title: "Security review copy",
+      description: "Reviews a target",
+      icon: "shield",
+      is_starred: 0,
+      deleted_at: null,
+    });
+    expect(lib.listVersions(duplicate.id)).toMatchObject([
+      {
+        number: 1,
+        branch_name: "main",
+        content: "Review version one",
+        content_format: "text",
+        label: null,
+      },
+    ]);
+    expect(lib.listBranches(duplicate.id).map((branch) => branch.name)).toEqual(["main"]);
+    expect(lib.listTagsForPrompt(duplicate.id).map((item) => item.id)).toEqual([tag.id]);
+    expect(lib.listCollectionIdsForPrompt(duplicate.id)).toEqual([
+      firstCollection.id,
+      secondCollection.id,
+    ]);
+    expect(lib.listNotes(duplicate.id)).toEqual([]);
+  });
+
+  it("rejects duplicating a version from another prompt", () => {
+    const source = lib.createPrompt({ title: "Source", content: "source" });
+    const other = lib.createPrompt({ title: "Other", content: "other" });
+    const otherVersion = lib.listVersions(other.id)[0]!;
+
+    expect(() =>
+      lib.duplicatePrompt({
+        promptId: source.id,
+        versionId: otherVersion.id,
+        title: "Invalid copy",
+      }),
+    ).toThrow(`Version ${otherVersion.id} not found on prompt ${source.id}`);
+    expect(lib.listPrompts()).toHaveLength(2);
+  });
+
   it("lists prompts with filters and sorting", () => {
     const a = lib.createPrompt({ title: "Alpha", content: "a" });
     const b = lib.createPrompt({ title: "Beta", content: "b" });
@@ -80,6 +152,22 @@ describe("prompts", () => {
 });
 
 describe("versions", () => {
+  it("sets and clears a version's custom display label", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const version = lib.listVersions(prompt.id)[0]!;
+
+    expect(lib.updateVersionLabel(version.id, "  Production  ").label).toBe("Production");
+    expect(lib.updateVersionLabel(version.id, "   ").label).toBeNull();
+    expect(lib.getVersion(version.id)?.number).toBe(1);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(version.id);
+  });
+
+  it("rejects renaming a missing version", () => {
+    expect(() => lib.updateVersionLabel("missing-version", "Production")).toThrow(
+      "Version not found: missing-version",
+    );
+  });
+
   it("commits the first non-empty save into an empty version 1 placeholder", () => {
     const prompt = lib.createPrompt({ title: "P", content: "" });
     const main = lib.listBranches(prompt.id)[0]!;

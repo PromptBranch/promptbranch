@@ -92,6 +92,7 @@ export function createMockBridge(): MockBridge {
       list: vi.fn(async () => []),
       get: vi.fn(async () => null),
       create: vi.fn(notStubbed),
+      duplicate: vi.fn(notStubbed),
       update: vi.fn(notStubbed),
       setStarred: vi.fn(async () => {}),
       softDelete: vi.fn(async () => {}),
@@ -104,6 +105,7 @@ export function createMockBridge(): MockBridge {
       list: vi.fn(async () => []),
       get: vi.fn(async () => null),
       setCurrent: vi.fn(async () => {}),
+      updateLabel: vi.fn(notStubbed),
     },
     drafts: {
       get: vi.fn(async () => null),

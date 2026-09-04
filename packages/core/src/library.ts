@@ -343,6 +343,41 @@ export class PromptLibrary {
     })();
   }
 
+  /** Creates a standalone prompt whose v1 copies one active source version. */
+  duplicatePrompt(input: { promptId: string; versionId: string; title: string }): PromptRow {
+    const sourcePrompt = this.mustGetPrompt(input.promptId);
+    const sourceVersion = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'",
+      input.versionId,
+      input.promptId,
+    );
+    if (!sourceVersion) {
+      throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    }
+
+    return this.db.transaction((): PromptRow => {
+      const duplicate = this.createPrompt({
+        title: input.title,
+        description: sourcePrompt.description ?? undefined,
+        icon: sourcePrompt.icon ?? undefined,
+        tagIds: this.listTagsForPrompt(input.promptId).map((tag) => tag.id),
+        content: sourceVersion.content,
+      });
+      this.run(
+        "UPDATE versions SET content_format = ? WHERE id = ?",
+        sourceVersion.content_format,
+        duplicate.current_version_id,
+      );
+      for (const membership of this.all<{ collection_id: string; sort_order: number }>(
+        "SELECT collection_id, sort_order FROM collection_prompts WHERE prompt_id = ?",
+        input.promptId,
+      )) {
+        this.addPromptToCollection(membership.collection_id, duplicate.id, membership.sort_order);
+      }
+      return duplicate;
+    })();
+  }
+
   getPrompt(promptId: string): PromptRow | null {
     return this.get<PromptRow>("SELECT * FROM prompts WHERE id = ?", promptId) ?? null;
   }
@@ -561,6 +596,17 @@ export class PromptLibrary {
 
   getVersion(versionId: string): VersionRow | null {
     return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId) ?? null;
+  }
+
+  /** Sets a custom display label, or clears it to restore the automatic vN label. */
+  updateVersionLabel(versionId: string, label: string | null): VersionRow {
+    const version = this.getVersion(versionId);
+    if (!version) throw new Error(`Version not found: ${versionId}`);
+    return this.db.transaction((): VersionRow => {
+      this.run("UPDATE versions SET label = ? WHERE id = ?", label?.trim() || null, versionId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      return this.getVersion(versionId)!;
+    })();
   }
 
   /**

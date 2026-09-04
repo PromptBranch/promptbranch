@@ -70,6 +70,7 @@ export function NameDialog({
   initialValue = "",
   placeholder,
   submitLabel = "Save",
+  allowEmpty = false,
   onSubmit,
 }: {
   open: boolean;
@@ -79,6 +80,7 @@ export function NameDialog({
   initialValue?: string;
   placeholder?: string;
   submitLabel?: string;
+  allowEmpty?: boolean;
   onSubmit: (value: string) => void;
 }) {
   const [value, setValue] = useState(initialValue);
@@ -89,7 +91,7 @@ export function NameDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed && !allowEmpty) return;
     onSubmit(trimmed);
     onOpenChange(false);
   };
@@ -111,7 +113,7 @@ export function NameDialog({
           <button type="button" className={ghostButtonClass} onClick={() => onOpenChange(false)}>
             Cancel
           </button>
-          <button type="submit" className={primaryButtonClass} disabled={!value.trim()}>
+          <button type="submit" className={primaryButtonClass} disabled={!allowEmpty && !value.trim()}>
             {submitLabel}
           </button>
         </div>

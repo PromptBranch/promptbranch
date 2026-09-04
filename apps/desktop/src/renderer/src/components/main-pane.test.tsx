@@ -450,3 +450,94 @@ describe("MainPane restored prompt editing", () => {
     );
   });
 });
+
+describe("MainPane prompt duplication and version naming", () => {
+  it("duplicates the historical version being viewed into a new prompt", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content: versionId === historicalVersion.id ? "Historical content" : "Current content",
+      contentFormat: "markdown",
+    }));
+    bridge.prompts.duplicate.mockResolvedValue({
+      ...prompt,
+      id: "prompt-copy",
+      title: "Greeting standalone",
+      currentVersionId: "copy-v1",
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Duplicate v1 as new prompt" }));
+    const title = await screen.findByLabelText("Title");
+    expect(title).toHaveValue("Greeting copy");
+    await user.clear(title);
+    await user.type(title, "Greeting standalone");
+    await user.click(screen.getByRole("button", { name: "Duplicate" }));
+
+    await waitFor(() =>
+      expect(bridge.prompts.duplicate).toHaveBeenCalledWith({
+        promptId: prompt.id,
+        versionId: historicalVersion.id,
+        title: "Greeting standalone",
+      }),
+    );
+  });
+
+  it("renames the version being viewed", async () => {
+    bridge.versions.updateLabel.mockResolvedValue({
+      ...version,
+      label: "Production",
+      displayLabel: "Production",
+    });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (1)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Rename v1" }));
+    await user.type(await screen.findByLabelText("Version name"), "Production");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    expect(bridge.versions.updateLabel).toHaveBeenCalledWith(version.id, "Production");
+  });
+
+  it("clears a custom version name to restore its automatic label", async () => {
+    const namedVersion = { ...version, label: "Production", displayLabel: "Production" };
+    bridge.versions.list.mockResolvedValue([namedVersion]);
+    bridge.versions.updateLabel.mockResolvedValue({ ...version, label: null, displayLabel: "v1" });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, versionLabel: "Production" }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (1)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Rename Production" }));
+    const name = await screen.findByLabelText("Version name");
+    expect(name).toHaveValue("Production");
+    await user.clear(name);
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    expect(bridge.versions.updateLabel).toHaveBeenCalledWith(version.id, null);
+  });
+});

@@ -6,6 +6,7 @@ import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-re
 import {
   Check,
   ChevronDown,
+  Copy,
   Download,
   FileText,
   FolderInput,
@@ -178,6 +179,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("prompt");
   const [renameOpen, setRenameOpen] = useState(false);
+  const [renameVersionTarget, setRenameVersionTarget] = useState<VersionDto | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [collectionsOpen, setCollectionsOpen] = useState(false);
@@ -186,6 +188,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   const [rateTarget, setRateTarget] = useState<{ type: "prompt" } | { type: "version"; version: VersionDto } | null>(null);
   const [comparePair, setComparePair] = useState<{ base: VersionDto; other: VersionDto } | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<VersionDto | null>(null);
+  const [duplicatePromptSource, setDuplicatePromptSource] = useState<VersionDto | null>(null);
 
   useEffect(() => {
     setActiveTab("prompt");
@@ -421,6 +424,19 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     (title: string) => window.promptBuilder.prompts.update(prompt.id, { title }),
     { toast: "Prompt renamed" },
   );
+  const renameVersion = useAppMutation(
+    ({ versionId, label }: { versionId: string; label: string | null }) =>
+      window.promptBuilder.versions.updateLabel(versionId, label),
+    { toast: "Version renamed" },
+  );
+  const duplicatePrompt = useAppMutation(
+    ({ versionId, title }: { versionId: string; title: string }) =>
+      window.promptBuilder.prompts.duplicate({ promptId: prompt.id, versionId, title }),
+    {
+      toast: "Prompt duplicated",
+      onSuccess: (created) => selectPrompt(created.id),
+    },
+  );
   const updateDescription = useAppMutation(
     (description: string) => window.promptBuilder.prompts.update(prompt.id, { description }),
     { toast: "Description updated" },
@@ -596,15 +612,29 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
                 sideOffset={6}
                 className="pb-menu z-50 w-52 rounded-lg border border-line-strong bg-raised p-1 shadow-xl shadow-black/40"
               >
-                <MenuItem icon={<Pencil size={13} />} label="Rename" onSelect={() => setRenameOpen(true)} />
+                <MenuItem icon={<Pencil size={13} />} label="Rename prompt" onSelect={() => setRenameOpen(true)} />
                 <MenuItem icon={<FileText size={13} />} label="Edit description" onSelect={() => setDescriptionOpen(true)} />
                 <MenuItem icon={<FolderInput size={13} />} label="Move to collection…" onSelect={() => setCollectionsOpen(true)} />
                 <MenuItem icon={<Star size={13} />} label="Rate prompt…" onSelect={() => setRateTarget({ type: "prompt" })} />
+                <MenuItem
+                  icon={<Copy size={13} />}
+                  label="Duplicate as new prompt…"
+                  onSelect={() => {
+                    if (viewingVersion) setDuplicatePromptSource(viewingVersion);
+                  }}
+                />
                 <MenuItem
                   icon={<GitFork size={13} />}
                   label="Duplicate as variation…"
                   onSelect={() => {
                     if (viewingVersion) setDuplicateSource(viewingVersion);
+                  }}
+                />
+                <MenuItem
+                  icon={<Pencil size={13} />}
+                  label="Rename version…"
+                  onSelect={() => {
+                    if (viewingVersion) setRenameVersionTarget(viewingVersion);
                   }}
                 />
                 <MenuItem
@@ -726,6 +756,8 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
               }}
               onCompare={compareVersions}
               onDuplicate={(version) => setDuplicateSource(version)}
+              onDuplicateAsPrompt={(version) => setDuplicatePromptSource(version)}
+              onRename={(version) => setRenameVersionTarget(version)}
             />
           </Tabs.Content>
           <Tabs.Content value="results" className="flex min-h-0 flex-1 flex-col overflow-hidden outline-none">
@@ -797,6 +829,38 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         initialValue={prompt.description ?? ""}
         placeholder="What is this prompt for?"
         onSubmit={(value) => updateDescription.mutate(value)}
+      />
+      <NameDialog
+        open={duplicatePromptSource !== null}
+        onOpenChange={(open) => {
+          if (!open) setDuplicatePromptSource(null);
+        }}
+        title={`Duplicate ${duplicatePromptSource?.displayLabel ?? "version"} as new prompt`}
+        label="Title"
+        initialValue={`${prompt.title} copy`}
+        submitLabel="Duplicate"
+        onSubmit={(title) => {
+          if (duplicatePromptSource) {
+            duplicatePrompt.mutate({ versionId: duplicatePromptSource.id, title });
+          }
+        }}
+      />
+      <NameDialog
+        open={renameVersionTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenameVersionTarget(null);
+        }}
+        title={`Rename ${renameVersionTarget?.displayLabel ?? "version"}`}
+        label="Version name"
+        initialValue={renameVersionTarget?.label ?? ""}
+        placeholder={renameVersionTarget ? `Automatic: v${renameVersionTarget.number}` : undefined}
+        submitLabel="Rename"
+        allowEmpty
+        onSubmit={(label) => {
+          if (renameVersionTarget) {
+            renameVersion.mutate({ versionId: renameVersionTarget.id, label: label || null });
+          }
+        }}
       />
       <MoveToCollectionDialog prompt={prompt} open={collectionsOpen} onOpenChange={setCollectionsOpen} />
       <ConfirmDialog

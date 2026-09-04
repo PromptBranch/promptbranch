@@ -9,6 +9,7 @@ const api: PromptBuilderApi = {
     list: (query) => invoke(IPC_CHANNELS.promptList, query),
     get: (id) => invoke(IPC_CHANNELS.promptGet, id),
     create: (input) => invoke(IPC_CHANNELS.promptCreate, input),
+    duplicate: (input) => invoke(IPC_CHANNELS.promptDuplicate, input),
     update: (id, patch) => invoke(IPC_CHANNELS.promptUpdate, { id, patch }),
     setStarred: (id, starred) => invoke(IPC_CHANNELS.promptSetStarred, { id, starred }),
     softDelete: (id) => invoke(IPC_CHANNELS.promptSoftDelete, id),
@@ -21,6 +22,7 @@ const api: PromptBuilderApi = {
     list: (promptId) => invoke(IPC_CHANNELS.versionList, promptId),
     get: (versionId) => invoke(IPC_CHANNELS.versionGet, versionId),
     setCurrent: (promptId, versionId) => invoke(IPC_CHANNELS.versionSetCurrent, { promptId, versionId }),
+    updateLabel: (versionId, label) => invoke(IPC_CHANNELS.versionUpdateLabel, { versionId, label }),
   },
   drafts: {
     get: (promptId) => invoke(IPC_CHANNELS.draftGet, promptId),

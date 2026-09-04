@@ -18,6 +18,7 @@ export const IPC_CHANNELS = {
   versionGet: "version:get",
   versionSetCurrent: "version:set-current",
   versionUpdateLabel: "version:update-label",
+  versionDelete: "version:delete",
   draftGet: "draft:get",
   draftSet: "draft:set",
   branchList: "branch:list",

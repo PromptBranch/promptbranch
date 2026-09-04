@@ -518,12 +518,12 @@ export class SyncEngine {
 
             const remapped = this.remapOp(def, winner);
             if (winner.kind === "delete" || remapped.payload === null) {
-              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
             } else if (this.tombstonedPromptOwner(def, remapped.payload) !== null) {
               // v10's terminal prompt cascade intentionally leaves historical
               // descendant ops for gossip. Repair must consume their winner
               // without recreating an FK child under the deleted prompt.
-              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
             } else {
               this.applyUpsert(
                 def,
@@ -551,6 +551,7 @@ export class SyncEngine {
           }
         }
 
+        for (const branchId of touchedBranches) this.pruneDerivedEmptyBranch(branchId);
         for (const branchId of touchedBranches) this.renumberBranch(branchId);
         for (const promptId of touchedPrompts) reindexPrompt(this.db, promptId);
       } finally {
@@ -625,6 +626,7 @@ export class SyncEngine {
             table === "ratings" &&
             op.kind === "upsert" &&
             payload?.["target_type"] === "version" &&
+            !this.hasVersionTombstone(String(payload["target_id"])) &&
             !this.knowsVersion(String(payload["target_id"]))
           ) {
             // Ratings have a polymorphic target rather than a SQLite FK. Do
@@ -653,6 +655,7 @@ export class SyncEngine {
           this.observeStamp(op.hlc);
 
           const promptHardDelete = table === "prompts" && op.kind === "delete";
+          const versionDelete = table === "versions" && op.kind === "delete";
           if (promptHardDelete) {
             this.recordPromptTombstone(recordId);
           }
@@ -698,6 +701,36 @@ export class SyncEngine {
                 summary.stale += 1;
                 continue;
               }
+              if (def.name === "versions" && this.hasVersionTombstone(recordId)) {
+                // Version deletion is terminal. A later rename or renumber
+                // from a disconnected peer must not recreate the row.
+                const branchId = payload["branch_id"];
+                if (typeof branchId === "string") {
+                  touchedBranches.add(this.readRemap("branches", branchId) ?? branchId);
+                }
+                touchedPrompts.add(String(payload["prompt_id"]));
+                if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
+                summary.stale += 1;
+                continue;
+              }
+              const versionId = this.referencedVersion(def, payload);
+              if (versionId !== null && this.hasVersionTombstone(versionId)) {
+                if (def.name === "notes") {
+                  payload = { ...payload, version_id: null };
+                } else {
+                  // Runs and version ratings have no meaning without their
+                  // immutable input version. Consume them without leaving
+                  // an FK orphan or allowing a later sync to restore them.
+                  if (wins) {
+                    this.applyDelete(def, recordId, touchedPrompts, touchedBranches, op.hlc);
+                    upsertHead.run(table, recordId, op.hlc, op.source);
+                    summary.applied += 1;
+                  } else {
+                    summary.stale += 1;
+                  }
+                  continue;
+                }
+              }
               if (this.hasWinningNaturalParentTombstone(def, payload, op)) {
                 // A natural-key parent may have been deleted after an older
                 // child op was authored. Its absent row is a known terminal
@@ -709,10 +742,20 @@ export class SyncEngine {
                 else summary.stale += 1;
                 continue;
               }
+              if (def.name === "versions" && wins) {
+                const branchId = this.restoreMissingBranchFromWinningUpsert(
+                  payload,
+                  touchedPrompts,
+                  touchedBranches,
+                );
+                if (branchId !== null && branchId !== payload["branch_id"]) {
+                  payload = { ...payload, branch_id: branchId };
+                }
+              }
             }
           }
 
-          if (!wins && !promptHardDelete) {
+          if (!wins && !promptHardDelete && !versionDelete) {
             // This op lost the mutable LWW race, but may still have merged an
             // alias component or reduced child history. It remains one input
             // classification either way, never both stale and applied.
@@ -722,7 +765,7 @@ export class SyncEngine {
           }
 
           if (op.kind === "delete") {
-            this.applyDelete(def, recordId, touchedPrompts, touchedBranches);
+            this.applyDelete(def, recordId, touchedPrompts, touchedBranches, op.hlc);
           } else {
             this.applyUpsert(def, recordId, payload!, touchedPrompts, touchedBranches, op.hlc);
           }
@@ -730,6 +773,7 @@ export class SyncEngine {
           summary.applied += 1;
         }
 
+        for (const branchId of touchedBranches) this.pruneDerivedEmptyBranch(branchId);
         for (const branchId of touchedBranches) this.renumberBranch(branchId);
         for (const promptId of touchedPrompts) reindexPrompt(this.db, promptId);
 
@@ -1113,7 +1157,7 @@ export class SyncEngine {
       const terminalOwner = payload === null ? null : this.tombstonedPromptOwner(childDef, payload);
       if (!parentExists || group.winner.kind === "delete" || terminalOwner !== null || payload === null) {
         changed = changed || this.readRow(childDef, recordId) !== null;
-        this.applyDelete(childDef, recordId, touchedPrompts, new Set());
+        this.applyDelete(childDef, recordId, touchedPrompts, new Set(), group.winner.hlc);
       } else {
         const current = this.readRow(childDef, recordId);
         changed =
@@ -1297,7 +1341,7 @@ export class SyncEngine {
     const parentExists = winner.kind === "upsert";
     if (!parentExists) {
       const before = this.readRow(def, canonicalRecordId) !== null;
-      this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches);
+      this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
       structuralChange = structuralChange || before;
     }
     if (def.name === "tags" || def.name === "collections") {
@@ -1400,6 +1444,37 @@ export class SyncEngine {
     );
   }
 
+  /** Restores a branch removed only as local empty-container cleanup. */
+  private restoreMissingBranchFromWinningUpsert(
+    versionPayload: Record<string, unknown>,
+    touchedPrompts: Set<string>,
+    touchedBranches: Set<string>,
+  ): string | null {
+    const branchDef = tableDef("branches")!;
+    const branchId = versionPayload["branch_id"];
+    if (typeof branchId !== "string") return null;
+    if (this.readRow(branchDef, encodeRecordId(branchDef, [branchId])) !== null) return branchId;
+
+    const { members } = this.canonicalRemapComponent("branches", [branchId]);
+    const winner = this.winningMergeOp(branchDef, members);
+    if (winner?.kind !== "upsert" || winner.payload === null) return null;
+    const restored = this.remapOp(branchDef, winner);
+    if (restored.payload === null || this.tombstonedPromptOwner(branchDef, restored.payload) !== null) {
+      return null;
+    }
+    this.applyUpsert(
+      branchDef,
+      restored.recordId,
+      restored.payload,
+      touchedPrompts,
+      touchedBranches,
+      winner.hlc,
+    );
+    const restoredId = this.readRemap("branches", branchId) ?? branchId;
+    touchedBranches.add(restoredId);
+    return restoredId;
+  }
+
   private normalizeSharedSnapshot(payload: Record<string, unknown>): Record<string, unknown> {
     const promptId = payload["prompt_id"];
     if (typeof promptId !== "string" || !this.isPromptTombstoned(promptId)) return payload;
@@ -1415,6 +1490,103 @@ export class SyncEngine {
          LIMIT 1`,
       )
       .get(versionId) !== undefined;
+  }
+
+  private hasVersionTombstone(versionId: string): boolean {
+    return this.db
+      .prepare(
+        `SELECT 1
+         FROM sync_ops
+         WHERE table_name = 'versions' AND record_id = ? AND kind = 'delete'
+         LIMIT 1`,
+      )
+      .get(versionId) !== undefined;
+  }
+
+  private referencedVersion(
+    def: SyncedTableDef,
+    payload: Record<string, unknown>,
+  ): string | null {
+    const value =
+      def.name === "notes" || def.name === "runs"
+        ? payload["version_id"]
+        : def.name === "ratings" && payload["target_type"] === "version"
+          ? payload["target_id"]
+          : null;
+    return typeof value === "string" ? value : null;
+  }
+
+  /** Removes an empty branch whose last known version has a terminal tombstone. */
+  private pruneDerivedEmptyBranch(branchId: string): void {
+    if (this.db.prepare("SELECT 1 FROM versions WHERE branch_id = ?").get(branchId)) return;
+    const { members } = this.canonicalRemapComponent("branches", [branchId]);
+    const placeholders = members.map(() => "?").join(", ");
+    const deletedVersion = this.db
+      .prepare(
+        `SELECT 1
+         FROM sync_ops deleted
+         JOIN sync_ops version
+           ON version.table_name = 'versions'
+          AND version.record_id = deleted.record_id
+          AND version.kind = 'upsert'
+         WHERE deleted.table_name = 'versions'
+           AND deleted.kind = 'delete'
+           AND json_extract(version.payload_json, '$.branch_id') IN (${placeholders})
+         LIMIT 1`,
+      )
+      .get(...members);
+    if (deletedVersion) this.db.prepare("DELETE FROM branches WHERE id = ?").run(branchId);
+  }
+
+  private stashPendingPointer(promptId: string, versionId: string, hlc: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO sync_pending_pointers (prompt_id, version_id, hlc) VALUES (?, ?, ?)
+         ON CONFLICT(prompt_id) DO UPDATE SET version_id = excluded.version_id, hlc = excluded.hlc
+         WHERE excluded.hlc >= sync_pending_pointers.hlc`,
+      )
+      .run(promptId, versionId, hlc);
+  }
+
+  private survivingCurrentVersion(
+    promptId: string,
+    excluded: ReadonlySet<string>,
+    pendingHlc: string,
+  ): string | null {
+    const historical = this.db
+      .prepare(
+        `SELECT payload_json
+         FROM sync_ops
+         WHERE table_name = 'prompts' AND record_id = ? AND kind = 'upsert'
+         ORDER BY hlc DESC, source_device_id DESC`,
+      )
+      .all(promptId) as Array<{ payload_json: string | null }>;
+    for (const row of historical) {
+      if (row.payload_json === null) continue;
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      const pointer = payload["current_version_id"];
+      if (
+        typeof pointer !== "string" ||
+        excluded.has(pointer) ||
+        this.hasVersionTombstone(pointer)
+      ) {
+        continue;
+      }
+      const version = this.db
+        .prepare("SELECT 1 FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'")
+        .get(pointer, promptId);
+      if (version) return pointer;
+      this.stashPendingPointer(promptId, pointer, pendingHlc);
+      return null;
+    }
+    const fallback = this.db
+      .prepare(
+        `SELECT id FROM versions
+         WHERE prompt_id = ? AND status = 'active'
+         ORDER BY created_at DESC, id DESC`,
+      )
+      .all(promptId) as Array<{ id: string }>;
+    return fallback.find((row) => !excluded.has(row.id))?.id ?? null;
   }
 
   /** Applies recorded id remaps to an op's record key and payload references. */
@@ -1503,15 +1675,18 @@ export class SyncEngine {
         let pointer = payload["current_version_id"];
         if (typeof pointer === "string") {
           const present = this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(pointer);
-          if (!present) {
-            // Version not received yet — stash the pointer, keep the local one.
+          if (this.hasVersionTombstone(pointer)) {
             this.db
-              .prepare(
-                `INSERT INTO sync_pending_pointers (prompt_id, version_id, hlc) VALUES (?, ?, ?)
-                 ON CONFLICT(prompt_id) DO UPDATE SET version_id = excluded.version_id, hlc = excluded.hlc
-                 WHERE excluded.hlc >= sync_pending_pointers.hlc`,
-              )
-              .run(String(payload["id"]), pointer, opHlc);
+              .prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ? OR version_id = ?")
+              .run(String(payload["id"]), pointer);
+            pointer = this.survivingCurrentVersion(
+              String(payload["id"]),
+              new Set([pointer]),
+              opHlc,
+            );
+          } else if (!present) {
+            // Version not received yet — stash the pointer, keep the local one.
+            this.stashPendingPointer(String(payload["id"]), pointer, opHlc);
             const current = this.db
               .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
               .get(String(payload["id"])) as { current_version_id: string | null } | undefined;
@@ -1529,10 +1704,15 @@ export class SyncEngine {
         return;
       }
       case "versions": {
-        this.upsertRow(def, payload, []);
-        touchedPrompts.add(String(payload["prompt_id"]));
-        touchedBranches.add(String(payload["branch_id"]));
-        this.fulfillPendingPointer(String(payload["id"]));
+        const parentId = payload["parent_version_id"];
+        const normalized =
+          typeof parentId === "string" && this.hasVersionTombstone(parentId)
+            ? { ...payload, parent_version_id: null }
+            : payload;
+        this.upsertRow(def, normalized, []);
+        touchedPrompts.add(String(normalized["prompt_id"]));
+        touchedBranches.add(String(normalized["branch_id"]));
+        this.fulfillPendingPointer(String(normalized["id"]));
         return;
       }
       case "notes":
@@ -1605,6 +1785,7 @@ export class SyncEngine {
     recordId: string,
     touchedPrompts: Set<string>,
     touchedBranches: Set<string>,
+    opHlc: string,
   ): void {
     const values = decodeRecordId(def, recordId);
     const id = values[0]!;
@@ -1643,7 +1824,23 @@ export class SyncEngine {
           this.db.prepare("SELECT prompt_id FROM branches WHERE id = ?").get(id) as
             | { prompt_id: string }
             | undefined
-        )?.prompt_id;
+          )?.prompt_id;
+        const versionIds = this.db
+          .prepare("SELECT id FROM versions WHERE branch_id = ?")
+          .all(id) as Array<{ id: string }>;
+        const deletedVersionIds = new Set(versionIds.map((version) => version.id));
+        if (promptId !== undefined) {
+          const current = this.db
+            .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
+            .get(promptId) as { current_version_id: string | null } | undefined;
+          if (current?.current_version_id && deletedVersionIds.has(current.current_version_id)) {
+            run(
+              "UPDATE prompts SET current_version_id = ? WHERE id = ?",
+              this.survivingCurrentVersion(promptId, deletedVersionIds, opHlc),
+              promptId,
+            );
+          }
+        }
         run("DELETE FROM runs WHERE version_id IN (SELECT id FROM versions WHERE branch_id = ?)", id);
         run(
           `DELETE FROM ratings WHERE target_type = 'version'
@@ -1651,6 +1848,14 @@ export class SyncEngine {
           id,
         );
         run("UPDATE notes SET version_id = NULL WHERE version_id IN (SELECT id FROM versions WHERE branch_id = ?)", id);
+        run(
+          `UPDATE versions SET parent_version_id = NULL
+           WHERE parent_version_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
+          id,
+        );
+        for (const versionId of deletedVersionIds) {
+          run("DELETE FROM sync_pending_pointers WHERE version_id = ?", versionId);
+        }
         run("DELETE FROM versions WHERE branch_id = ?", id);
         run("DELETE FROM branches WHERE id = ?", id);
         if (promptId !== undefined) touchedPrompts.add(promptId);
@@ -1660,11 +1865,35 @@ export class SyncEngine {
         const row = this.db.prepare("SELECT prompt_id, branch_id FROM versions WHERE id = ?").get(id) as
           | { prompt_id: string; branch_id: string }
           | undefined;
+        const pendingOwner = this.db
+          .prepare("SELECT prompt_id FROM sync_pending_pointers WHERE version_id = ?")
+          .get(id) as { prompt_id: string } | undefined;
+        const promptId = row?.prompt_id ?? pendingOwner?.prompt_id;
+        if (promptId) {
+          const current = this.db
+            .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
+            .get(promptId) as { current_version_id: string | null } | undefined;
+          if (current?.current_version_id === id || pendingOwner !== undefined) {
+            run(
+              "UPDATE prompts SET current_version_id = ? WHERE id = ?",
+              this.survivingCurrentVersion(promptId, new Set([id]), opHlc),
+              promptId,
+            );
+          }
+        }
         run("DELETE FROM runs WHERE version_id = ?", id);
         run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", id);
         run("UPDATE notes SET version_id = NULL WHERE version_id = ?", id);
+        run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", id);
+        run("DELETE FROM sync_pending_pointers WHERE version_id = ?", id);
         run("DELETE FROM versions WHERE id = ?", id);
         if (row) {
+          run(
+            `DELETE FROM branches
+             WHERE id = ? AND NOT EXISTS (SELECT 1 FROM versions WHERE branch_id = ?)`,
+            row.branch_id,
+            row.branch_id,
+          );
           touchedPrompts.add(row.prompt_id);
           touchedBranches.add(row.branch_id);
         }
@@ -1734,10 +1963,10 @@ export class SyncEngine {
     this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
   }
 
-  /** Deterministic per-branch numbering: (created_at, id) order. */
+  /** Keeps established sequence; timestamp/id deterministically break concurrent number ties. */
   private renumberBranch(branchId: string): void {
     const rows = this.db
-      .prepare("SELECT id FROM versions WHERE branch_id = ? ORDER BY created_at, id")
+      .prepare("SELECT id FROM versions WHERE branch_id = ? ORDER BY number, created_at, id")
       .all(branchId) as Array<{ id: string }>;
     const update = this.db.prepare("UPDATE versions SET number = ? WHERE id = ?");
     rows.forEach((row, index) => update.run(index + 1, row.id));

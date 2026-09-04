@@ -10,18 +10,19 @@ const hello = {
 };
 
 describe("sync protocol version", () => {
-  it("rejects v1 peers that cannot decode delimiter-safe composite record keys", () => {
+  it("rejects peers without terminal version-deletion semantics", () => {
     expect(() => parseMessage({ ...hello, v: 1 })).toThrow(/protocol version 1/i);
-    expect(parseMessage({ ...hello, v: 2 })).toEqual({ ...hello, v: 2 });
+    expect(() => parseMessage({ ...hello, v: 2 })).toThrow(/protocol version 2/i);
+    expect(parseMessage({ ...hello, v: 3 })).toEqual({ ...hello, v: 3 });
   });
 
   it("requires the current protocol during pairing", () => {
     expect(() => parseMessage({ t: "pair-introduce", name: "Old peer" })).toThrow(
       /protocol version missing/i,
     );
-    expect(parseMessage({ t: "pair-introduce-v2", v: 2, name: "Current peer" })).toEqual({
+    expect(parseMessage({ t: "pair-introduce-v2", v: 3, name: "Current peer" })).toEqual({
       t: "pair-introduce-v2",
-      v: 2,
+      v: 3,
       name: "Current peer",
     });
   });
@@ -31,7 +32,7 @@ describe("sync protocol version", () => {
       t: z.literal("pair-introduce"),
       name: z.string().min(1).max(100),
     });
-    const introduction = { t: "pair-introduce-v2", v: 2, name: "Current peer" };
+    const introduction = { t: "pair-introduce-v2", v: 3, name: "Current peer" };
 
     expect(releasedV1PairIntroduce.safeParse(introduction).success).toBe(false);
     expect(parseMessage(introduction)).toEqual(introduction);

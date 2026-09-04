@@ -23,6 +23,7 @@ const api: PromptBuilderApi = {
     get: (versionId) => invoke(IPC_CHANNELS.versionGet, versionId),
     setCurrent: (promptId, versionId) => invoke(IPC_CHANNELS.versionSetCurrent, { promptId, versionId }),
     updateLabel: (versionId, label) => invoke(IPC_CHANNELS.versionUpdateLabel, { versionId, label }),
+    delete: (versionId) => invoke(IPC_CHANNELS.versionDelete, { versionId }),
   },
   drafts: {
     get: (promptId) => invoke(IPC_CHANNELS.draftGet, promptId),

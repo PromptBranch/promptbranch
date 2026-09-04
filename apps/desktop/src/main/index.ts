@@ -59,6 +59,7 @@ import {
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
   versionCreateSchema,
+  versionDeleteSchema,
   versionSetCurrentSchema,
   versionUpdateLabelSchema,
   type ActivityItemDto,
@@ -392,6 +393,11 @@ function registerIpcHandlers(): void {
     const version = lib.updateVersionLabel(versionId, label);
     const prompt = lib.getPrompt(version.prompt_id);
     return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.versionDelete, (_e, payload: unknown) => {
+    const { versionId } = versionDeleteSchema.parse(payload);
+    lib.deleteVersion(versionId);
   });
 
   function branchNameFor(branchId: string): string {

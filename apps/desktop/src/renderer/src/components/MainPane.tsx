@@ -180,6 +180,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   const [activeTab, setActiveTab] = useState("prompt");
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameVersionTarget, setRenameVersionTarget] = useState<VersionDto | null>(null);
+  const [deleteVersionTarget, setDeleteVersionTarget] = useState<VersionDto | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [collectionsOpen, setCollectionsOpen] = useState(false);
@@ -195,6 +196,22 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   }, [prompt.id]);
 
   const versionList = versions ?? [];
+  useEffect(() => {
+    if (!versions) return;
+    const liveIds = new Set(versions.map((version) => version.id));
+    const keepVersion = (target: VersionDto | null) =>
+      target !== null && liveIds.has(target.id) ? target : null;
+    setRenameVersionTarget(keepVersion);
+    setDeleteVersionTarget(keepVersion);
+    setDuplicateSource(keepVersion);
+    setDuplicatePromptSource(keepVersion);
+    setRateTarget((target) =>
+      target?.type === "version" && !liveIds.has(target.version.id) ? null : target,
+    );
+    setComparePair((pair) =>
+      pair && liveIds.has(pair.base.id) && liveIds.has(pair.other.id) ? pair : null,
+    );
+  }, [versions]);
   const viewingVersion =
     (viewingVersionId ? versionList.find((v) => v.id === viewingVersionId) : null) ??
     versionList.find((v) => v.id === prompt.currentVersionId) ??
@@ -429,6 +446,15 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       window.promptBuilder.versions.updateLabel(versionId, label),
     { toast: "Version renamed" },
   );
+  const deleteVersion = useAppMutation(
+    (versionId: string) => window.promptBuilder.versions.delete(versionId),
+    {
+      toast: "Version deleted",
+      onSuccess: (_result, versionId) => {
+        if (viewingVersionId === versionId) setViewingVersionId(null);
+      },
+    },
+  );
   const duplicatePrompt = useAppMutation(
     ({ versionId, title }: { versionId: string; title: string }) =>
       window.promptBuilder.prompts.duplicate({ promptId: prompt.id, versionId, title }),
@@ -637,13 +663,21 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
                     if (viewingVersion) setRenameVersionTarget(viewingVersion);
                   }}
                 />
+                {!isViewingCurrent && viewingVersion && (
+                  <MenuItem
+                    icon={<Trash2 size={13} />}
+                    label="Delete version…"
+                    danger
+                    onSelect={() => setDeleteVersionTarget(viewingVersion)}
+                  />
+                )}
                 <MenuItem
                   icon={<Download size={13} />}
                   label="Export prompt JSON"
                   onSelect={() => exportPrompt.mutate(undefined)}
                 />
                 <DropdownMenu.Separator className="my-1 h-px bg-line" />
-                <MenuItem icon={<Trash2 size={13} />} label="Delete" danger onSelect={() => setDeleteOpen(true)} />
+                <MenuItem icon={<Trash2 size={13} />} label="Delete prompt" danger onSelect={() => setDeleteOpen(true)} />
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
@@ -758,6 +792,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
               onDuplicate={(version) => setDuplicateSource(version)}
               onDuplicateAsPrompt={(version) => setDuplicatePromptSource(version)}
               onRename={(version) => setRenameVersionTarget(version)}
+              onDelete={(version) => setDeleteVersionTarget(version)}
             />
           </Tabs.Content>
           <Tabs.Content value="results" className="flex min-h-0 flex-1 flex-col overflow-hidden outline-none">
@@ -863,6 +898,19 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         }}
       />
       <MoveToCollectionDialog prompt={prompt} open={collectionsOpen} onOpenChange={setCollectionsOpen} />
+      <ConfirmDialog
+        open={deleteVersionTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteVersionTarget(null);
+        }}
+        title={`Delete ${deleteVersionTarget?.displayLabel ?? "version"}?`}
+        description="Run results and ratings will be permanently removed. Version notes become prompt-level notes, published shares stay live, and remaining versions are renumbered. This cannot be undone."
+        confirmLabel="Delete version"
+        danger
+        onConfirm={() => {
+          if (deleteVersionTarget) deleteVersion.mutate(deleteVersionTarget.id);
+        }}
+      />
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}

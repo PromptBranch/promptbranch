@@ -1544,6 +1544,498 @@ describe("sync engine", () => {
     expect(b.lib.listVersions(gone.id)).toEqual([]);
   });
 
+  it("propagates version deletion with dependency cleanup and stable surviving history", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Versions", content: "v1" });
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    const v3 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" });
+    const setCreatedAt = a.db.prepare("UPDATE versions SET created_at = ? WHERE id = ?");
+    setCreatedAt.run("2026-09-04T00:00:01.000Z", prompt.current_version_id);
+    setCreatedAt.run("2026-09-04T00:00:02.000Z", v2.id);
+    setCreatedAt.run("2026-09-04T00:00:03.000Z", v3.id);
+    const note = a.lib.addNote({ promptId: prompt.id, versionId: v2.id, body: "keep" });
+    a.lib.addRun({ promptId: prompt.id, versionId: v2.id });
+    a.lib.addRating({ targetType: "version", targetId: v2.id, clarity: 5 });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(v2.id);
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.listVersions(prompt.id).map(({ id, number }) => ({ id, number }))).toEqual([
+        { id: prompt.current_version_id, number: 1 },
+        { id: v3.id, number: 2 },
+      ]);
+      expect(peer.lib.getVersion(v3.id)?.parent_version_id).toBeNull();
+      expect(peer.lib.listNotes(prompt.id)).toMatchObject([{ id: note.id, version_id: null }]);
+      expect(peer.lib.listRuns(prompt.id)).toEqual([]);
+      expect(peer.lib.getLatestRating("version", v2.id)).toBeNull();
+      expect(peer.lib.getPrompt(prompt.id)?.current_version_id).toBe(v3.id);
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("preserves branch sequence across sync when surviving versions share a timestamp", () => {
+    const a = rig();
+    const b = rig();
+    a.db.transaction(() => {
+      a.db.pragma("defer_foreign_keys = ON");
+      a.db.prepare(
+        `INSERT INTO prompts (id, title, current_version_id, created_at, updated_at)
+         VALUES ('fixed-prompt', 'Fixed', 'z-first', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`,
+      ).run();
+      a.db.prepare(
+        `INSERT INTO branches (id, prompt_id, name, created_at)
+         VALUES ('fixed-branch', 'fixed-prompt', 'main', '2026-09-04T00:00:00.000Z')`,
+      ).run();
+      const insert = a.db.prepare(
+        `INSERT INTO versions
+           (id, prompt_id, branch_id, parent_version_id, number, content, created_at)
+         VALUES (?, 'fixed-prompt', 'fixed-branch', ?, ?, ?, '2026-09-04T00:00:00.000Z')`,
+      );
+      insert.run("z-first", null, 1, "first");
+      insert.run("m-delete", "z-first", 2, "middle");
+      insert.run("a-last", "m-delete", 3, "last");
+    })();
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion("m-delete");
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.listVersions("fixed-prompt").map(({ id, number }) => ({ id, number }))).toEqual([
+        { id: "z-first", number: 1 },
+        { id: "a-last", number: 2 },
+      ]);
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("keeps a concurrent child version when its deleted parent arrives first", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Concurrent lineage", content: "v1" });
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(v2.id);
+    a.engine.refineDirty(2_000);
+    const child = b.lib.createBranch({
+      promptId: prompt.id,
+      name: "concurrent-child",
+      fromVersionId: v2.id,
+    }).version;
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getVersion(v2.id)).toBeNull();
+      expect(peer.lib.getVersion(child.id)?.parent_version_id).toBeNull();
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("keeps a version created concurrently on an emptied variation branch", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Concurrent branch child", content: "main" });
+    const variation = a.lib.createBranch({
+      promptId: prompt.id,
+      name: "variation",
+      fromVersionId: prompt.current_version_id!,
+    });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    const child = b.lib.createVersion({
+      promptId: prompt.id,
+      branchId: variation.branch.id,
+      content: "concurrent child",
+    });
+    b.engine.refineDirty(1_500);
+    a.lib.deleteVersion(variation.version.id);
+    a.engine.refineDirty(2_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getVersion(variation.version.id)).toBeNull();
+      expect(peer.lib.getVersion(child.id)).toMatchObject({
+        branch_id: variation.branch.id,
+        parent_version_id: null,
+        content: "concurrent child",
+      });
+      expect(peer.lib.listBranches(prompt.id).map((branch) => branch.id)).toContain(
+        variation.branch.id,
+      );
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("resolves concurrent records attached to a deleted version", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Concurrent records", content: "v1" });
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(v2.id);
+    a.engine.refineDirty(2_000);
+    const note = b.lib.addNote({ promptId: prompt.id, versionId: v2.id, body: "keep" });
+    const run = b.lib.addRun({ promptId: prompt.id, versionId: v2.id });
+    const rating = b.lib.addRating({ targetType: "version", targetId: v2.id, clarity: 5 });
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getVersion(v2.id)).toBeNull();
+      expect(peer.lib.listNotes(prompt.id)).toMatchObject([{ id: note.id, version_id: null }]);
+      expect(peer.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(run.id)).toBeUndefined();
+      expect(peer.db.prepare("SELECT 1 FROM ratings WHERE id = ?").get(rating.id)).toBeUndefined();
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("removes an emptied variation branch on every peer", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Empty branch", content: "main" });
+    const variation = a.lib.createBranch({
+      promptId: prompt.id,
+      name: "temporary",
+      fromVersionId: prompt.current_version_id!,
+    });
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(variation.version.id);
+    a.engine.refineDirty(2_000);
+    expect(
+      collectAll(a.engine).some(
+        (op) =>
+          op.source === a.engine.deviceId() &&
+          op.table === "branches" &&
+          op.recordId === variation.branch.id &&
+          op.kind === "delete",
+      ),
+    ).toBe(false);
+    drain(a.engine, b.engine);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getVersion(variation.version.id)).toBeNull();
+      expect(peer.lib.listBranches(prompt.id).map((branch) => branch.name)).toEqual(["main"]);
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("prunes an empty branch when its version tombstone arrives before history", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const branch = fixedOp(
+      "device-a",
+      1,
+      "branches",
+      "branch-1",
+      {
+        id: "branch-1",
+        prompt_id: "prompt-1",
+        name: "temporary",
+        description: null,
+        created_at: "2026-09-04T00:00:00.000Z",
+      },
+      100,
+    );
+    const version = fixedOp(
+      "device-a",
+      2,
+      "versions",
+      "version-1",
+      {
+        id: "version-1",
+        prompt_id: "prompt-1",
+        branch_id: "branch-1",
+        parent_version_id: null,
+        number: 1,
+        label: null,
+        content: "deleted",
+        content_format: "markdown",
+        change_note: null,
+        author: "You",
+        status: "active",
+        source: "user",
+        created_at: "2026-09-04T00:00:00.000Z",
+      },
+      110,
+    );
+    const deleted = fixedOp("device-b", 1, "versions", "version-1", null, 200, "delete");
+
+    r.engine.applyRemote([deleted]);
+    r.engine.applyRemote([branch]);
+    r.engine.applyRemote([version]);
+
+    expect(r.lib.getVersion("version-1")).toBeNull();
+    expect(r.lib.listBranches("prompt-1")).toEqual([]);
+  });
+
+  it("does not let a concurrent current pointer resurrect a deleted version", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Current race", content: "v1" });
+    const v1Id = prompt.current_version_id!;
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    a.lib.setCurrentVersion(prompt.id, v1Id);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(v2.id);
+    a.engine.refineDirty(2_000);
+    b.lib.setCurrentVersion(prompt.id, v2.id);
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    for (const peer of [a, b]) {
+      expect(peer.lib.getVersion(v2.id)).toBeNull();
+      expect(peer.lib.getPrompt(prompt.id)?.current_version_id).toBe(v1Id);
+      expect(
+        peer.db.prepare("SELECT 1 FROM sync_pending_pointers WHERE version_id = ?").get(v2.id),
+      ).toBeUndefined();
+    }
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
+  it("restores a surviving current pointer when its version reaches a fresh peer last", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const promptPayload = (currentVersionId: string) => ({
+      id: "prompt-1",
+      title: "Fresh peer pointer",
+      description: null,
+      icon: null,
+      draft_content: null,
+      current_version_id: currentVersionId,
+      is_starred: 0,
+      created_at: "2026-09-04T00:00:00.000Z",
+      updated_at: "2026-09-04T00:00:00.000Z",
+      deleted_at: null,
+    });
+    const branch = fixedOp(
+      "origin",
+      1,
+      "branches",
+      "branch-1",
+      {
+        id: "branch-1",
+        prompt_id: "prompt-1",
+        name: "main",
+        description: null,
+        created_at: "2026-09-04T00:00:00.000Z",
+      },
+      100,
+    );
+    const survivingPointer = fixedOp(
+      "delete-author",
+      1,
+      "prompts",
+      "prompt-1",
+      promptPayload("v1"),
+      200,
+    );
+    const deleted = fixedOp("delete-author", 2, "versions", "v2", null, 210, "delete");
+    const concurrentDeletedPointer = fixedOp(
+      "pointer-author",
+      1,
+      "prompts",
+      "prompt-1",
+      promptPayload("v2"),
+      300,
+    );
+    const v1 = fixedOp(
+      "origin",
+      2,
+      "versions",
+      "v1",
+      {
+        id: "v1",
+        prompt_id: "prompt-1",
+        branch_id: "branch-1",
+        parent_version_id: null,
+        number: 1,
+        label: null,
+        content: "survivor",
+        content_format: "markdown",
+        change_note: null,
+        author: "You",
+        status: "active",
+        source: "user",
+        created_at: "2026-09-04T00:00:00.000Z",
+      },
+      100,
+    );
+
+    r.engine.applyRemote([branch]);
+    r.engine.applyRemote([survivingPointer, deleted]);
+    r.engine.applyRemote([concurrentDeletedPointer]);
+    expect(r.lib.getPrompt("prompt-1")?.current_version_id).toBeNull();
+
+    r.engine.applyRemote([v1]);
+
+    expect(r.lib.getPrompt("prompt-1")?.current_version_id).toBe("v1");
+    expect(r.lib.getVersion("v2")).toBeNull();
+  });
+
+  it("restores a pending surviving pointer after deleting the current row", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const promptPayload = (currentVersionId: string) => ({
+      id: "prompt-1",
+      title: "Direct delete pointer",
+      description: null,
+      icon: null,
+      draft_content: null,
+      current_version_id: currentVersionId,
+      is_starred: 0,
+      created_at: "2026-09-04T00:00:00.000Z",
+      updated_at: "2026-09-04T00:00:00.000Z",
+      deleted_at: null,
+    });
+    const branchPayload = {
+      id: "branch-1",
+      prompt_id: "prompt-1",
+      name: "main",
+      description: null,
+      created_at: "2026-09-04T00:00:00.000Z",
+    };
+    const versionPayload = (id: string, number: number) => ({
+      id,
+      prompt_id: "prompt-1",
+      branch_id: "branch-1",
+      parent_version_id: null,
+      number,
+      label: null,
+      content: id,
+      content_format: "markdown",
+      change_note: null,
+      author: "You",
+      status: "active",
+      source: "user",
+      created_at: "2026-09-04T00:00:00.000Z",
+    });
+
+    r.engine.applyRemote([fixedOp("origin", 1, "branches", "branch-1", branchPayload, 100)]);
+    r.engine.applyRemote([
+      fixedOp("pointer-author", 1, "prompts", "prompt-1", promptPayload("v1"), 200),
+    ]);
+    r.engine.applyRemote([
+      fixedOp("origin", 2, "versions", "v2", versionPayload("v2", 2), 100),
+    ]);
+    r.engine.applyRemote([
+      fixedOp("pointer-author", 2, "prompts", "prompt-1", promptPayload("v2"), 300),
+    ]);
+    expect(r.lib.getPrompt("prompt-1")?.current_version_id).toBe("v2");
+
+    r.engine.applyRemote([fixedOp("delete-author", 1, "versions", "v2", null, 400, "delete")]);
+    r.engine.applyRemote([
+      fixedOp("origin", 3, "versions", "v1", versionPayload("v1", 1), 100),
+    ]);
+
+    expect(r.lib.getPrompt("prompt-1")?.current_version_id).toBe("v1");
+    expect(r.lib.getVersion("v2")).toBeNull();
+  });
+
+  it("restores a surviving pointer when the deleted current version never arrived", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-1");
+    const promptPayload = (currentVersionId: string) => ({
+      id: "prompt-1",
+      title: "Missing deleted version",
+      description: null,
+      icon: null,
+      draft_content: null,
+      current_version_id: currentVersionId,
+      is_starred: 0,
+      created_at: "2026-09-04T00:00:00.000Z",
+      updated_at: "2026-09-04T00:00:00.000Z",
+      deleted_at: null,
+    });
+    const branchPayload = {
+      id: "branch-1",
+      prompt_id: "prompt-1",
+      name: "main",
+      description: null,
+      created_at: "2026-09-04T00:00:00.000Z",
+    };
+    const v1Payload = {
+      id: "v1",
+      prompt_id: "prompt-1",
+      branch_id: "branch-1",
+      parent_version_id: null,
+      number: 1,
+      label: null,
+      content: "v1",
+      content_format: "markdown",
+      change_note: null,
+      author: "You",
+      status: "active",
+      source: "user",
+      created_at: "2026-09-04T00:00:00.000Z",
+    };
+
+    r.engine.applyRemote([
+      fixedOp("origin", 1, "branches", "branch-1", branchPayload, 100),
+      fixedOp("pointer-author", 1, "prompts", "prompt-1", promptPayload("v1"), 200),
+    ]);
+    r.engine.applyRemote([
+      fixedOp("pointer-author", 2, "prompts", "prompt-1", promptPayload("v2"), 300),
+    ]);
+    expect(
+      r.db.prepare("SELECT version_id FROM sync_pending_pointers WHERE prompt_id = ?").get("prompt-1"),
+    ).toEqual({ version_id: "v2" });
+
+    r.engine.applyRemote([fixedOp("delete-author", 1, "versions", "v2", null, 400, "delete")]);
+    r.engine.applyRemote([fixedOp("origin", 2, "versions", "v1", v1Payload, 100)]);
+
+    expect(r.lib.getPrompt("prompt-1")?.current_version_id).toBe("v1");
+    expect(r.lib.getVersion("v2")).toBeNull();
+  });
+
+  it("does not let a concurrent version edit resurrect a deleted version", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Version edit race", content: "v1" });
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+
+    a.lib.deleteVersion(v2.id);
+    a.engine.refineDirty(2_000);
+    b.lib.updateVersionLabel(v2.id, "Concurrent rename");
+    b.engine.refineDirty(3_000);
+
+    for (let round = 0; round < 3; round++) syncBoth(a, b);
+
+    expect(a.lib.getVersion(v2.id)).toBeNull();
+    expect(b.lib.getVersion(v2.id)).toBeNull();
+    expect(normalizedExport(a)).toEqual(normalizedExport(b));
+  });
+
   it("makes prompt hard deletion dominate a later metadata edit on every peer", () => {
     const a = rig();
     const b = rig();

@@ -12,6 +12,7 @@ import {
   updateOpenDownloadSchema,
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
+  versionDeleteSchema,
   versionUpdateLabelSchema,
 } from "./ipc.js";
 
@@ -76,7 +77,7 @@ describe("promptCreateSchema", () => {
   });
 });
 
-describe("promptDuplicateSchema / versionUpdateLabelSchema", () => {
+describe("promptDuplicateSchema / versionUpdateLabelSchema / versionDeleteSchema", () => {
   it("requires a source prompt, source version and non-empty duplicate title", () => {
     expect(
       promptDuplicateSchema.parse({
@@ -102,6 +103,13 @@ describe("promptDuplicateSchema / versionUpdateLabelSchema", () => {
       versionId: "version-2",
       label: null,
     });
+  });
+
+  it("requires a non-empty version id for deletion", () => {
+    expect(versionDeleteSchema.parse({ versionId: "version-2" })).toEqual({
+      versionId: "version-2",
+    });
+    expect(versionDeleteSchema.safeParse({ versionId: "  " }).success).toBe(false);
   });
 });
 

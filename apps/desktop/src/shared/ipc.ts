@@ -72,6 +72,8 @@ export const versionUpdateLabelSchema = z.object({
   label: z.string().trim().max(500).nullable(),
 });
 
+export const versionDeleteSchema = z.object({ versionId: id });
+
 export const draftSetSchema = z.object({ promptId: id, content: longText.nullable() });
 
 export const noteAddSchema = z.object({
@@ -965,6 +967,7 @@ export interface PromptBuilderApi {
     get(versionId: string): Promise<VersionContentDto | null>;
     setCurrent(promptId: string, versionId: string): Promise<void>;
     updateLabel(versionId: string, label: string | null): Promise<VersionDto>;
+    delete(versionId: string): Promise<void>;
   };
   drafts: {
     get(promptId: string): Promise<string | null>;

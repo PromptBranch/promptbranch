@@ -598,6 +598,52 @@ export class PromptLibrary {
     return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId) ?? null;
   }
 
+  /** Permanently deletes one non-current version and its dependent execution data. */
+  deleteVersion(versionId: string): void {
+    this.db.transaction(() => {
+      const version = this.getVersion(versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "active") {
+        throw new Error(
+          `Version ${versionId} is ${version.status} — only active versions can be deleted`,
+        );
+      }
+      const prompt = this.mustGetPrompt(version.prompt_id);
+      if (prompt.current_version_id === versionId) {
+        throw new Error("The current version cannot be deleted");
+      }
+
+      this.run("DELETE FROM runs WHERE version_id = ?", versionId);
+      this.run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", versionId);
+      this.run("UPDATE notes SET version_id = NULL WHERE version_id = ?", versionId);
+      this.run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", versionId);
+      const deleted = this.db.prepare("DELETE FROM versions WHERE id = ?").run(versionId);
+      if (deleted.changes !== 1) throw new Error(`Version not found: ${versionId}`);
+
+      const remaining = this.all<{ id: string }>(
+        "SELECT id FROM versions WHERE branch_id = ? ORDER BY number, created_at, id",
+        version.branch_id,
+      );
+      if (remaining.length === 0) {
+        this.run("DELETE FROM branches WHERE id = ?", version.branch_id);
+        // A branch delete means subtree deletion to the sync engine. This
+        // branch removal is only cleanup derived from the version tombstone,
+        // so peers repeat it after applying that tombstone instead.
+        this.run(
+          "DELETE FROM sync_dirty WHERE table_name = 'branches' AND record_id = ?",
+          version.branch_id,
+        );
+      } else {
+        remaining.forEach((row, index) => {
+          this.run("UPDATE versions SET number = ? WHERE id = ?", index + 1, row.id);
+        });
+      }
+
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      this.reindexPrompt(version.prompt_id);
+    }).immediate();
+  }
+
   /** Sets a custom display label, or clears it to restore the automatic vN label. */
   updateVersionLabel(versionId: string, label: string | null): VersionRow {
     const version = this.getVersion(versionId);

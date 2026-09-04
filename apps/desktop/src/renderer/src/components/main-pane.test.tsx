@@ -10,7 +10,7 @@ import type {
   VersionDto,
 } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
-import { renderApp } from "../test/render";
+import { createTestQueryClient, renderApp } from "../test/render";
 import { useAppState } from "../state/app-state";
 import { MainPane } from "./MainPane";
 
@@ -451,7 +451,7 @@ describe("MainPane restored prompt editing", () => {
   });
 });
 
-describe("MainPane prompt duplication and version naming", () => {
+describe("MainPane version actions", () => {
   it("duplicates the historical version being viewed into a new prompt", async () => {
     const historicalVersion: VersionDto = { ...version, isCurrent: false };
     const currentVersion: VersionDto = {
@@ -539,5 +539,178 @@ describe("MainPane prompt duplication and version naming", () => {
     await user.click(screen.getByRole("button", { name: "Rename" }));
 
     expect(bridge.versions.updateLabel).toHaveBeenCalledWith(version.id, null);
+  });
+
+  it("deletes a historical version from History but offers no delete action for current", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findByRole("button", { name: "Delete v1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete v2" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Delete v1" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByText(/run results and ratings will be permanently removed/i),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/notes become prompt-level notes/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/published shares stay live/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Delete version" }));
+
+    await waitFor(() => expect(bridge.versions.delete).toHaveBeenCalledWith(historicalVersion.id));
+  });
+
+  it("stays rendered when a version selected for comparison is deleted", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    const renumberedCurrent: VersionDto = {
+      ...currentVersion,
+      parentVersionId: null,
+      number: 1,
+      displayLabel: "v1",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    bridge.versions.delete.mockImplementation(async () => {
+      listedVersions = [renumberedCurrent];
+    });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("checkbox", { name: "Select v1 to compare" }));
+    expect(screen.getByText(/v1 selected — pick one more version to compare/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete v1" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete version" }));
+
+    expect(await screen.findByRole("tab", { name: "History (1)" })).toBeInTheDocument();
+    expect(screen.getByText("Current")).toBeInTheDocument();
+    expect(screen.queryByText(/selected — pick one more version to compare/i)).toBeNull();
+  });
+
+  it("closes a version dialog when that version disappears during a refetch", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+      { queryClient },
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    await user.click(await screen.findByRole("button", { name: "Rate" }));
+    expect(await screen.findByRole("dialog", { name: "Rate v1" })).toBeInTheDocument();
+
+    listedVersions = [{ ...currentVersion, parentVersionId: null, number: 1, displayLabel: "v1" }];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rate v1" })).toBeNull());
+  });
+
+  it("closes History confirmation when its version disappears during a refetch", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />, {
+      queryClient,
+    });
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Set as current" }));
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+
+    listedVersions = [{ ...currentVersion, parentVersionId: null, number: 1, displayLabel: "v1" }];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("deletes the historical version being viewed and returns to current", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content: versionId === historicalVersion.id ? "Historical content" : "Current content",
+      contentFormat: "markdown",
+    }));
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(await screen.findByText("Historical content")).toBeInTheDocument();
+    screen.getByRole("button", { name: "More actions" }).focus();
+    await user.keyboard("{Enter}");
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Delete version…" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete version" }),
+    );
+
+    await waitFor(() => expect(bridge.versions.delete).toHaveBeenCalledWith(historicalVersion.id));
+    await waitFor(() => expect(screen.queryByText(/You're viewing/)).toBeNull());
   });
 });

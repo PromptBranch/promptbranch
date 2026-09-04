@@ -615,6 +615,7 @@ export function cancelRunGroup(runGroupId: string): boolean {
 
 /** Error message recorded for models aborted via ai:run-cancel. */
 export const RUN_CANCELLED_MESSAGE = "Cancelled by user";
+const VERSION_DELETED_DURING_RUN_MESSAGE = "Version was deleted while the run was in progress";
 
 /** Live progress callback; receives one event per model phase change. */
 export type RunProgressEmit = (event: AiRunProgressEvent) => void;
@@ -758,6 +759,22 @@ export async function runModelGroup(
             costUsd,
           };
         } catch (error) {
+          if (!lib.getVersion(versionId)) {
+            const message = VERSION_DELETED_DURING_RUN_MESSAGE;
+            emit({ ...base, phase: "error", ...(partial ? { text: partial } : {}), error: message });
+            return {
+              runId: "",
+              providerId: p.provider.id,
+              providerName: p.provider.name,
+              modelId: p.modelId,
+              status: "error",
+              output: null,
+              error: message,
+              latencyMs: null,
+              usage: null,
+              costUsd: null,
+            };
+          }
           // A rejected run must always carry a non-empty message —
           // recordModelRun rejects blank errors, aborting the group write.
           const message = controller.signal.aborted
@@ -790,6 +807,10 @@ export async function runModelGroup(
         }
       }),
     );
+
+    if (!lib.getVersion(versionId)) {
+      throw new Error(VERSION_DELETED_DURING_RUN_MESSAGE);
+    }
 
     return {
       runGroupId,

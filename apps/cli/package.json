@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/cli",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "MIT",
   "type": "module",
   "description": "Local-first CLI for versioning, searching, evaluating, and sharing AI prompts in shell pipelines and coding-agent workflows.",

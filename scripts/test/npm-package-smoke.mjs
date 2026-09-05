@@ -117,6 +117,7 @@ try {
 
     const fileNames = new Set(metadata.files.map((file) => file.path));
     assert(fileNames.has("LICENSE"), `${metadata.name} tarball is missing LICENSE`);
+    assert(fileNames.has("README.md"), `${metadata.name} tarball is missing README.md`);
     assert(fileNames.has("THIRD_PARTY_NOTICES.md"), `${metadata.name} tarball is missing THIRD_PARTY_NOTICES.md`);
     if (metadata.name === "@promptbranch/core" || metadata.name === "@promptbranch/share") {
       assert(fileNames.has("dist/index.js"), `${metadata.name} tarball is missing compiled JavaScript`);

@@ -14,6 +14,11 @@ is retained when you switch prompts or close the app. Choose **Save as new
 version** when the change is worth keeping. Versions are immutable; include a
 short change note so you can understand the reason for each one later.
 
+Version numbers are display labels scoped to a variation. Deleting an older
+version leaves every surviving number unchanged, so gaps such as v1, v3, and
+v4 are normal. The CLI and MCP server also return an immutable `versionId`;
+use that id when automation must keep referring to the exact same revision.
+
 ## Current version and variations
 
 Each prompt has one **current version**. This is what the CLI and MCP server

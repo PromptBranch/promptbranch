@@ -45,7 +45,7 @@ npm install --global @promptbranch/mcp@latest
 
 | Tool | Purpose |
 |---|---|
-| `get_prompt` | Fetch current prompt content or a specific version/branch |
+| `get_prompt` | Fetch and render current prompt content or a specific version/branch |
 | `search_prompts` | Search the library with optional tag, collection, and limit filters |
 | `list_prompts` | Browse prompt metadata |
 | `report_run` | Record a 1–5 outcome rating, summary, and metrics |
@@ -59,6 +59,20 @@ them in the desktop app's Suggestions view.
 
 The server deliberately has no publish or import tool. Sharing remains a
 human action in the desktop app or CLI.
+
+### Dynamic prompt variables
+
+`get_prompt` recognizes placeholders such as `{{target}}`. If values are
+missing, it returns `status: "needs_input"` with `requiredVariables` and
+`missingVariables`. The agent asks the user for those values and calls the
+tool again with a `variables` object. Once complete, `status` is `"ready"`,
+`templateContent` contains the stored template, and `content` contains the
+rendered prompt.
+
+Variable values may be strings, finite numbers, or booleans. They apply only
+to that response and are never written back to the library. Variables express
+prompt instructions; PromptBranch does not interpret values such as an agent
+count or create subagents itself.
 
 ## Configuration
 

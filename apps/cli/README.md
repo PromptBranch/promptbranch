@@ -48,7 +48,7 @@ Use the CLI as a small prompt version-control layer in scripts and coding-agent
 harnesses:
 
 - `list`, `search`, and `get` browse the local prompt library.
-- `report-run` records an execution outcome, rating, summary, or metrics.
+- `report-run` records the tool, model, outcome rating (1–5), and summary.
 - `suggest` proposes a variation as **pending**; a human approves it in the
   desktop app before it can become current.
 - `suggestions` lists the pending review queue.

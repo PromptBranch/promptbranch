@@ -62,7 +62,9 @@ promptbranch list --tag security
 Retrieves a prompt's text content. Defaults to the current designated production version.
 
 ```bash
-promptbranch get <name-or-id> [--version <n>] [--branch <branch_name>] [--json]
+promptbranch get <name-or-id> \
+  [--version-id <id> | --version <n> [--branch <branch_name>]] \
+  [--json]
 ```
 
 #### Examples
@@ -73,9 +75,20 @@ promptbranch get "sql-injection-audit"
 # Fetch specific version and redirect to a file
 promptbranch get "sql-injection-audit" --version 1 > /tmp/prompt_v1.md
 
+# Reliably fetch the exact same content in automation
+promptbranch get "sql-injection-audit" \
+  --version-id "8b3a7d7e-..." > /tmp/pinned_prompt.md
+
 # Fetch prompt on an experimental branch
 promptbranch get "sql-injection-audit" --branch "experiment/concise"
 ```
+
+JSON output includes `versionId`. Use that immutable id when a script, agent,
+or saved run must retrieve the same revision later. Version numbers are useful
+display labels scoped to a variation. They remain unchanged when another
+version is deleted, so history can contain gaps. A number can still be
+reconciled if paired devices independently create the same number; it is not a
+durable automation pin.
 
 ---
 
@@ -98,7 +111,7 @@ Logs an execution run against a prompt version, recording the tool, model, outco
 
 ```bash
 promptbranch report-run --prompt <name-or-id> \
-  [--version <n>] \
+  [--version-id <id> | --version <n>] \
   [--tool <tool_name>] \
   [--model <model_name>] \
   [--outcome <1-5>] \
@@ -137,7 +150,7 @@ Supply exactly one content source: `--file` or `--content`.
 promptbranch suggest --prompt <name-or-id> \
   (--file <path> | --content "...") \
   [--rationale "..."] \
-  [--base-version <n>] \
+  [--base-version-id <id> | --base-version <n>] \
   [--json]
 ```
 

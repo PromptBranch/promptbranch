@@ -904,7 +904,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
           if (!open) setDeleteVersionTarget(null);
         }}
         title={`Delete ${deleteVersionTarget?.displayLabel ?? "version"}?`}
-        description="Run results and ratings will be permanently removed. Version notes become prompt-level notes, published shares stay live, and remaining versions are renumbered. This cannot be undone."
+        description="Run results and ratings will be permanently removed. Version notes become prompt-level notes, published shares stay live, and surviving version numbers stay unchanged. This cannot be undone."
         confirmLabel="Delete version"
         danger
         onConfirm={() => {

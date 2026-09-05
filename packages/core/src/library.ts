@@ -621,7 +621,7 @@ export class PromptLibrary {
       if (deleted.changes !== 1) throw new Error(`Version not found: ${versionId}`);
 
       const remaining = this.all<{ id: string }>(
-        "SELECT id FROM versions WHERE branch_id = ? ORDER BY number, created_at, id",
+        "SELECT id FROM versions WHERE branch_id = ? LIMIT 1",
         version.branch_id,
       );
       if (remaining.length === 0) {
@@ -633,10 +633,6 @@ export class PromptLibrary {
           "DELETE FROM sync_dirty WHERE table_name = 'branches' AND record_id = ?",
           version.branch_id,
         );
-      } else {
-        remaining.forEach((row, index) => {
-          this.run("UPDATE versions SET number = ? WHERE id = ?", index + 1, row.id);
-        });
       }
 
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);

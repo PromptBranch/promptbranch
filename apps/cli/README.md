@@ -39,6 +39,12 @@ promptbranch search "sanitize inputs" --limit 5
 promptbranch db-path --json
 ```
 
+`get --json` returns an immutable `versionId`. Use
+`get --version-id <id>`, `report-run --version-id <id>`, and
+`suggest --base-version-id <id>` when automation must stay tied to exactly the
+same prompt content. Version numbers are branch-scoped display labels and can
+contain gaps after deletion.
+
 `db-path --json` returns the resolved database path without creating or
 migrating the database.
 

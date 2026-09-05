@@ -47,6 +47,15 @@ Prompt references can be a title or id. Title matching tries an exact match,
 then a case-insensitive match, then a unique substring. If a reference is
 ambiguous, the server returns close matches.
 
+`get_prompt` returns the immutable `versionId` for the content it fetched.
+Pass that id back as `versionId` to `get_prompt` or `report_run`, or as
+`baseVersionId` to `suggest_variation`, when an agent must keep using the exact
+same revision. The numeric `version` and `baseVersion` selectors are convenient
+for browsing, but they are branch-scoped labels rather than durable pins.
+Version numbers stay unchanged after deletion, so histories can contain gaps;
+paired devices can also reconcile a number created concurrently on both
+devices.
+
 ## Dynamic prompt variables
 
 Prompts can contain variables such as `{{target}}` and
@@ -93,7 +102,8 @@ PromptBranch does not create or control those agents itself.
 1. Search for or fetch the prompt before using it.
 2. If `get_prompt` returns `needs_input`, ask for every missing value and fetch
    it again. Run only `ready` content.
-3. Use the returned content and record the outcome with `report_run`.
+3. Use the returned content and record the outcome with `report_run`, passing
+   its `versionId` so the run remains attached to that exact input.
 4. Add a note when the result needs context.
 5. Use `suggest_variation` only when you have a concrete improvement and a
    rationale.

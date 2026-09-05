@@ -50,8 +50,8 @@ To permanently remove an older version, use **Delete** beside that version in
 the **History** tab, or open the version and choose **More actions → Delete
 version…**. The current version cannot be deleted. Deleting an older version
 removes its run results and ratings, keeps its notes as prompt-level notes,
-keeps already-published shares live, and renumbers the remaining versions in
-that variation.
+keeps already-published shares live, and leaves every surviving version number
+unchanged. A history can therefore contain gaps such as v1, v3, and v4.
 
 For exporting, importing, backups, and the library-wide activity feed, see
 [Library data, backups, and transfer](library-data-and-backups.md).

@@ -568,6 +568,7 @@ describe("MainPane version actions", () => {
     ).toBeInTheDocument();
     expect(within(dialog).getByText(/notes become prompt-level notes/i)).toBeInTheDocument();
     expect(within(dialog).getByText(/published shares stay live/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/surviving version numbers stay unchanged/i)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Delete version" }));
 
     await waitFor(() => expect(bridge.versions.delete).toHaveBeenCalledWith(historicalVersion.id));
@@ -582,16 +583,14 @@ describe("MainPane version actions", () => {
       number: 2,
       displayLabel: "v2",
     };
-    const renumberedCurrent: VersionDto = {
+    const survivingCurrent: VersionDto = {
       ...currentVersion,
       parentVersionId: null,
-      number: 1,
-      displayLabel: "v1",
     };
     let listedVersions = [historicalVersion, currentVersion];
     bridge.versions.list.mockImplementation(async () => listedVersions);
     bridge.versions.delete.mockImplementation(async () => {
-      listedVersions = [renumberedCurrent];
+      listedVersions = [survivingCurrent];
     });
     const user = userEvent.setup();
     renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />);

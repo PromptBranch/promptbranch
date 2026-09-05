@@ -73,6 +73,11 @@ function collectionIdByName(name: string): string {
 }
 
 const promptRef = z.string().min(1).describe("Prompt title (exact or unique substring) or id");
+const versionId = z
+  .string()
+  .min(1)
+  .optional()
+  .describe("Immutable version id; cannot be combined with a version number or branch");
 const versionNumber = z.number().int().positive().optional().describe("Per-branch version number; defaults to the current version");
 const branchName = z.string().min(1).optional().describe("Branch name; defaults to the current version's branch");
 const promptVariables = z
@@ -88,18 +93,19 @@ server.registerTool(
   "get_prompt",
   {
     description:
-      "Fetch and render a prompt. If status is needs_input, do not execute content: ask the user for every missingVariables value, then call get_prompt again with variables. Execute content only when status is ready. Defaults to the current (preferred) version; pin with version and/or branch.",
+      "Fetch and render a prompt. If status is needs_input, do not execute content: ask the user for every missingVariables value, then call get_prompt again with variables. Execute content only when status is ready. Defaults to the current (preferred) version; pin automation with versionId, or browse by version and/or branch.",
     inputSchema: {
       prompt: promptRef,
+      versionId,
       version: versionNumber,
       branch: branchName,
       variables: promptVariables,
     },
   },
-  ({ prompt, version, branch, variables }) => {
+  ({ prompt, versionId, version, branch, variables }) => {
     try {
       const row = resolvePrompt(library, prompt);
-      const resolved = resolveVersion(library, row.id, { version, branch });
+      const resolved = resolveVersion(library, row.id, { versionId, version, branch });
       const templateContent = resolved.version.content;
       const requiredVariables = extractPromptVariables(templateContent);
       const suppliedVariables: Record<string, PromptVariableValue> = variables ?? {};
@@ -214,6 +220,7 @@ server.registerTool(
       "Report that a prompt version was used: which tool/model ran it, the outcome rating (1–5) and a short result summary.",
     inputSchema: {
       prompt: promptRef,
+      versionId,
       version: versionNumber,
       tool: z.string().min(1).max(100).describe("Tool that ran the prompt, e.g. 'kimi-cli', 'mcp'"),
       model: z.string().min(1).max(100).optional(),
@@ -222,10 +229,10 @@ server.registerTool(
       metrics: z.record(z.string(), z.unknown()).optional().describe("Arbitrary structured metrics (tokens, latency…)"),
     },
   },
-  ({ prompt, version, tool, model, outcomeRating, resultSummary, metrics }) => {
+  ({ prompt, versionId, version, tool, model, outcomeRating, resultSummary, metrics }) => {
     try {
       const row = resolvePrompt(library, prompt);
-      const resolved = resolveVersion(library, row.id, { version });
+      const resolved = resolveVersion(library, row.id, { versionId, version });
       const run = library.addRun({
         promptId: row.id,
         versionId: resolved.version.id,
@@ -270,15 +277,21 @@ server.registerTool(
       "Propose a rewritten version of a prompt. Creates a PENDING suggestion that a human must approve in the PromptBranch app before it becomes usable — agents propose, humans approve.",
     inputSchema: {
       prompt: promptRef,
+      baseVersionId: versionId.describe(
+        "Immutable base version id; cannot be combined with baseVersion",
+      ),
       baseVersion: versionNumber.describe("Version number to base the suggestion on; defaults to current"),
       newContent: z.string().min(1),
       rationale: z.string().min(1).max(2_000).describe("Why this change improves the prompt"),
     },
   },
-  ({ prompt, baseVersion, newContent, rationale }) => {
+  ({ prompt, baseVersionId, baseVersion, newContent, rationale }) => {
     try {
       const row = resolvePrompt(library, prompt);
-      const base = resolveVersion(library, row.id, baseVersion !== undefined ? { version: baseVersion } : {});
+      const base = resolveVersion(library, row.id, {
+        versionId: baseVersionId,
+        version: baseVersion,
+      });
       const { branch, version } = library.suggestVariation({
         promptId: row.id,
         baseVersionId: base.version.id,

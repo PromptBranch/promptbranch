@@ -21,6 +21,7 @@ export interface ResolvedVersion {
 /**
  * Picks a concrete active version of a prompt for agent/CLI reads.
  * - No options: the prompt's current version.
+ * - `versionId`: that exact immutable version.
  * - `branch` only: the head of that branch.
  * - `version` (number): that numbered version, on `branch` if given, else on
  *   the current version's branch.
@@ -29,7 +30,7 @@ export interface ResolvedVersion {
 export function resolveVersion(
   library: PromptLibrary,
   promptId: string,
-  options: { version?: number; branch?: string } = {},
+  options: { versionId?: string; version?: number; branch?: string } = {},
 ): ResolvedVersion {
   const versions = library.listVersions(promptId);
   if (versions.length === 0) throw new Error("Prompt has no active versions");
@@ -39,6 +40,17 @@ export function resolveVersion(
     branchName: v.branch_name,
     label: formatVersionLabel(v, v.branch_name),
   });
+
+  if (options.versionId !== undefined) {
+    if (options.version !== undefined || options.branch !== undefined) {
+      throw new Error("versionId cannot be combined with version or branch");
+    }
+    const match = versions.find((version) => version.id === options.versionId);
+    if (!match) {
+      throw new Error(`No active version with id "${options.versionId}" on this prompt`);
+    }
+    return toResolved(match);
+  }
 
   if (options.version === undefined && !options.branch) {
     const prompt = library.getPrompt(promptId);

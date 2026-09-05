@@ -1963,13 +1963,18 @@ export class SyncEngine {
     this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
   }
 
-  /** Keeps established sequence; timestamp/id deterministically break concurrent number ties. */
+  /** Preserves established numbers; timestamp/id deterministically break concurrent number ties. */
   private renumberBranch(branchId: string): void {
     const rows = this.db
-      .prepare("SELECT id FROM versions WHERE branch_id = ? ORDER BY number, created_at, id")
-      .all(branchId) as Array<{ id: string }>;
+      .prepare("SELECT id, number FROM versions WHERE branch_id = ? ORDER BY number, created_at, id")
+      .all(branchId) as Array<{ id: string; number: number }>;
     const update = this.db.prepare("UPDATE versions SET number = ? WHERE id = ?");
-    rows.forEach((row, index) => update.run(index + 1, row.id));
+    let previous = 0;
+    for (const row of rows) {
+      const number = Math.max(row.number, previous + 1);
+      if (number !== row.number) update.run(number, row.id);
+      previous = number;
+    }
   }
 
   /** Advances a source's cursor across the contiguous stored prefix. */

@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://promptbranch.app",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@promptbranch/mcp",
-      "version": "0.2.6",
+      "version": "0.2.7",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

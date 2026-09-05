@@ -20,6 +20,7 @@ const CLI_PACKAGE_VERSION = (
 let tmpDir: string;
 let dbPath: string;
 let promptId: string;
+let initialVersionId: string;
 
 function run(args: string[]): { stdout: string; stderr: string; status: number } {
   return runWithDb(args, dbPath);
@@ -51,6 +52,7 @@ beforeAll(() => {
     content: "Review the following diff carefully.",
   });
   promptId = prompt.id;
+  initialVersionId = prompt.current_version_id!;
   const tag = lib.createTag({ name: "review" });
   lib.addTagToPrompt(prompt.id, tag.id);
   db.close();
@@ -112,6 +114,35 @@ describe("promptbranch cli", () => {
     });
   });
 
+  it("get accepts an immutable version id", () => {
+    const json = runJson<Record<string, unknown>>([
+      "get",
+      promptId,
+      "--version-id",
+      initialVersionId,
+    ]);
+
+    expect(json).toMatchObject({
+      id: promptId,
+      versionId: initialVersionId,
+      content: "Review the following diff carefully.",
+    });
+  });
+
+  it("rejects an immutable version id combined with a numeric selector", () => {
+    const result = run([
+      "get",
+      promptId,
+      "--version-id",
+      initialVersionId,
+      "--version",
+      "1",
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/cannot be combined/i);
+  });
+
   it("search finds content and respects --limit", () => {
     const rows = runJson<Array<Record<string, unknown>>>(["search", "diff", "--limit", "5"]);
     expect(rows).toHaveLength(1);
@@ -119,10 +150,12 @@ describe("promptbranch cli", () => {
   });
 
   it("report-run writes a run row", () => {
-    const payload = runJson<{ runId: string; versionLabel: string }>([
+    const payload = runJson<{ runId: string; versionId: string; versionLabel: string }>([
       "report-run",
       "--prompt",
       "Code review",
+      "--version-id",
+      initialVersionId,
       "--tool",
       "kimi-cli",
       "--model",
@@ -132,6 +165,7 @@ describe("promptbranch cli", () => {
       "--summary",
       "caught two bugs",
     ]);
+    expect(payload.versionId).toBe(initialVersionId);
     expect(payload.versionLabel).toBe("v1");
 
     const { db } = openDatabase(dbPath);
@@ -166,6 +200,8 @@ describe("promptbranch cli", () => {
       "Code review",
       "--file",
       suggestionFile,
+      "--base-version-id",
+      initialVersionId,
       "--rationale",
       "Security-first ordering found more issues",
     ]);
@@ -184,6 +220,7 @@ describe("promptbranch cli", () => {
     const { db } = openDatabase(dbPath);
     const lib = new PromptLibrary(db);
     expect(lib.listVersions(promptId)).toHaveLength(1);
+    expect(lib.getVersion(payload.versionId)?.parent_version_id).toBe(initialVersionId);
     db.close();
   });
 

@@ -5,12 +5,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import packageJson from "../package.json" with { type: "json" };
 import {
+  extractPromptVariables,
+  missingPromptVariables,
   openDatabase,
   PromptLibrary,
   resolveDatabasePath,
   resolvePrompt,
   resolveVersion,
+  substitutePromptVariables,
   type Database,
+  type PromptVariableValue,
   type PromptRow,
 } from "@promptbranch/core";
 
@@ -71,6 +75,12 @@ function collectionIdByName(name: string): string {
 const promptRef = z.string().min(1).describe("Prompt title (exact or unique substring) or id");
 const versionNumber = z.number().int().positive().optional().describe("Per-branch version number; defaults to the current version");
 const branchName = z.string().min(1).optional().describe("Branch name; defaults to the current version's branch");
+const promptVariables = z
+  .record(z.string(), z.union([z.string().max(100_000), z.number().finite(), z.boolean()]))
+  .optional()
+  .describe(
+    "Values for {{variables}}. If the response says needs_input, ask the user for every missing variable and call get_prompt again.",
+  );
 
 const server = new McpServer({ name: "promptbranch", version: packageJson.version });
 
@@ -78,21 +88,54 @@ server.registerTool(
   "get_prompt",
   {
     description:
-      "Fetch a prompt's content. Defaults to the current (preferred) version; pin with version and/or branch.",
-    inputSchema: { prompt: promptRef, version: versionNumber, branch: branchName },
+      "Fetch and render a prompt. If status is needs_input, do not execute content: ask the user for every missingVariables value, then call get_prompt again with variables. Execute content only when status is ready. Defaults to the current (preferred) version; pin with version and/or branch.",
+    inputSchema: {
+      prompt: promptRef,
+      version: versionNumber,
+      branch: branchName,
+      variables: promptVariables,
+    },
   },
-  ({ prompt, version, branch }) => {
+  ({ prompt, version, branch, variables }) => {
     try {
       const row = resolvePrompt(library, prompt);
       const resolved = resolveVersion(library, row.id, { version, branch });
+      const templateContent = resolved.version.content;
+      const requiredVariables = extractPromptVariables(templateContent);
+      const suppliedVariables: Record<string, PromptVariableValue> = variables ?? {};
+      const unknownVariables = Object.keys(suppliedVariables).filter(
+        (name) => !requiredVariables.includes(name),
+      );
+      if (unknownVariables.length > 0) {
+        const noun = unknownVariables.length === 1 ? "variable" : "variables";
+        throw new Error(
+          `Unknown ${noun} ${unknownVariables.map((name) => `"${name}"`).join(", ")} for prompt "${row.title}"`,
+        );
+      }
+
+      const missingVariables = missingPromptVariables(templateContent, suppliedVariables);
+      const status = missingVariables.length > 0 ? "needs_input" : "ready";
       return text({
+        status,
         id: row.id,
         title: row.title,
         description: row.description,
         versionId: resolved.version.id,
         versionLabel: resolved.label,
         branch: resolved.branchName,
-        content: resolved.version.content,
+        templateContent,
+        content:
+          status === "ready"
+            ? substitutePromptVariables(templateContent, suppliedVariables)
+            : templateContent,
+        requiredVariables,
+        missingVariables,
+        ...(status === "needs_input"
+          ? {
+              message:
+                "This prompt requires input. Do not execute content yet; ask the user for every missingVariables value, then call get_prompt again with variables.",
+            }
+          : {}),
         changeNote: resolved.version.change_note,
         tags: tagsForPrompt(db, row.id),
       });

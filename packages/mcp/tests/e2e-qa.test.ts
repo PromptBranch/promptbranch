@@ -12,6 +12,7 @@ const MCP = path.join(import.meta.dirname, "..", "dist", "index.js");
 let tmpDir: string;
 let dbPath: string;
 let primaryPromptId: string;
+let primaryInitialVersionId: string;
 let primaryVersionId: string;
 let otherVersionId: string;
 let variablePromptId: string;
@@ -57,6 +58,7 @@ beforeAll(async () => {
     tagIds: [security.id],
   });
   primaryPromptId = primary.id;
+  primaryInitialVersionId = primary.current_version_id!;
   lib.addPromptToCollection(production.id, primary.id);
   const main = lib.listBranches(primary.id)[0]!;
   const v2 = lib.createVersion({
@@ -127,10 +129,12 @@ describe("promptbranch MCP release QA", () => {
 
     const report = tools.find((tool) => tool.name === "report_run")!;
     expect(report.inputSchema.required).toEqual(expect.arrayContaining(["prompt", "tool"]));
+    expect(report.inputSchema.properties).toHaveProperty("versionId");
     const suggestion = tools.find((tool) => tool.name === "suggest_variation")!;
     expect(suggestion.inputSchema.required).toEqual(
       expect.arrayContaining(["prompt", "newContent", "rationale"]),
     );
+    expect(suggestion.inputSchema.properties).toHaveProperty("baseVersionId");
   });
 
   it("resolves current, numbered, and branch-specific prompt versions", async () => {
@@ -150,6 +154,18 @@ describe("promptbranch MCP release QA", () => {
       await client.callTool({ name: "get_prompt", arguments: { prompt: "PROTOCOL SECURITY AUDIT", version: 1 } }),
     );
     expect(old).toMatchObject({ versionLabel: "v1", branch: "main", content: "Audit the protocol implementation carefully." });
+
+    const pinned = resultJson<Record<string, unknown>>(
+      await client.callTool({
+        name: "get_prompt",
+        arguments: { prompt: primaryPromptId, versionId: primaryInitialVersionId },
+      }),
+    );
+    expect(pinned).toMatchObject({
+      versionId: primaryInitialVersionId,
+      versionLabel: "v1",
+      content: "Audit the protocol implementation carefully.",
+    });
 
     const branch = resultJson<Record<string, unknown>>(
       await client.callTool({ name: "get_prompt", arguments: { prompt: primaryPromptId, branch: "CONCISE" } }),
@@ -246,6 +262,17 @@ describe("promptbranch MCP release QA", () => {
     expect((missingBranch as { isError?: boolean }).isError).toBe(true);
     expect(resultText(missingBranch)).toMatch(/No branch/);
 
+    const competingSelectors = await client.callTool({
+      name: "get_prompt",
+      arguments: {
+        prompt: primaryPromptId,
+        versionId: primaryVersionId,
+        version: 2,
+      },
+    });
+    expect((competingSelectors as { isError?: boolean }).isError).toBe(true);
+    expect(resultText(competingSelectors)).toMatch(/cannot be combined/i);
+
     const stillAlive = resultJson<Array<{ id: string }>>(
       await client.callTool({ name: "list_prompts", arguments: { tag: "SECURITY" } }),
     );
@@ -275,7 +302,7 @@ describe("promptbranch MCP release QA", () => {
         name: "report_run",
         arguments: {
           prompt: primaryPromptId,
-          version: 2,
+          versionId: primaryVersionId,
           tool: "mcp-release-qa",
           model: "test/model",
           outcomeRating: 4,
@@ -328,6 +355,7 @@ describe("promptbranch MCP release QA", () => {
         name: "suggest_variation",
         arguments: {
           prompt: primaryPromptId,
+          baseVersionId: primaryInitialVersionId,
           newContent: "MCP-PENDING-ONLY-CONTENT must not leak.",
           rationale: "Release QA authority check",
         },
@@ -346,6 +374,7 @@ describe("promptbranch MCP release QA", () => {
     const { db } = openDatabase(dbPath);
     const lib = new PromptLibrary(db);
     expect(lib.listSuggestions().map((row) => row.id)).toContain(suggestion.versionId);
+    expect(lib.getVersion(suggestion.versionId)?.parent_version_id).toBe(primaryInitialVersionId);
     expect(lib.listVersions(primaryPromptId).map((row) => row.id)).not.toContain(suggestion.versionId);
     db.close();
   });

@@ -1568,7 +1568,7 @@ describe("sync engine", () => {
     for (const peer of [a, b]) {
       expect(peer.lib.listVersions(prompt.id).map(({ id, number }) => ({ id, number }))).toEqual([
         { id: prompt.current_version_id, number: 1 },
-        { id: v3.id, number: 2 },
+        { id: v3.id, number: 3 },
       ]);
       expect(peer.lib.getVersion(v3.id)?.parent_version_id).toBeNull();
       expect(peer.lib.listNotes(prompt.id)).toMatchObject([{ id: note.id, version_id: null }]);
@@ -1579,7 +1579,7 @@ describe("sync engine", () => {
     expect(normalizedExport(a)).toEqual(normalizedExport(b));
   });
 
-  it("preserves branch sequence across sync when surviving versions share a timestamp", () => {
+  it("preserves version numbers across sync when surviving versions share a timestamp", () => {
     const a = rig();
     const b = rig();
     a.db.transaction(() => {
@@ -1611,7 +1611,7 @@ describe("sync engine", () => {
     for (const peer of [a, b]) {
       expect(peer.lib.listVersions("fixed-prompt").map(({ id, number }) => ({ id, number }))).toEqual([
         { id: "z-first", number: 1 },
-        { id: "a-last", number: 2 },
+        { id: "a-last", number: 3 },
       ]);
     }
     expect(normalizedExport(a)).toEqual(normalizedExport(b));

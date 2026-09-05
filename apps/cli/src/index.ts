@@ -32,11 +32,11 @@ const USAGE = `promptbranch — PromptBranch library CLI
 
 Usage:
   promptbranch list [--tag t] [--collection c]
-  promptbranch get <name-or-id> [--version n] [--branch b]
+  promptbranch get <name-or-id> [--version-id id | --version n [--branch b]]
   promptbranch search <query> [--limit n]
-  promptbranch report-run --prompt <name-or-id> [--version n] [--tool t] [--model m] [--outcome 1-5] [--summary "..."]
+  promptbranch report-run --prompt <name-or-id> [--version-id id | --version n] [--tool t] [--model m] [--outcome 1-5] [--summary "..."]
   promptbranch add-note --prompt <name-or-id> --body "..." [--version-id id]
-  promptbranch suggest --prompt <name-or-id> (--file path | --content "...") [--rationale "..."] [--base-version n]
+  promptbranch suggest --prompt <name-or-id> (--file path | --content "...") [--rationale "..."] [--base-version-id id | --base-version n]
   promptbranch suggestions
   promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>]
   promptbranch import <url-or-id> [--portal <base-url>]
@@ -124,6 +124,7 @@ const LIST_OPTS = {
 } as const;
 
 const GET_OPTS = {
+  "version-id": { type: "string" },
   version: { type: "string" },
   branch: { type: "string" },
   json: { type: "boolean" },
@@ -136,6 +137,7 @@ const SEARCH_OPTS = {
 
 const REPORT_RUN_OPTS = {
   prompt: { type: "string" },
+  "version-id": { type: "string" },
   version: { type: "string" },
   tool: { type: "string" },
   model: { type: "string" },
@@ -156,6 +158,7 @@ const SUGGEST_OPTS = {
   file: { type: "string" },
   content: { type: "string" },
   rationale: { type: "string" },
+  "base-version-id": { type: "string" },
   "base-version": { type: "string" },
   json: { type: "boolean" },
 } as const;
@@ -227,9 +230,14 @@ async function main(argv: string[]): Promise<void> {
     case "get": {
       const { values, positionals } = parseArgs({ args: rest, options: GET_OPTS, strict: true, allowPositionals: true });
       const ref = positionals[0];
-      if (!ref) throw new CliError("Usage: promptbranch get <name-or-id> [--version n] [--branch b]");
+      if (!ref) {
+        throw new CliError(
+          "Usage: promptbranch get <name-or-id> [--version-id id | --version n [--branch b]]",
+        );
+      }
       const prompt = resolvePrompt(lib, ref);
       const resolved = resolveVersion(lib, prompt.id, {
+        ...(values["version-id"] !== undefined ? { versionId: values["version-id"] } : {}),
         ...(values.version !== undefined ? { version: parseIntFlag(values.version, "version")! } : {}),
         ...(values.branch !== undefined ? { branch: values.branch } : {}),
       });
@@ -278,6 +286,7 @@ async function main(argv: string[]): Promise<void> {
       const { values } = parseArgs({ args: rest, options: REPORT_RUN_OPTS, strict: true });
       const prompt = resolvePrompt(lib, required(values.prompt, "prompt"));
       const resolved = resolveVersion(lib, prompt.id, {
+        ...(values["version-id"] !== undefined ? { versionId: values["version-id"] } : {}),
         ...(values.version !== undefined ? { version: parseIntFlag(values.version, "version")! } : {}),
       });
       const outcome = parseIntFlag(values.outcome, "outcome");
@@ -323,6 +332,9 @@ async function main(argv: string[]): Promise<void> {
         newContent = values.content!;
       }
       const base = resolveVersion(lib, prompt.id, {
+        ...(values["base-version-id"] !== undefined
+          ? { versionId: values["base-version-id"] }
+          : {}),
         ...(values["base-version"] !== undefined ? { version: parseIntFlag(values["base-version"], "base-version")! } : {}),
       });
       const { branch, version } = lib.suggestVariation({

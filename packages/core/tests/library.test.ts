@@ -200,7 +200,7 @@ describe("versions", () => {
     expect(lib.getVersion(historical.id)?.status).toBe("rejected");
   });
 
-  it("deletes a historical version and cleans up every dependent record", () => {
+  it("deletes a historical version without reassigning surviving version numbers", () => {
     const prompt = lib.createPrompt({ title: "P", content: "v1 searchable" });
     const main = lib.listBranches(prompt.id)[0]!;
     const v2 = lib.createVersion({
@@ -228,7 +228,7 @@ describe("versions", () => {
     expect(lib.getVersion(v2.id)).toBeNull();
     expect(lib.listVersions(prompt.id).map(({ id, number }) => ({ id, number }))).toEqual([
       { id: prompt.current_version_id, number: 1 },
-      { id: v3.id, number: 2 },
+      { id: v3.id, number: 3 },
     ]);
     expect(lib.getVersion(v3.id)?.parent_version_id).toBeNull();
     expect(lib.getPrompt(prompt.id)).toMatchObject({
@@ -244,9 +244,11 @@ describe("versions", () => {
       delete_token: "delete-token",
       deleted_at: null,
     });
+    const v4 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v4" });
+    expect(v4.number).toBe(4);
   });
 
-  it("preserves branch sequence when surviving versions share a timestamp", () => {
+  it("preserves version numbers when surviving versions share a timestamp", () => {
     db.transaction(() => {
       db.pragma("defer_foreign_keys = ON");
       db.prepare(
@@ -271,7 +273,7 @@ describe("versions", () => {
 
     expect(lib.listVersions("fixed-prompt").map(({ id, number }) => ({ id, number }))).toEqual([
       { id: "z-first", number: 1 },
-      { id: "a-last", number: 2 },
+      { id: "a-last", number: 3 },
     ]);
   });
 

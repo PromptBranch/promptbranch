@@ -27,6 +27,12 @@ export { compareHlc, formatHlc, parseHlc, type HlcStamp } from "./sync/hlc.js";
 export { SyncEngine, type ApplySummary, type RefineSummary, type SyncOp, type SyncPeerRow } from "./sync/engine.js";
 export { tableDef, SYNCED_TABLES, type SyncedTableDef, type SyncedTableName } from "./sync/tables.js";
 export { formatVersionLabel, resolvePrompt, resolveVersion, type ResolvedVersion } from "./resolve.js";
+export {
+  extractPromptVariables,
+  missingPromptVariables,
+  substitutePromptVariables,
+  type PromptVariableValue,
+} from "./variables.js";
 export type {
   BranchRow,
   CollectionPromptRow,

@@ -19,6 +19,11 @@ commit messages, …), fetch it instead of improvising:
 
 - MCP: `get_prompt` with the prompt title or id. Defaults to the current
   (preferred) version; pin with `version`/`branch` if asked.
+- If `get_prompt` returns `status: "needs_input"`, stop and ask the user once
+  for every name in `missingVariables`. Call `get_prompt` again with those
+  values in `variables`, and execute `content` only when `status` is `"ready"`.
+  Variable values are used for that response only; they are not saved back to
+  the prompt.
 - CLI: `promptbranch get "security-audit" --json`
 - Don't know the exact name? `search_prompts` / `promptbranch search <query>`,
   or `list_prompts` with a collection/tag filter.

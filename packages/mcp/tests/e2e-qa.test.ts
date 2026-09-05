@@ -14,6 +14,8 @@ let dbPath: string;
 let primaryPromptId: string;
 let primaryVersionId: string;
 let otherVersionId: string;
+let variablePromptId: string;
+let variableVersionId: string;
 let client: Client;
 
 function resultText(result: unknown): string {
@@ -74,6 +76,13 @@ beforeAll(async () => {
   });
   otherVersionId = lib.listVersions(other.id)[0]!.id;
 
+  const variablePrompt = lib.createPrompt({
+    title: "Parallel code review",
+    content: "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+  });
+  variablePromptId = variablePrompt.id;
+  variableVersionId = lib.listVersions(variablePrompt.id)[0]!.id;
+
   for (let index = 1; index <= 12; index++) {
     lib.createPrompt({
       title: `MCP fixture ${String(index).padStart(2, "0")}`,
@@ -128,7 +137,14 @@ describe("promptbranch MCP release QA", () => {
     const current = resultJson<Record<string, unknown>>(
       await client.callTool({ name: "get_prompt", arguments: { prompt: primaryPromptId } }),
     );
-    expect(current).toMatchObject({ versionId: primaryVersionId, versionLabel: "v2", branch: "main" });
+    expect(current).toMatchObject({
+      status: "ready",
+      versionId: primaryVersionId,
+      versionLabel: "v2",
+      branch: "main",
+      requiredVariables: [],
+      missingVariables: [],
+    });
 
     const old = resultJson<Record<string, unknown>>(
       await client.callTool({ name: "get_prompt", arguments: { prompt: "PROTOCOL SECURITY AUDIT", version: 1 } }),
@@ -139,6 +155,82 @@ describe("promptbranch MCP release QA", () => {
       await client.callTool({ name: "get_prompt", arguments: { prompt: primaryPromptId, branch: "CONCISE" } }),
     );
     expect(branch).toMatchObject({ versionLabel: "concise v1", branch: "concise" });
+  });
+
+  it("asks for unique prompt variables before returning execution-ready content", async () => {
+    const unresolved = resultJson<Record<string, unknown>>(
+      await client.callTool({ name: "get_prompt", arguments: { prompt: variablePromptId } }),
+    );
+    expect(unresolved).toMatchObject({
+      status: "needs_input",
+      versionId: variableVersionId,
+      templateContent: "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+      content: "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+      requiredVariables: ["target", "number_of_agents"],
+      missingVariables: ["target", "number_of_agents"],
+    });
+    expect(String(unresolved["message"])).toContain("ask the user");
+  });
+
+  it("does not partially render while required prompt variables are missing", async () => {
+    const partial = resultJson<Record<string, unknown>>(
+      await client.callTool({
+        name: "get_prompt",
+        arguments: {
+          prompt: variablePromptId,
+          variables: { target: "packages/core" },
+        },
+      }),
+    );
+    expect(partial).toMatchObject({
+      status: "needs_input",
+      content: "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+      requiredVariables: ["target", "number_of_agents"],
+      missingVariables: ["number_of_agents"],
+    });
+  });
+
+  it("renders supplied scalar prompt variables without changing the stored version", async () => {
+    const ready = resultJson<Record<string, unknown>>(
+      await client.callTool({
+        name: "get_prompt",
+        arguments: {
+          prompt: variablePromptId,
+          variables: { target: "packages/core", number_of_agents: 3 },
+        },
+      }),
+    );
+    expect(ready).toMatchObject({
+      status: "ready",
+      templateContent: "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+      content: "Review packages/core using 3 agents. Re-check packages/core.",
+      requiredVariables: ["target", "number_of_agents"],
+      missingVariables: [],
+    });
+
+    const { db } = openDatabase(dbPath);
+    const lib = new PromptLibrary(db);
+    expect(lib.getVersion(variableVersionId)?.content).toBe(
+      "Review {{ target }} using {{number_of_agents}} agents. Re-check {{target}}.",
+    );
+    db.close();
+  });
+
+  it("rejects unknown prompt variable names without terminating the session", async () => {
+    const invalid = await client.callTool({
+      name: "get_prompt",
+      arguments: {
+        prompt: variablePromptId,
+        variables: { target: "packages/core", number_of_agent: 3 },
+      },
+    });
+    expect((invalid as { isError?: boolean }).isError).toBe(true);
+    expect(resultText(invalid)).toContain('Unknown variable "number_of_agent"');
+
+    const healthy = resultJson<Record<string, unknown>>(
+      await client.callTool({ name: "get_prompt", arguments: { prompt: primaryPromptId } }),
+    );
+    expect(healthy).toMatchObject({ status: "ready", versionId: primaryVersionId });
   });
 
   it("returns actionable domain errors without terminating the session", async () => {

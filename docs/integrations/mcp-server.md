@@ -36,7 +36,7 @@ client's MCP environment. See [configuration](../reference/configuration-and-env
 
 | Tool | Use it for |
 | --- | --- |
-| `get_prompt` | Fetch the current prompt, or a chosen version or variation. |
+| `get_prompt` | Fetch and render the current prompt, or a chosen version or variation. |
 | `search_prompts` | Find prompts by text, tag, or collection. |
 | `list_prompts` | Browse prompt titles and current versions. |
 | `report_run` | Record a tool, model, rating, summary, and optional metrics. |
@@ -47,12 +47,55 @@ Prompt references can be a title or id. Title matching tries an exact match,
 then a case-insensitive match, then a unique substring. If a reference is
 ambiguous, the server returns close matches.
 
+## Dynamic prompt variables
+
+Prompts can contain variables such as `{{target}}` and
+`{{number_of_agents}}`. When `get_prompt` finds variables without supplied
+values, it returns `status: "needs_input"`, the raw `templateContent`, and the
+names in `missingVariables`. The agent should stop, ask the user for all
+missing values, and call `get_prompt` again with a `variables` object:
+
+```json
+{
+  "prompt": "Parallel code review",
+  "variables": {
+    "target": "packages/core",
+    "number_of_agents": 3
+  }
+}
+```
+
+After every required value is supplied, the response has `status: "ready"`.
+Use `content` as the rendered prompt:
+
+```json
+{
+  "status": "ready",
+  "templateContent": "Review {{target}} using {{number_of_agents}} agents.",
+  "content": "Review packages/core using 3 agents.",
+  "requiredVariables": ["target", "number_of_agents"],
+  "missingVariables": []
+}
+```
+
+Variable names may contain Unicode letters and numbers, underscores, periods,
+and hyphens. Values can be strings, finite numbers, or booleans. An absent or
+empty-string value remains missing; repeated variables are requested once.
+Unknown variable names are rejected to catch typing mistakes.
+
+Substitution is plain text and happens only for that `get_prompt` response.
+Values are not saved, logged, synced, or written back to the prompt. A value
+such as `number_of_agents: 3` renders an instruction for the connected agent;
+PromptBranch does not create or control those agents itself.
+
 ## Recommended agent workflow
 
 1. Search for or fetch the prompt before using it.
-2. Use the returned content and record the outcome with `report_run`.
-3. Add a note when the result needs context.
-4. Use `suggest_variation` only when you have a concrete improvement and a
+2. If `get_prompt` returns `needs_input`, ask for every missing value and fetch
+   it again. Run only `ready` content.
+3. Use the returned content and record the outcome with `report_run`.
+4. Add a note when the result needs context.
+5. Use `suggest_variation` only when you have a concrete improvement and a
    rationale.
 
 Agents propose, humans approve: a suggested variation is pending, invisible to

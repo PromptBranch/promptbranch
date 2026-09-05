@@ -31,8 +31,8 @@ control of your data and approve changes before they are saved.
 
 - 📚 **Organize prompts** with tags, collections, starring, filters, full-text
   search (⌘K), History and Notes, JSON import/export, and automatic local backups.
-- 🌿 **Track versions** with branches, sequential version history, change notes,
-  diffs, and duplicate-as-variation workflows.
+- 🌿 **Track versions** with branches, immutable revision IDs, stable history
+  labels, change notes, diffs, and duplicate-as-variation workflows.
 - 🧪 **Evaluate results** with four-dimension ratings, a Results run log,
   side-by-side comparison, an LLM judge, and an evaluation summary.
 

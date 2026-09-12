@@ -10,7 +10,7 @@
 ## Features & Workflows
 
 * [Manage Prompts & Versions](features/prompt-management.md)
-* [Search & Organize Prompts](features/search-and-organization.md)
+* [Search, Organize & Use Quick access](features/search-and-organization.md)
 * [Library Data, Backups & Transfer](features/library-data-and-backups.md)
 * [Run Prompts with AI Models](features/ai-execution-and-models.md)
 * [Evaluate Prompt Results](features/llm-judge-and-evaluations.md)

@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, type BrowserWindowConstructorOptions, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
 import {
   backupDatabase,
@@ -127,6 +128,15 @@ import { loadMenuIcons } from "./menu-icons.js";
 import { createBeforeQuitHandler } from "./shutdown.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
+import {
+  createQuickPaletteController,
+  QUICK_PALETTE_SETTINGS_KEY,
+  quickPaletteWindowOptions,
+  registerQuickPaletteIpcHandlers,
+  type QuickPaletteController,
+  type QuickPaletteWindowHandlers,
+  type QuickPaletteWindowPort,
+} from "./quick-palette.js";
 
 /**
  * API keys are encrypted with the OS keychain before storage. When the
@@ -202,6 +212,7 @@ let backupsDir: string | null = null;
 let backupScheduler: DailyBackupScheduler | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
+let quickPaletteController: QuickPaletteController | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
 let syncPokeTimer: NodeJS.Timeout | null = null;
 
@@ -909,9 +920,13 @@ function installAppMenu(): void {
     ...(menuIcons.settings ? { icon: menuIcons.settings } : {}),
     click: () => mainWindow?.webContents.send(IPC_CHANNELS.openSettings),
   };
+  const openPaletteItem: MenuItemConstructorOptions = {
+    label: "Open prompt palette",
+    click: () => quickPaletteController?.toggle(),
+  };
   const helpMenu: MenuItemConstructorOptions = {
     label: "Help",
-    submenu: [aboutItem, checkUpdatesItem, settingsItem],
+    submenu: [openPaletteItem, { type: "separator" }, aboutItem, checkUpdatesItem, settingsItem],
   };
 
   // Win/Linux: the menu bar is auto-hidden (Alt reveals it); a slim Help
@@ -928,6 +943,7 @@ function installAppMenu(): void {
       submenu: [
         aboutItem,
         checkUpdatesItem,
+        openPaletteItem,
         { type: "separator" },
         settingsItem,
         { type: "separator" },
@@ -1016,6 +1032,56 @@ const appIconPath = path.join(app.getAppPath(), "build", "icon.png");
 const appIcon = fs.existsSync(appIconPath)
   ? nativeImage.createFromPath(appIconPath)
   : undefined;
+
+function quickPaletteRendererUrl(): string {
+  const base = process.env["ELECTRON_RENDERER_URL"]
+    ?? pathToFileURL(path.join(__dirname, "../renderer/index.html")).href;
+  const url = new URL(base);
+  url.hash = "quick-palette";
+  return url.href;
+}
+
+function createQuickPaletteWindow(handlers: QuickPaletteWindowHandlers): QuickPaletteWindowPort {
+  const expectedUrl = quickPaletteRendererUrl();
+  const nativeWindow = new BrowserWindow(
+    quickPaletteWindowOptions(
+      path.join(__dirname, "../preload/index.js"),
+      process.platform,
+    ) as BrowserWindowConstructorOptions,
+  );
+  nativeWindow.setMenu(null);
+  nativeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  nativeWindow.on("blur", handlers.blur);
+  nativeWindow.on("closed", handlers.closed);
+  nativeWindow.webContents.once("did-finish-load", handlers.ready);
+  nativeWindow.webContents.on("did-fail-load", (_event, errorCode, description, _url, isMainFrame) => {
+    if (isMainFrame) handlers.failed(new Error(`Prompt palette load failed (${errorCode}): ${description}`));
+  });
+  nativeWindow.webContents.on("render-process-gone", (_event, details) => {
+    handlers.failed(new Error(`Prompt palette renderer exited: ${details.reason}`));
+  });
+  nativeWindow.webContents.on("will-navigate", (event, url) => {
+    if (url === expectedUrl) return;
+    event.preventDefault();
+    handlers.failed(new Error("Prompt palette blocked unexpected navigation."));
+  });
+  void nativeWindow.loadURL(expectedUrl).catch(handlers.failed);
+
+  return {
+    sender: nativeWindow.webContents,
+    mainFrame: () => nativeWindow.webContents.mainFrame,
+    send: (channel, payload) => {
+      if (!nativeWindow.isDestroyed() && !nativeWindow.webContents.isDestroyed()) {
+        nativeWindow.webContents.send(channel, payload);
+      }
+    },
+    show: () => nativeWindow.show(),
+    focus: () => nativeWindow.focus(),
+    hide: () => nativeWindow.hide(),
+    destroy: () => nativeWindow.destroy(),
+    isDestroyed: () => nativeWindow.isDestroyed(),
+  };
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -1187,6 +1253,32 @@ if (!gotSingleInstanceLock) {
       ),
   });
 
+  quickPaletteController = createQuickPaletteController({
+    library,
+    readSetting: () => library?.getSetting(QUICK_PALETTE_SETTINGS_KEY) ?? null,
+    writeSetting: (value) => getLibrary().setSetting(QUICK_PALETTE_SETTINGS_KEY, value),
+    shortcut: {
+      register: (accelerator, callback) => globalShortcut.register(accelerator, callback),
+      unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    },
+    createWindow: createQuickPaletteWindow,
+    getMainFrame: () =>
+      mainWindow && !mainWindow.isDestroyed()
+        ? { sender: mainWindow.webContents, frame: mainWindow.webContents.mainFrame }
+        : null,
+    clipboardWriteText: (content) => clipboard.writeText(content),
+    uuid: randomUUID,
+    reportError: (error) => console.error("[main] quick palette error:", error),
+  });
+  registerQuickPaletteIpcHandlers(
+    {
+      handle: (channel, handler) => {
+        ipcMain.handle(channel, (event, payload) => handler(event, payload));
+      },
+    },
+    quickPaletteController,
+  );
+
   registerIpcHandlers();
   console.log(`[main] IPC handlers registered: ${Object.values(IPC_CHANNELS).length} channels`);
 
@@ -1224,6 +1316,8 @@ app.on("window-all-closed", () => {
 
 const handleBeforeQuit = createBeforeQuitHandler({
   clearBackgroundWork: () => {
+    quickPaletteController?.dispose();
+    quickPaletteController = null;
     backupScheduler?.stop();
     backupScheduler = null;
     if (syncPokeTimer) clearInterval(syncPokeTimer);

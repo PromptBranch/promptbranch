@@ -6,6 +6,7 @@
   "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
   "author": "PromptBranch",
   "homepage": "https://promptbranch.app",
+  "desktopName": "com.promptbranch.app",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -111,6 +112,7 @@
       "icon": "build/icon-512.png",
       "category": "Utility;Development;",
       "executableName": "promptbranch",
+      "syncDesktopName": true,
       "executableArgs": [
         "--ozone-platform=x11"
       ],

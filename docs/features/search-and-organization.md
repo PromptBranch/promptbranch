@@ -17,9 +17,12 @@ older version or a note.
 
 The optional global prompt palette is a compact, copy-only view for using your
 library while another app is in front. Enable it under **Settings → Quick
-access**, then press the registered shortcut while PromptBranch is running.
-The **Open prompt palette** application-menu item is always available as a
-fallback.
+access**. The suggested shortcut is <kbd>⌘⇧Space</kbd> on macOS and
+<kbd>Ctrl+Shift+Space</kbd> on Windows and Linux; choose **Record new
+shortcut** to use another key combination. Then press the registered shortcut
+while PromptBranch is running. The **Open prompt palette** application-menu
+item is always available as a fallback. Some Linux desktops may request system
+permission when you enable a global shortcut for the first time.
 
 The palette searches eligible saved prompts and shows up to 20 results, with
 starred prompts first when the search is empty. Selecting a match found through

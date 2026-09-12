@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(new URL("../package-desktop.mjs", import.meta.url));
+const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+
+test("Linux packaging aligns the shortcuts portal with the installed desktop entry", async () => {
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+  assert.equal(manifest.desktopName, manifest.build.appId);
+  assert.match(manifest.desktopName, /^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+$/);
+  assert.equal(manifest.build.linux.syncDesktopName, true);
+});
 
 test("Windows packaging forces the NSIS-compatible BCJ filter", async () => {
   const binDirectory = await mkdtemp(join(tmpdir(), "promptbranch-builder-bin-"));

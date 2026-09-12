@@ -127,6 +127,7 @@ import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { createBeforeQuitHandler } from "./shutdown.js";
 import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
+import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
 import {
@@ -169,6 +170,7 @@ configureLinuxDisplayBackend(process.platform, app.commandLine);
 // bar, Dock tooltip, window title fallback) defaults to "Electron" unless it
 // is set explicitly, as early as possible.
 app.setName("PromptBranch");
+applyQaUserDataOverride(app);
 
 // Deep links (promptbranch://import?url=…). Packaged builds also declare the
 // scheme via electron-builder `protocols` in package.json; dev registers the

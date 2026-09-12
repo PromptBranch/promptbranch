@@ -144,8 +144,12 @@ export function useUpdateEvents() {
       ) {
         notifiedVersion.current = state.latestVersion;
         toast(`PromptBranch ${state.latestVersion} is available`, "info", {
-          label: "View update",
-          onClick: () => openSettings("updates"),
+          action: {
+            label: "View update",
+            onClick: () => openSettings("updates"),
+          },
+          durationMs: null,
+          dismissLabel: "Later",
         });
       }
     });

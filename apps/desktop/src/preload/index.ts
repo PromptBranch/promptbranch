@@ -5,6 +5,29 @@ import type { PromptBuilderApi } from "../shared/ipc.js";
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 
 const api: PromptBuilderApi = {
+  quickPalette: {
+    getState: () => invoke(IPC_CHANNELS.quickPaletteGetState),
+    updateSettings: (input) => invoke(IPC_CHANNELS.quickPaletteUpdateSettings, input),
+    search: (input) => invoke(IPC_CHANNELS.quickPaletteSearch, input),
+    resolve: (input) => invoke(IPC_CHANNELS.quickPaletteResolve, input),
+    render: (input) => invoke(IPC_CHANNELS.quickPaletteRender, input),
+    copy: (input) => invoke(IPC_CHANNELS.quickPaletteCopy, input),
+    dismiss: (input) => invoke(IPC_CHANNELS.quickPaletteDismiss, input),
+    onOpen: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, sessionId: unknown) => {
+        callback(sessionId as string);
+      };
+      ipcRenderer.on(IPC_CHANNELS.quickPaletteOpened, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.quickPaletteOpened, listener);
+    },
+    onClosed: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, sessionId: unknown) => {
+        callback(sessionId as string);
+      };
+      ipcRenderer.on(IPC_CHANNELS.quickPaletteClosed, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.quickPaletteClosed, listener);
+    },
+  },
   prompts: {
     list: (query) => invoke(IPC_CHANNELS.promptList, query),
     get: (id) => invoke(IPC_CHANNELS.promptGet, id),

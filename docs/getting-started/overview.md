@@ -10,6 +10,8 @@ interface you prefer without copying prompts between tools.
 - Create prompts, save immutable versions, and try variations without losing a
   known-good version.
 - Find prompts with search, tags, collections, stars, notes, and filters.
+- While PromptBranch is running, find, preview, and copy a saved prompt from
+  another app with the optional Quick access palette.
 - Run a prompt with one or more connected AI models, compare results, and
   record ratings and costs.
 - Let coding agents read prompts, report their results, and propose changes
@@ -28,6 +30,7 @@ network connection. API keys remain on the device where you add them.
 
 - [Install or build PromptBranch](installation.md)
 - [Create and run your first prompt](quickstart.md)
+- [Find, organize, and copy prompts with Quick access](../features/search-and-organization.md)
 - [Learn prompts, versions, variations, and suggestions](core-concepts.md)
 - [Connect a coding agent through MCP](../integrations/mcp-server.md)
 - [Use the CLI in a terminal or script](../integrations/cli.md)

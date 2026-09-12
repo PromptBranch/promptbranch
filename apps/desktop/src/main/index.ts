@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, type BrowserWindowConstructorOptions, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
 import {
   backupDatabase,
@@ -124,9 +125,21 @@ import {
 } from "./backup-scheduler.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
-import { createBeforeQuitHandler } from "./shutdown.js";
+import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
+import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
+import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
+import { scheduleAutomaticUpdateCheck } from "./update-startup.js";
+import {
+  createQuickPaletteController,
+  QUICK_PALETTE_SETTINGS_KEY,
+  quickPaletteWindowOptions,
+  registerQuickPaletteIpcHandlers,
+  type QuickPaletteController,
+  type QuickPaletteWindowHandlers,
+  type QuickPaletteWindowPort,
+} from "./quick-palette.js";
 
 /**
  * API keys are encrypted with the OS keychain before storage. When the
@@ -158,6 +171,7 @@ configureLinuxDisplayBackend(process.platform, app.commandLine);
 // bar, Dock tooltip, window title fallback) defaults to "Electron" unless it
 // is set explicitly, as early as possible.
 app.setName("PromptBranch");
+applyQaUserDataOverride(app);
 
 // Deep links (promptbranch://import?url=…). Packaged builds also declare the
 // scheme via electron-builder `protocols` in package.json; dev registers the
@@ -194,14 +208,13 @@ app.on("open-url", (event, url) => {
   if (target) importDispatcher.dispatch(target);
 });
 
-const UPDATE_STARTUP_DELAY_MS = 20_000;
-
 let db: Database | null = null;
 let library: PromptLibrary | null = null;
 let backupsDir: string | null = null;
 let backupScheduler: DailyBackupScheduler | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
+let quickPaletteController: QuickPaletteController | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
 let syncPokeTimer: NodeJS.Timeout | null = null;
 
@@ -909,9 +922,13 @@ function installAppMenu(): void {
     ...(menuIcons.settings ? { icon: menuIcons.settings } : {}),
     click: () => mainWindow?.webContents.send(IPC_CHANNELS.openSettings),
   };
+  const openPaletteItem: MenuItemConstructorOptions = {
+    label: "Open prompt palette",
+    click: () => quickPaletteController?.toggle(),
+  };
   const helpMenu: MenuItemConstructorOptions = {
     label: "Help",
-    submenu: [aboutItem, checkUpdatesItem, settingsItem],
+    submenu: [openPaletteItem, { type: "separator" }, aboutItem, checkUpdatesItem, settingsItem],
   };
 
   // Win/Linux: the menu bar is auto-hidden (Alt reveals it); a slim Help
@@ -928,6 +945,7 @@ function installAppMenu(): void {
       submenu: [
         aboutItem,
         checkUpdatesItem,
+        openPaletteItem,
         { type: "separator" },
         settingsItem,
         { type: "separator" },
@@ -1017,7 +1035,57 @@ const appIcon = fs.existsSync(appIconPath)
   ? nativeImage.createFromPath(appIconPath)
   : undefined;
 
-function createWindow(): void {
+function quickPaletteRendererUrl(): string {
+  const base = process.env["ELECTRON_RENDERER_URL"]
+    ?? pathToFileURL(path.join(__dirname, "../renderer/index.html")).href;
+  const url = new URL(base);
+  url.hash = "quick-palette";
+  return url.href;
+}
+
+function createQuickPaletteWindow(handlers: QuickPaletteWindowHandlers): QuickPaletteWindowPort {
+  const expectedUrl = quickPaletteRendererUrl();
+  const nativeWindow = new BrowserWindow(
+    quickPaletteWindowOptions(
+      path.join(__dirname, "../preload/index.js"),
+      process.platform,
+    ) as BrowserWindowConstructorOptions,
+  );
+  nativeWindow.setMenu(null);
+  nativeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  nativeWindow.on("blur", handlers.blur);
+  nativeWindow.on("closed", handlers.closed);
+  nativeWindow.webContents.once("did-finish-load", handlers.ready);
+  nativeWindow.webContents.on("did-fail-load", (_event, errorCode, description, _url, isMainFrame) => {
+    if (isMainFrame) handlers.failed(new Error(`Prompt palette load failed (${errorCode}): ${description}`));
+  });
+  nativeWindow.webContents.on("render-process-gone", (_event, details) => {
+    handlers.failed(new Error(`Prompt palette renderer exited: ${details.reason}`));
+  });
+  nativeWindow.webContents.on("will-navigate", (event, url) => {
+    if (url === expectedUrl) return;
+    event.preventDefault();
+    handlers.failed(new Error("Prompt palette blocked unexpected navigation."));
+  });
+  void nativeWindow.loadURL(expectedUrl).catch(handlers.failed);
+
+  return {
+    sender: nativeWindow.webContents,
+    mainFrame: () => nativeWindow.webContents.mainFrame,
+    send: (channel, payload) => {
+      if (!nativeWindow.isDestroyed() && !nativeWindow.webContents.isDestroyed()) {
+        nativeWindow.webContents.send(channel, payload);
+      }
+    },
+    show: () => nativeWindow.show(),
+    focus: () => nativeWindow.focus(),
+    hide: () => nativeWindow.hide(),
+    destroy: () => nativeWindow.destroy(),
+    isDestroyed: () => nativeWindow.isDestroyed(),
+  };
+}
+
+function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -1041,8 +1109,10 @@ function createWindow(): void {
   });
   mainWindow = window;
   window.on("closed", () => {
-    if (mainWindow === window) mainWindow = null;
+    const wasMainWindow = mainWindow === window;
+    if (wasMainWindow) mainWindow = null;
     importDispatcher.windowClosed();
+    if (wasMainWindow && shouldQuitWhenMainWindowCloses(process.platform)) app.quit();
   });
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
@@ -1117,6 +1187,7 @@ function createWindow(): void {
   } else {
     void window.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+  return window;
 }
 
 // Single instance: a second launch focuses the existing window and quits, so
@@ -1126,10 +1197,7 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    restoreOrCreateMainWindow(mainWindow, createWindow);
     const target = deepLinkFromArgv(argv);
     if (target) importDispatcher.dispatch(target);
   });
@@ -1187,6 +1255,32 @@ if (!gotSingleInstanceLock) {
       ),
   });
 
+  quickPaletteController = createQuickPaletteController({
+    library,
+    readSetting: () => library?.getSetting(QUICK_PALETTE_SETTINGS_KEY) ?? null,
+    writeSetting: (value) => getLibrary().setSetting(QUICK_PALETTE_SETTINGS_KEY, value),
+    shortcut: {
+      register: (accelerator, callback) => globalShortcut.register(accelerator, callback),
+      unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    },
+    createWindow: createQuickPaletteWindow,
+    getMainFrame: () =>
+      mainWindow && !mainWindow.isDestroyed()
+        ? { sender: mainWindow.webContents, frame: mainWindow.webContents.mainFrame }
+        : null,
+    clipboardWriteText: (content) => clipboard.writeText(content),
+    uuid: randomUUID,
+    reportError: (error) => console.error("[main] quick palette error:", error),
+  });
+  registerQuickPaletteIpcHandlers(
+    {
+      handle: (channel, handler) => {
+        ipcMain.handle(channel, (event, payload) => handler(event, payload));
+      },
+    },
+    quickPaletteController,
+  );
+
   registerIpcHandlers();
   console.log(`[main] IPC handlers registered: ${Object.values(IPC_CHANNELS).length} channels`);
 
@@ -1196,10 +1290,9 @@ if (!gotSingleInstanceLock) {
   syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
   syncPokeTimer.unref?.();
 
-  updateStartupTimer = setTimeout(() => {
+  updateStartupTimer = scheduleAutomaticUpdateCheck(() => {
     void updateService?.checkAutomaticallyAtStartup();
-  }, UPDATE_STARTUP_DELAY_MS);
-  updateStartupTimer.unref?.();
+  });
 
   installAppMenu();
   // Dev mode runs the bare Electron binary, whose dock icon is the Electron
@@ -1213,7 +1306,7 @@ if (!gotSingleInstanceLock) {
   if (coldStartTarget) importDispatcher.dispatch(coldStartTarget);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    restoreOrCreateMainWindow(mainWindow, createWindow);
   });
   });
 }
@@ -1224,6 +1317,8 @@ app.on("window-all-closed", () => {
 
 const handleBeforeQuit = createBeforeQuitHandler({
   clearBackgroundWork: () => {
+    quickPaletteController?.dispose();
+    quickPaletteController = null;
     backupScheduler?.stop();
     backupScheduler = null;
     if (syncPokeTimer) clearInterval(syncPokeTimer);
@@ -1231,19 +1326,26 @@ const handleBeforeQuit = createBeforeQuitHandler({
     if (updateStartupTimer) clearTimeout(updateStartupTimer);
     updateStartupTimer = null;
   },
-  disposeSync: () => desktopSync?.dispose(),
   stopSync: () => desktopSync?.stop() ?? Promise.resolve(),
+  quit: () => app.quit(),
+  log: (message, error) => console.error(`[main] ${message}:`, error),
+});
+
+const handleWillQuit = createWillQuitHandler({
+  disposeSync: () => desktopSync?.dispose(),
   closeDatabase: () => {
     db?.close();
     db = null;
     library = null;
   },
-  quit: () => app.quit(),
   log: (message, error) => console.error(`[main] ${message}:`, error),
 });
 
 app.on("before-quit", (event) => {
   // Prevent Electron from terminating while a queued sync restart still owns
-  // sockets or SQLite. The helper reissues quit after stop + close complete.
+  // sockets or SQLite. The helper reissues quit after stop completes; the
+  // will-quit boundary closes SQLite after renderer windows are gone.
   void handleBeforeQuit(event);
 });
+
+app.on("will-quit", handleWillQuit);

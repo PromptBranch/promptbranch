@@ -108,6 +108,41 @@ Anyone with the link can view the snapshot in a clean web viewer, inspect versio
 
 ---
 
+## Step 8: Enable Quick Access (Optional)
+
+Quick access lets you find and copy a saved prompt without first bringing the
+main PromptBranch window to the front.
+
+1. Open **Settings → Quick access**.
+2. Turn on **Enable global shortcut**. It is disabled by default.
+3. Keep the suggested shortcut—<kbd>⌘⇧Space</kbd> on macOS or
+   <kbd>Ctrl+Shift+Space</kbd> on Windows and Linux—or choose **Record new
+   shortcut** and press your preferred key combination. Then choose **Save
+   quick access**. PromptBranch reports whether the shortcut was registered.
+4. While PromptBranch is running, press the shortcut from another app. You can
+   also choose **Open prompt palette** from the application menu if a system or
+   another app owns the shortcut. On Windows and Linux, press <kbd>Alt</kbd> to
+   reveal the menu bar first.
+5. Search for a prompt, fill any `{{variables}}`, and inspect the exact plain
+   text preview. Choosing a match from saved history still resolves the
+   prompt's current saved version.
+6. Choose **Copy prompt** or press <kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. The
+   palette copies only after that explicit action, then closes and returns
+   focus to the previous app. Dismissing it clears its temporary search and
+   variable values.
+
+Quick access does not launch PromptBranch or add it to your login items. If a
+new shortcut cannot be registered, the previous working shortcut remains
+active; choose another shortcut or resolve the conflict and try saving again.
+Some Linux desktops may ask for system permission the first time a global
+shortcut is enabled.
+
+On macOS, Quick access remains available after you close the library window as
+long as PromptBranch is still running. On Windows and Linux, closing the library
+window exits PromptBranch and disables the shortcut until the app starts again.
+
+---
+
 ## Next Steps
 
 - [Prompt Management & Versioning](../features/prompt-management.md) for version history, diffing, and trash.

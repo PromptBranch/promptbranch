@@ -13,6 +13,7 @@ import { afterEach, vi, type Mock } from "vitest";
 import type {
   AiRunProgressEvent,
   PromptBuilderApi,
+  QuickPaletteState,
   SyncPairRequestClosedEvent,
   SyncPairRequestEvent,
   SyncStatusDto,
@@ -25,6 +26,10 @@ type Mocked<T> = T extends (...args: infer A) => infer R
 
 /** The bridge with every leaf function replaced by a typed vi mock. */
 export type MockBridge = Mocked<PromptBuilderApi> & {
+  /** Delivers a quick-palette:opened event to subscribed listeners. */
+  emitQuickPaletteOpen(sessionId: string): void;
+  /** Delivers a quick-palette:closed event to subscribed listeners. */
+  emitQuickPaletteClosed(sessionId: string): void;
   /** Delivers an ai:run-progress event to every subscribed renderer listener. */
   emitRunProgress(event: AiRunProgressEvent): void;
   /** Delivers a promptbranch://import deep link to subscribed listeners. */
@@ -47,6 +52,8 @@ export function createMockBridge(): MockBridge {
   // onRunProgress listeners registered by components under test; the default
   // implementation captures them so tests can drive progress events.
   const progressListeners = new Set<(event: AiRunProgressEvent) => void>();
+  const quickPaletteOpenListeners = new Set<(sessionId: string) => void>();
+  const quickPaletteClosedListeners = new Set<(sessionId: string) => void>();
   // onOpenImport listeners (promptbranch:// deep links), driven by emitOpenImport.
   const importListeners = new Set<(url: string) => void>();
   // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
@@ -85,9 +92,43 @@ export function createMockBridge(): MockBridge {
     assets: [],
     errorMessage: null,
   };
+  const initialQuickPaletteState: QuickPaletteState = {
+    settings: {
+      enabled: false,
+      accelerator: "CommandOrControl+Shift+Space",
+    },
+    registration: "disabled",
+    registrationError: null,
+    sessionId: null,
+  };
   // Typed as the real API first so every default implementation is checked
   // against the real signatures, then widened to the mock view for tests.
   const api: PromptBuilderApi = {
+    quickPalette: {
+      getState: vi.fn(async () => initialQuickPaletteState),
+      updateSettings: vi.fn(async (settings) => ({
+        ...initialQuickPaletteState,
+        settings,
+        registration: settings.enabled ? ("registered" as const) : ("disabled" as const),
+      })),
+      search: vi.fn(async () => ({ ok: true as const, value: [] })),
+      resolve: vi.fn(notStubbed),
+      render: vi.fn(notStubbed),
+      copy: vi.fn(notStubbed),
+      dismiss: vi.fn(async () => {}),
+      onOpen: vi.fn((callback: (sessionId: string) => void) => {
+        quickPaletteOpenListeners.add(callback);
+        return () => {
+          quickPaletteOpenListeners.delete(callback);
+        };
+      }),
+      onClosed: vi.fn((callback: (sessionId: string) => void) => {
+        quickPaletteClosedListeners.add(callback);
+        return () => {
+          quickPaletteClosedListeners.delete(callback);
+        };
+      }),
+    },
     prompts: {
       list: vi.fn(async () => []),
       get: vi.fn(async () => null),
@@ -318,6 +359,12 @@ export function createMockBridge(): MockBridge {
     },
   };
   return Object.assign(api as unknown as MockBridge, {
+    emitQuickPaletteOpen: (sessionId: string) => {
+      for (const listener of [...quickPaletteOpenListeners]) listener(sessionId);
+    },
+    emitQuickPaletteClosed: (sessionId: string) => {
+      for (const listener of [...quickPaletteClosedListeners]) listener(sessionId);
+    },
     emitRunProgress: (event: AiRunProgressEvent) => {
       for (const listener of [...progressListeners]) listener(event);
     },

@@ -228,7 +228,19 @@ describe("App update events", () => {
     act(() => bridge.emitUpdateState(AVAILABLE_UPDATE));
 
     expect(await screen.findByText("PromptBranch 0.2.0 is available")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Later" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View update" }));
     expect(await screen.findAllByText("Updates")).toHaveLength(2);
+  });
+
+  it("lets the user dismiss an automatically discovered update", async () => {
+    const user = userEvent.setup();
+    renderApp(<App />);
+
+    act(() => bridge.emitUpdateState(AVAILABLE_UPDATE));
+
+    expect(await screen.findByText("PromptBranch 0.2.0 is available")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Later" }));
+    expect(screen.queryByText("PromptBranch 0.2.0 is available")).not.toBeInTheDocument();
   });
 });

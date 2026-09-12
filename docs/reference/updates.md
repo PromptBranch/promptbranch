@@ -8,6 +8,7 @@ and installing the update remains under your control.
 
 Choose **Check for Updates…** from the PromptBranch application menu, or open
 **Settings → Updates** and select **Check for Updates**.
+On Windows and Linux, press <kbd>Alt</kbd> to reveal the menu bar.
 
 PromptBranch compares the installed version with the latest stable release. The
 Updates page then shows one of these results:
@@ -26,9 +27,13 @@ version is available.
 ## Automatic checks
 
 **Automatically check for updates** is enabled by default. PromptBranch checks
-quietly each time the packaged app starts. It does not run periodic checks while
-the app remains open. PromptBranch shows a notification only when a matching
-update is available; routine successes and failures do not interrupt your work.
+quietly about three seconds after the app starts. It does not run periodic
+checks while the app remains open. PromptBranch shows a notification only when
+a matching update is available; routine successes and failures do not interrupt
+your work.
+The update notification stays visible until you choose **View update** or
+**Later**. Choosing **Later** dismisses it for the current app session; a later
+app launch can notify you about the same available version again.
 
 Turn the setting off at any time in **Settings → Updates**. Manual checks remain
 available while automatic checks are disabled.

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBeforeQuitHandler } from "./shutdown.js";
+import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -10,18 +10,20 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe("main-process shutdown", () => {
-  it("blocks repeated quit attempts until sync stops and the database closes once", async () => {
+  it("blocks repeated quit attempts until sync stops without closing the live renderer database", async () => {
     const stopping = deferred();
+    const lifecycle: string[] = [];
     const clearBackgroundWork = vi.fn();
-    const disposeSync = vi.fn();
     const stopSync = vi.fn(() => stopping.promise);
-    const closeDatabase = vi.fn();
-    const quit = vi.fn();
+    const quit = vi.fn(() => lifecycle.push("quit"));
+    const willQuit = createWillQuitHandler({
+      disposeSync: vi.fn(() => lifecycle.push("dispose-sync")),
+      closeDatabase: vi.fn(() => lifecycle.push("close-database")),
+      log: vi.fn(),
+    });
     const handler = createBeforeQuitHandler({
       clearBackgroundWork,
-      disposeSync,
       stopSync,
-      closeDatabase,
       quit,
       log: vi.fn(),
     });
@@ -32,9 +34,7 @@ describe("main-process shutdown", () => {
     expect(shutdown).not.toBeNull();
     expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
     expect(clearBackgroundWork).toHaveBeenCalledOnce();
-    expect(disposeSync).toHaveBeenCalledOnce();
     expect(stopSync).toHaveBeenCalledOnce();
-    expect(closeDatabase).not.toHaveBeenCalled();
     expect(quit).not.toHaveBeenCalled();
 
     expect(handler(repeatedEvent)).toBe(shutdown);
@@ -43,27 +43,26 @@ describe("main-process shutdown", () => {
 
     stopping.resolve();
     await shutdown;
-    expect(closeDatabase).toHaveBeenCalledOnce();
     expect(quit).toHaveBeenCalledOnce();
+    expect(lifecycle).toEqual(["quit"]);
 
     const finalEvent = { preventDefault: vi.fn() };
     expect(handler(finalEvent)).toBeNull();
     expect(finalEvent.preventDefault).not.toHaveBeenCalled();
-    expect(closeDatabase).toHaveBeenCalledOnce();
+
+    willQuit();
+    expect(lifecycle).toEqual(["quit", "dispose-sync", "close-database"]);
   });
 
-  it("still closes and reissues quit when sync shutdown fails", async () => {
+  it("still reissues quit when sync shutdown fails", async () => {
     const error = new Error("listener stop failed");
-    const closeDatabase = vi.fn();
     const quit = vi.fn();
     const log = vi.fn();
     const handler = createBeforeQuitHandler({
       clearBackgroundWork: vi.fn(),
-      disposeSync: vi.fn(),
       stopSync: vi.fn(async () => {
         throw error;
       }),
-      closeDatabase,
       quit,
       log,
     });
@@ -71,7 +70,40 @@ describe("main-process shutdown", () => {
     await handler({ preventDefault: vi.fn() });
 
     expect(log).toHaveBeenCalledWith("sync shutdown failed", error);
-    expect(closeDatabase).toHaveBeenCalledOnce();
     expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("closes the database once at will-quit after renderer windows are gone", () => {
+    const disposeSync = vi.fn();
+    const closeDatabase = vi.fn();
+    const handler = createWillQuitHandler({
+      disposeSync,
+      closeDatabase,
+      log: vi.fn(),
+    });
+
+    handler();
+    handler();
+
+    expect(disposeSync).toHaveBeenCalledOnce();
+    expect(closeDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("logs a database close failure without retrying during will-quit", () => {
+    const error = new Error("database close failed");
+    const log = vi.fn();
+    const handler = createWillQuitHandler({
+      disposeSync: vi.fn(),
+      closeDatabase: vi.fn(() => {
+        throw error;
+      }),
+      log,
+    });
+
+    handler();
+    handler();
+
+    expect(log).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith("database close failed", error);
   });
 });

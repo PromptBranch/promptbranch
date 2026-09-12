@@ -9,6 +9,7 @@ allowBuilds:
   sharp: false
 overrides:
   fast-uri: 3.1.6
+  hono: 4.13.7
   qs: 6.16.0
 minimumReleaseAgeExclude:
   - '@ai-sdk/anthropic@3.0.112'

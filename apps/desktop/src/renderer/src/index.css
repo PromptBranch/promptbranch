@@ -109,6 +109,17 @@ body {
   overflow: hidden;
 }
 
+.pb-drag {
+  -webkit-app-region: drag;
+}
+
+.pb-no-drag,
+button,
+input,
+textarea {
+  -webkit-app-region: no-drag;
+}
+
 /* Subtle scrollbars */
 * {
   scrollbar-width: thin;

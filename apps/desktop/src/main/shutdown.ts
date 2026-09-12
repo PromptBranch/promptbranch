@@ -4,10 +4,14 @@ export interface BeforeQuitEvent {
 
 export interface MainShutdownDeps {
   clearBackgroundWork(): void;
-  disposeSync(): void;
   stopSync(): Promise<void>;
-  closeDatabase(): void;
   quit(): void;
+  log(message: string, error: unknown): void;
+}
+
+export interface WillQuitDeps {
+  disposeSync(): void;
+  closeDatabase(): void;
   log(message: string, error: unknown): void;
 }
 
@@ -23,21 +27,30 @@ export function createBeforeQuitHandler(
     if (shutdown) return shutdown;
 
     deps.clearBackgroundWork();
-    deps.disposeSync();
     shutdown = (async () => {
       try {
         await deps.stopSync();
       } catch (error) {
         deps.log("sync shutdown failed", error);
       }
-      try {
-        deps.closeDatabase();
-      } catch (error) {
-        deps.log("database close failed", error);
-      }
       readyToQuit = true;
       deps.quit();
     })();
     return shutdown;
+  };
+}
+
+export function createWillQuitHandler(deps: WillQuitDeps): () => void {
+  let databaseClosed = false;
+
+  return () => {
+    if (databaseClosed) return;
+    databaseClosed = true;
+    deps.disposeSync();
+    try {
+      deps.closeDatabase();
+    } catch (error) {
+      deps.log("database close failed", error);
+    }
   };
 }

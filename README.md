@@ -21,7 +21,7 @@ control of your data and approve changes before they are saved.
 
 > [!WARNING]
 > **Work in progress.** PromptBranch is actively evolving. You may encounter bugs or
-> incomplete behavior, and parts of this documentation may be inaccurate or unfinished.
+> incomplete behavior, and features may change as development continues.
 > Please [report non-security issues](https://github.com/PromptBranch/promptbranch/issues).
 > Report security concerns privately through the [security policy](.github/SECURITY.md).
 
@@ -31,6 +31,9 @@ control of your data and approve changes before they are saved.
 
 - 📚 **Organize prompts** with tags, collections, starring, filters, full-text
   search (⌘K), History and Notes, JSON import/export, and automatic local backups.
+- 📋 **Copy prompts from another app** while PromptBranch is running with the
+  optional Quick access palette, a configurable global shortcut, variable
+  inputs, and an exact text preview.
 - 🌿 **Track versions** with branches, immutable revision IDs, stable history
   labels, change notes, diffs, and duplicate-as-variation workflows.
 - 🧪 **Evaluate results** with four-dimension ratings, a Results run log,
@@ -150,10 +153,10 @@ prompts. Supported providers: **OpenAI**, **Anthropic**, **Google**, and any
 **OpenAI-compatible** endpoint (Ollama, LM Studio, …) via a custom base URL.
 
 Setup is one step: Settings → AI Providers → **Connect a provider** → paste the
-API key (encrypted with your OS keychain via Electron `safeStorage`; keys are
-decrypted only inside the app at execution time). The connection is tested
-automatically as part of connecting, and the model catalog refreshes in the
-background. If `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
+API key. PromptBranch encrypts it using your operating system's secure
+credential storage and only decrypts it when needed for a model request. The
+connection is tested automatically as part of connecting, and the model catalog
+refreshes in the background. If `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
 `GOOGLE_GENERATIVE_AI_API_KEY` is set in the environment, PromptBranch offers
 a one-click **Use environment key** connect for that provider.
 
@@ -227,13 +230,14 @@ Browse the full documentation in [`docs/`](docs/SUMMARY.md).
 | Start here | Go deeper |
 | --- | --- |
 | [Overview & Philosophy](docs/getting-started/overview.md) | [Prompt Management](docs/features/prompt-management.md) |
-| [Installation](docs/getting-started/installation.md) | [Search & Organization](docs/features/search-and-organization.md) |
+| [Installation](docs/getting-started/installation.md) | [Search, Organization & Quick access](docs/features/search-and-organization.md) |
 | [Quickstart](docs/getting-started/quickstart.md) | [Library Data & Backups](docs/features/library-data-and-backups.md) |
 | [Core Concepts](docs/getting-started/core-concepts.md) | [Multi-Model Execution](docs/features/ai-execution-and-models.md) |
 | [MCP Server](docs/integrations/mcp-server.md) | [LLM Judge](docs/features/llm-judge-and-evaluations.md) |
 | [CLI](docs/integrations/cli.md) | [AI Assist](docs/features/ai-assist.md) |
 | [AI Providers](docs/integrations/ai-providers.md) | [Peer-to-Peer Sync](docs/sync/peer-to-peer-sync.md) |
 | [Link Sharing](docs/sharing/link-sharing-and-portal.md) | [Configuration & Environment](docs/reference/configuration-and-env.md) |
+| [Updates](docs/reference/updates.md) | |
 
 Want to contribute? Read [CONTRIBUTING.md](CONTRIBUTING.md).
 

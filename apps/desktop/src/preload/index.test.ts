@@ -1,0 +1,101 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IPC_CHANNELS } from "../shared/channels.js";
+
+const electron = vi.hoisted(() => ({
+  exposed: undefined as unknown,
+  invoke: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
+}));
+
+vi.mock("electron", () => ({
+  contextBridge: {
+    exposeInMainWorld: (_name: string, value: unknown) => {
+      electron.exposed = value;
+    },
+  },
+  ipcRenderer: {
+    invoke: electron.invoke,
+    on: electron.on,
+    removeListener: electron.removeListener,
+  },
+}));
+
+interface PalettePreloadApi {
+  getState(): Promise<unknown>;
+  updateSettings(input: unknown): Promise<unknown>;
+  search(input: unknown): Promise<unknown>;
+  resolve(input: unknown): Promise<unknown>;
+  render(input: unknown): Promise<unknown>;
+  copy(input: unknown): Promise<unknown>;
+  dismiss(input: unknown): Promise<void>;
+  onOpen(callback: (sessionId: string) => void): () => void;
+  onClosed(callback: (sessionId: string) => void): () => void;
+}
+
+function quickPaletteApi(): PalettePreloadApi {
+  const api = electron.exposed as { quickPalette?: PalettePreloadApi };
+  expect(api.quickPalette, "preload must expose quickPalette").toBeDefined();
+  return api.quickPalette!;
+}
+
+describe("quick palette preload bridge", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    electron.exposed = undefined;
+    electron.invoke.mockReset().mockResolvedValue(undefined);
+    electron.on.mockReset();
+    electron.removeListener.mockReset();
+    await import("./index.js");
+  });
+
+  it("forwards palette requests over their dedicated channels", async () => {
+    const api = quickPaletteApi();
+    const settings = { enabled: true, accelerator: "CommandOrControl+Shift+Space" };
+    const search = { sessionId: "session-1", query: "hello" };
+    const resolve = { sessionId: "session-1", promptId: "prompt-1" };
+    const render = { ...resolve, versionId: "version-1", variables: { name: "Ada" } };
+    const copy = { sessionId: "session-1", previewId: "preview-1" };
+    const dismiss = { sessionId: "session-1" };
+
+    await api.getState();
+    await api.updateSettings(settings);
+    await api.search(search);
+    await api.resolve(resolve);
+    await api.render(render);
+    await api.copy(copy);
+    await api.dismiss(dismiss);
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.quickPaletteGetState],
+      [IPC_CHANNELS.quickPaletteUpdateSettings, settings],
+      [IPC_CHANNELS.quickPaletteSearch, search],
+      [IPC_CHANNELS.quickPaletteResolve, resolve],
+      [IPC_CHANNELS.quickPaletteRender, render],
+      [IPC_CHANNELS.quickPaletteCopy, copy],
+      [IPC_CHANNELS.quickPaletteDismiss, dismiss],
+    ]);
+  });
+
+  it("unsubscribes the exact listeners installed for open and closed events", () => {
+    const api = quickPaletteApi();
+    const opened = vi.fn();
+    const closed = vi.fn();
+
+    const unsubscribeOpen = api.onOpen(opened);
+    const unsubscribeClosed = api.onClosed(closed);
+    const openListener = electron.on.mock.calls[0]?.[1] as (_event: unknown, id: string) => void;
+    const closedListener = electron.on.mock.calls[1]?.[1] as (_event: unknown, id: string) => void;
+    openListener({}, "session-open");
+    closedListener({}, "session-closed");
+    unsubscribeOpen();
+    unsubscribeClosed();
+
+    expect(opened).toHaveBeenCalledWith("session-open");
+    expect(closed).toHaveBeenCalledWith("session-closed");
+    expect(electron.removeListener.mock.calls).toEqual([
+      [IPC_CHANNELS.quickPaletteOpened, openListener],
+      [IPC_CHANNELS.quickPaletteClosed, closedListener],
+    ]);
+  });
+});

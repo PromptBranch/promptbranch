@@ -97,6 +97,98 @@ export const collectionPromptSchema = z.object({ collectionId: id, promptId: id 
 
 export const searchSchema = z.object({ query: z.string().max(1_000) });
 
+export const quickPaletteSettingsSchema = z.strictObject({
+  enabled: z.boolean(),
+  accelerator: z.string().trim().min(1).max(100),
+});
+export const quickPaletteSearchSchema = z.strictObject({
+  sessionId: id,
+  query: z.string().max(500),
+});
+export const quickPaletteResolveSchema = z.strictObject({ sessionId: id, promptId: id });
+export const quickPaletteRenderSchema = z.strictObject({
+  sessionId: id,
+  promptId: id,
+  versionId: id,
+  variables: z.preprocess((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    return Object.entries(value);
+  }, z.array(z.tuple([
+    z.string().min(1).max(1_000_000),
+    z.union([z.string().max(100_000), z.number().finite(), z.boolean()]),
+  ])).max(100)).transform((entries) => Object.fromEntries(entries)),
+});
+export const quickPaletteCopySchema = z.strictObject({ sessionId: id, previewId: id });
+export const quickPaletteDismissSchema = z.strictObject({ sessionId: id });
+
+export type QuickPaletteFailureCode =
+  | "invalid-input"
+  | "not-found"
+  | "revision-changed"
+  | "session-ended"
+  | "preview-expired"
+  | "clipboard-unavailable";
+export type QuickPaletteResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; code: QuickPaletteFailureCode; message: string };
+export interface QuickPaletteSettings {
+  enabled: boolean;
+  accelerator: string;
+}
+export interface QuickPaletteState {
+  settings: QuickPaletteSettings;
+  registration: "disabled" | "registered" | "unavailable";
+  registrationError: string | null;
+  sessionId: string | null;
+}
+export interface QuickPaletteItem {
+  promptId: string;
+  title: string;
+  starred: boolean;
+  currentVersionId: string;
+  currentVersionLabel: string;
+  matchedHistory: boolean;
+}
+export interface QuickPaletteSelection {
+  promptId: string;
+  title: string;
+  versionId: string;
+  versionLabel: string;
+  templateContent: string;
+  requiredVariables: string[];
+}
+export interface QuickPaletteRenderInput {
+  sessionId: string;
+  promptId: string;
+  versionId: string;
+  variables: Record<string, string | number | boolean>;
+}
+export type QuickPalettePreview =
+  | { status: "needs-input"; missingVariables: string[] }
+  | { status: "ready"; previewId: string; content: string };
+export interface QuickPaletteApi {
+  getState(): Promise<QuickPaletteState>;
+  updateSettings(input: QuickPaletteSettings): Promise<QuickPaletteState>;
+  search(input: {
+    sessionId: string;
+    query: string;
+  }): Promise<QuickPaletteResult<QuickPaletteItem[]>>;
+  resolve(input: {
+    sessionId: string;
+    promptId: string;
+  }): Promise<QuickPaletteResult<QuickPaletteSelection>>;
+  render(input: QuickPaletteRenderInput): Promise<QuickPaletteResult<QuickPalettePreview>>;
+  copy(input: {
+    sessionId: string;
+    previewId: string;
+  }): Promise<QuickPaletteResult<null>>;
+  dismiss(input: { sessionId: string }): Promise<void>;
+  onOpen(callback: (sessionId: string) => void): () => void;
+  onClosed(callback: (sessionId: string) => void): () => void;
+}
+
 export const ratingAveragesSchema = z.object({
   targetType: z.enum(["prompt", "version"]),
   targetId: id,
@@ -949,6 +1041,7 @@ export interface SyncPairResult {
 
 /** Narrow API surface exposed on `window.promptBuilder` by the preload. */
 export interface PromptBuilderApi {
+  quickPalette: QuickPaletteApi;
   prompts: {
     list(query?: PromptListQuery): Promise<PromptSummary[]>;
     get(id: string): Promise<PromptDetail | null>;

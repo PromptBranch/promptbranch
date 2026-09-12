@@ -9,6 +9,7 @@ import {
   ExternalLink,
   HardDrive,
   Info,
+  Keyboard,
   Palette,
   RefreshCcw,
   Share2,
@@ -27,6 +28,7 @@ import { useAppState, type SettingsSection } from "../state/app-state";
 import { AiProvidersSection } from "./AiProvidersSection";
 import { ConfirmDialog } from "./dialogs";
 import { LicensesDialog } from "./LicensesDialog";
+import { QuickPaletteSettings } from "./QuickPaletteSettings";
 import { SharingSection } from "./SharingSection";
 import { SyncSection } from "./SyncSection";
 import { UpdatesSection } from "./UpdatesSection";
@@ -34,6 +36,7 @@ import { UpdatesSection } from "./UpdatesSection";
 const SECTIONS: Array<{ id: SettingsSection; label: string; icon: React.ReactNode }> = [
   { id: "appearance", label: "Appearance", icon: <Palette size={13} /> },
   { id: "editor", label: "Editor", icon: <SquarePen size={13} /> },
+  { id: "quick-access", label: "Quick access", icon: <Keyboard size={13} /> },
   { id: "ai", label: "AI Providers", icon: <Cpu size={13} /> },
   { id: "data", label: "Data & Backup", icon: <Database size={13} /> },
   { id: "agent", label: "Agent integration", icon: <HardDrive size={13} /> },
@@ -501,6 +504,7 @@ export function SettingsDialog() {
             <div className="@container min-h-0 flex-1 overflow-y-auto px-5 py-4">
               {section === "appearance" && <AppearanceSection />}
               {section === "editor" && <EditorSection />}
+              {section === "quick-access" && <QuickPaletteSettings />}
               {section === "ai" && <AiProvidersSection />}
               {section === "data" && <DataSection />}
               {section === "agent" && <AgentSection />}

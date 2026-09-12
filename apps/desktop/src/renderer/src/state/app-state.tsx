@@ -3,7 +3,7 @@ import type { SortKey } from "../../../shared/ipc.js";
 
 export type ViewKind = "library" | "history" | "starred" | "shares" | "trash" | "collection" | "suggestions";
 
-export type SettingsSection = "appearance" | "editor" | "ai" | "data" | "agent" | "sharing" | "sync" | "updates" | "about";
+export type SettingsSection = "appearance" | "editor" | "quick-access" | "ai" | "data" | "agent" | "sharing" | "sync" | "updates" | "about";
 
 export interface AppView {
   kind: ViewKind;

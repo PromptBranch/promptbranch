@@ -13,6 +13,35 @@ The smaller field above the prompt list filters the visible list by title,
 description, and tags. Use the full search when you need to find text from an
 older version or a note.
 
+## Copy a prompt with Quick access
+
+The optional global prompt palette is a compact, copy-only view for using your
+library while another app is in front. Enable it under **Settings → Quick
+access**. The suggested shortcut is <kbd>⌘⇧Space</kbd> on macOS and
+<kbd>Ctrl+Shift+Space</kbd> on Windows and Linux; choose **Record new
+shortcut** to use another key combination. Then press the registered shortcut
+while PromptBranch is running. The **Open prompt palette** application-menu
+item is always available as a fallback. On Windows and Linux, press
+<kbd>Alt</kbd> to reveal the menu bar first. Some Linux desktops may request
+system permission when you enable a global shortcut for the first time.
+
+When the search is empty, the palette shows up to 20 recently updated prompts,
+with starred prompts first. Start typing to search titles, descriptions, tags,
+notes, and saved version content. Selecting a match found through saved history
+resolves the prompt's current saved version. Fill any `{{variables}}`, check the
+exact plain-text preview, then choose **Copy prompt** or press
+<kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. Search text and variable values are
+temporary and clear whenever the palette is dismissed.
+
+The feature is off by default and does not launch PromptBranch or create a
+login item. Settings show whether the shortcut registered successfully. If a
+replacement conflicts with the system or another app, the previous working
+shortcut remains active while you choose another shortcut or retry.
+
+On macOS, Quick access remains available after you close the library window as
+long as PromptBranch is still running. On Windows and Linux, closing the library
+window exits PromptBranch and disables the shortcut until the app starts again.
+
 ## Filter and sort
 
 Use **Filters** in the library to narrow the list by tag, starred state, or

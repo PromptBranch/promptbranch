@@ -125,7 +125,7 @@ import {
 } from "./backup-scheduler.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
-import { createBeforeQuitHandler } from "./shutdown.js";
+import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
 import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
 import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
@@ -1328,19 +1328,26 @@ const handleBeforeQuit = createBeforeQuitHandler({
     if (updateStartupTimer) clearTimeout(updateStartupTimer);
     updateStartupTimer = null;
   },
-  disposeSync: () => desktopSync?.dispose(),
   stopSync: () => desktopSync?.stop() ?? Promise.resolve(),
+  quit: () => app.quit(),
+  log: (message, error) => console.error(`[main] ${message}:`, error),
+});
+
+const handleWillQuit = createWillQuitHandler({
+  disposeSync: () => desktopSync?.dispose(),
   closeDatabase: () => {
     db?.close();
     db = null;
     library = null;
   },
-  quit: () => app.quit(),
   log: (message, error) => console.error(`[main] ${message}:`, error),
 });
 
 app.on("before-quit", (event) => {
   // Prevent Electron from terminating while a queued sync restart still owns
-  // sockets or SQLite. The helper reissues quit after stop + close complete.
+  // sockets or SQLite. The helper reissues quit after stop completes; the
+  // will-quit boundary closes SQLite after renderer windows are gone.
   void handleBeforeQuit(event);
 });
+
+app.on("will-quit", handleWillQuit);

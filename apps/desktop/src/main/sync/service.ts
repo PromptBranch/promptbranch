@@ -57,7 +57,7 @@ export class DesktopSync {
   private emitScheduled = false;
   private emitTimer: NodeJS.Timeout | null = null;
   private lastEmitAt = 0;
-  /** Set by dispose(): before-quit closes the database after queued stop work. */
+  /** Set by dispose(): will-quit closes the database immediately afterward. */
   private disposed = false;
 
   constructor(private readonly deps: DesktopSyncDeps) {
@@ -80,9 +80,9 @@ export class DesktopSync {
   }
 
   /**
-   * Quit-only: the database closes right after this, so every status read
-   * and trailing throttled emit must be suppressed. Disable→re-enable goes
-   * through stop()/startService() instead and stays fully live.
+   * Quit-only: renderer windows are gone and the database closes right after this,
+   * so every status read and trailing throttled emit must be suppressed.
+   * Disable→re-enable goes through stop()/startService() instead and stays fully live.
    */
   dispose(): void {
     this.disposed = true;
@@ -389,7 +389,7 @@ export class DesktopSync {
   }
 
   private emitStatus(): void {
-    // Reads the database; never touch it after before-quit closed it.
+    // Reads the database; never touch it after will-quit closed it.
     if (this.disposed) return;
     this.deps.sendStatus(this.status());
   }

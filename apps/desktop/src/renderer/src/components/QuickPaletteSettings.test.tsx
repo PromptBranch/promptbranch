@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { QuickPaletteState } from "../../../shared/ipc.js";
@@ -22,33 +22,43 @@ beforeEach(() => {
 });
 
 describe("QuickPaletteSettings", () => {
-  it("loads default-off settings and explains the explicit-copy behavior", async () => {
+  it("shows a readable shortcut without exposing accelerator implementation details", async () => {
     renderApp(<QuickPaletteSettings />);
 
     expect(await screen.findByRole("switch", { name: "Enable global shortcut" })).not.toBeChecked();
-    expect(screen.getByLabelText("Global shortcut")).toHaveValue("CommandOrControl+Shift+Space");
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      "Ctrl + Shift + Space",
+    );
+    expect(screen.queryByText(/Electron accelerator format/i)).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/CommandOrControl/)).not.toBeInTheDocument();
     expect(screen.getByText("Disabled")).toBeInTheDocument();
     expect(screen.getByText(/copies only when you explicitly choose Copy/)).toBeInTheDocument();
   });
 
-  it("enables and saves a registered shortcut", async () => {
+  it("records a readable key combination and saves its internal binding", async () => {
     const user = userEvent.setup();
     bridge.quickPalette.updateSettings.mockResolvedValue({
       ...DISABLED,
-      settings: { enabled: true, accelerator: "CommandOrControl+Alt+P" },
+      settings: { enabled: true, accelerator: "Control+Alt+P" },
       registration: "registered",
     });
     renderApp(<QuickPaletteSettings />);
     const toggle = await screen.findByRole("switch", { name: "Enable global shortcut" });
     await user.click(toggle);
-    const field = screen.getByLabelText("Global shortcut");
-    await user.clear(field);
-    await user.type(field, "CommandOrControl+Alt+P");
+    await user.click(screen.getByRole("button", { name: "Record new shortcut" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Keyboard shortcut" }), {
+      key: "p",
+      ctrlKey: true,
+      altKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      "Ctrl + Alt + P",
+    );
     await user.click(screen.getByRole("button", { name: "Save quick access" }));
 
     expect(bridge.quickPalette.updateSettings).toHaveBeenCalledWith({
       enabled: true,
-      accelerator: "CommandOrControl+Alt+P",
+      accelerator: "Control+Alt+P",
     });
     expect(await screen.findByText("Registered")).toBeInTheDocument();
   });
@@ -64,16 +74,22 @@ describe("QuickPaletteSettings", () => {
       ...DISABLED,
       settings: { enabled: true, accelerator: "CommandOrControl+Alt+P" },
       registration: "registered",
-      registrationError: "The shortcut CommandOrControl+Shift+Space is unavailable.",
+      registrationError: "That keyboard shortcut is already in use or unavailable.",
     });
     renderApp(<QuickPaletteSettings />);
-    const field = await screen.findByLabelText("Global shortcut");
-    await user.clear(field);
-    await user.type(field, "CommandOrControl+Shift+Space");
+    await screen.findByRole("button", { name: "Keyboard shortcut" });
+    await user.click(screen.getByRole("button", { name: "Record new shortcut" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Keyboard shortcut" }), {
+      key: " ",
+      ctrlKey: true,
+      shiftKey: true,
+    });
     await user.click(screen.getByRole("button", { name: "Save quick access" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("unavailable");
-    expect(field).toHaveValue("CommandOrControl+Alt+P");
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      "Ctrl + Alt + P",
+    );
     expect(screen.getByText("Registered")).toBeInTheDocument();
   });
 
@@ -101,13 +117,18 @@ describe("QuickPaletteSettings", () => {
       });
     renderApp(<QuickPaletteSettings />);
     await user.click(await screen.findByRole("switch", { name: "Enable global shortcut" }));
-    const field = screen.getByLabelText("Global shortcut");
-    await user.clear(field);
-    await user.type(field, "CommandOrControl+Alt+P");
+    await user.click(screen.getByRole("button", { name: "Record new shortcut" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Keyboard shortcut" }), {
+      key: "p",
+      ctrlKey: true,
+      altKey: true,
+    });
     await user.click(screen.getByRole("button", { name: "Save quick access" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be saved/i);
-    expect(field).toHaveValue("CommandOrControl+Alt+P");
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      "Ctrl + Alt + P",
+    );
     await user.click(screen.getByRole("button", { name: "Try saving again" }));
     await waitFor(() => expect(screen.getByText("Registered")).toBeInTheDocument());
     expect(bridge.quickPalette.updateSettings).toHaveBeenCalledTimes(2);
@@ -133,5 +154,21 @@ describe("QuickPaletteSettings", () => {
       accelerator: "CommandOrControl+Alt+P",
     });
     expect(await screen.findByText("Disabled")).toBeInTheDocument();
+  });
+
+  it("resets a recorded shortcut to the readable default", async () => {
+    const user = userEvent.setup();
+    bridge.quickPalette.getState.mockResolvedValue({
+      ...DISABLED,
+      settings: { enabled: true, accelerator: "Control+Alt+P" },
+      registration: "registered",
+    });
+    renderApp(<QuickPaletteSettings />);
+
+    await user.click(await screen.findByRole("button", { name: "Reset to default" }));
+
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      "Ctrl + Shift + Space",
+    );
   });
 });

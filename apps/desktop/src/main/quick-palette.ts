@@ -299,7 +299,7 @@ export function createQuickPaletteController(
     if (register(settings.accelerator)) {
       registeredAccelerator = settings.accelerator;
     } else {
-      registrationError = `The shortcut ${settings.accelerator} is unavailable.`;
+      registrationError = "That keyboard shortcut is already in use or unavailable.";
     }
   }
 
@@ -346,7 +346,7 @@ export function createQuickPaletteController(
       }
 
       if (!register(nextSettings.accelerator)) {
-        registrationError = `The shortcut ${nextSettings.accelerator} is unavailable.`;
+        registrationError = "That keyboard shortcut is already in use or unavailable.";
         settings = previousSettings;
         registeredAccelerator = previousAccelerator;
         return state();

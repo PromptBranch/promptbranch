@@ -1,11 +1,84 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { QuickPaletteSettings as Settings, QuickPaletteState } from "../../../shared/ipc.js";
 import { cx } from "../lib/time";
 
+const DEFAULT_ACCELERATOR = "CommandOrControl+Shift+Space";
+
 const FALLBACK_SETTINGS: Settings = {
   enabled: false,
-  accelerator: "CommandOrControl+Shift+Space",
+  accelerator: DEFAULT_ACCELERATOR,
 };
+
+const DISPLAY_TOKENS: Record<string, { mac: string; other: string }> = {
+  CommandOrControl: { mac: "⌘", other: "Ctrl" },
+  CmdOrCtrl: { mac: "⌘", other: "Ctrl" },
+  Command: { mac: "⌘", other: "Command" },
+  Cmd: { mac: "⌘", other: "Command" },
+  Control: { mac: "⌃", other: "Ctrl" },
+  Ctrl: { mac: "⌃", other: "Ctrl" },
+  Alt: { mac: "⌥", other: "Alt" },
+  Option: { mac: "⌥", other: "Alt" },
+  Shift: { mac: "⇧", other: "Shift" },
+  Meta: { mac: "⌘", other: "Meta" },
+  Super: { mac: "⌘", other: "Meta" },
+};
+
+const RECORDED_KEYS: Record<string, string> = {
+  " ": "Space",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  Enter: "Enter",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  "+": "Plus",
+  "-": "-",
+  ",": ",",
+  ".": ".",
+  "/": "/",
+  ";": ";",
+  "'": "'",
+  "[": "[",
+  "]": "]",
+  "\\": "\\",
+  "`": "`",
+};
+
+function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform);
+}
+
+export function formatShortcut(accelerator: string, mac = isMacPlatform()): string {
+  const tokens = accelerator.split("+").map((token) => {
+    const display = DISPLAY_TOKENS[token];
+    return display ? (mac ? display.mac : display.other) : token;
+  });
+  return tokens.join(mac ? " " : " + ");
+}
+
+function recordedAccelerator(event: KeyboardEvent<HTMLButtonElement>): string | null {
+  if (["Meta", "Control", "Alt", "Shift"].includes(event.key)) return null;
+
+  const mapped = RECORDED_KEYS[event.key];
+  const key = mapped
+    ?? (/^[a-z0-9]$/i.test(event.key) ? event.key.toUpperCase() : null)
+    ?? (/^F(?:[1-9]|1\d|2[0-4])$/i.test(event.key) ? event.key.toUpperCase() : null);
+  if (!key) return null;
+
+  const modifiers: string[] = [];
+  if (event.metaKey) modifiers.push("Command");
+  if (event.ctrlKey) modifiers.push("Control");
+  if (event.altKey) modifiers.push("Alt");
+  if (event.shiftKey) modifiers.push("Shift");
+  if (modifiers.length === 0 && !key.startsWith("F")) return null;
+  return [...modifiers, key].join("+");
+}
 
 export function QuickPaletteSettings() {
   const [state, setState] = useState<QuickPaletteState | null>(null);
@@ -14,7 +87,9 @@ export function QuickPaletteSettings() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [recording, setRecording] = useState(false);
   const mounted = useRef(true);
+  const recorder = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,6 +128,24 @@ export function QuickPaletteSettings() {
       if (mounted.current) setSaving(false);
     }
   }, [settings]);
+
+  const startRecording = useCallback(() => {
+    setRecording(true);
+    recorder.current?.focus();
+  }, []);
+
+  const record = useCallback((event: KeyboardEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      setRecording(false);
+      return;
+    }
+    const accelerator = recordedAccelerator(event);
+    if (!accelerator) return;
+    setSettings((current) => ({ ...current, accelerator }));
+    setRecording(false);
+  }, []);
 
   if (loading && !state) {
     return <p className="text-xs text-ink-faint">Loading quick access settings…</p>;
@@ -109,21 +202,48 @@ export function QuickPaletteSettings() {
         </button>
       </div>
 
-      <label className="grid gap-1.5">
-        <span className="text-[12px] font-medium text-ink-dim">Global shortcut</span>
-        <input
-          aria-label="Global shortcut"
-          value={settings.accelerator}
-          onChange={(event) => setSettings((current) => ({ ...current, accelerator: event.target.value }))}
-          className="rounded-md border border-line-strong bg-app px-2.5 py-2 font-mono text-xs text-ink focus:outline-none focus:ring-1 focus:ring-accent"
-        />
+      <div className="grid gap-1.5">
+        <span className="text-[12px] font-medium text-ink-dim">Keyboard shortcut</span>
+        <button
+          ref={recorder}
+          type="button"
+          aria-label="Keyboard shortcut"
+          onClick={startRecording}
+          onKeyDown={record}
+          onBlur={() => setRecording(false)}
+          className={cx(
+            "rounded-md border bg-app px-2.5 py-2 text-left font-mono text-xs text-ink focus:outline-none focus:ring-1 focus:ring-accent",
+            recording ? "border-accent" : "border-line-strong",
+          )}
+        >
+          {recording ? "Press shortcut…" : formatShortcut(settings.accelerator)}
+        </button>
+        <div className="flex gap-3 text-[11px]">
+          <button
+            type="button"
+            onClick={startRecording}
+            className="text-accent hover:text-accent-strong focus:outline-none focus:ring-1 focus:ring-accent"
+          >
+            Record new shortcut
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRecording(false);
+              setSettings((current) => ({ ...current, accelerator: DEFAULT_ACCELERATOR }));
+            }}
+            className="text-ink-faint hover:text-ink-dim focus:outline-none focus:ring-1 focus:ring-accent"
+          >
+            Reset to default
+          </button>
+        </div>
         <span className="text-[10px] text-ink-faint">
-          Electron accelerator format. Default: CommandOrControl+Shift+Space.
+          Choose Record new shortcut, then press your preferred key combination.
         </span>
-      </label>
+      </div>
 
       <div className="flex items-center justify-between rounded-md border border-line bg-app px-3 py-2">
-        <span className="text-[11px] text-ink-faint">Registration status</span>
+        <span className="text-[11px] text-ink-faint">Shortcut status</span>
         <span
           className={cx(
             "text-[11px] font-medium",

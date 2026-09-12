@@ -26,9 +26,10 @@ version is available.
 ## Automatic checks
 
 **Automatically check for updates** is enabled by default. PromptBranch checks
-quietly each time the packaged app starts. It does not run periodic checks while
-the app remains open. PromptBranch shows a notification only when a matching
-update is available; routine successes and failures do not interrupt your work.
+quietly a few seconds after the packaged app starts. It does not run periodic
+checks while the app remains open. PromptBranch shows a notification only when
+a matching update is available; routine successes and failures do not interrupt
+your work.
 The update notification stays visible until you choose **View update** or
 **Later**. Choosing **Later** dismisses it for the current app session; a later
 app launch can notify you about the same available version again.

@@ -130,6 +130,7 @@ import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./mai
 import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
+import { scheduleAutomaticUpdateCheck } from "./update-startup.js";
 import {
   createQuickPaletteController,
   QUICK_PALETTE_SETTINGS_KEY,
@@ -206,8 +207,6 @@ app.on("open-url", (event, url) => {
   const target = parseImportDeepLink(url);
   if (target) importDispatcher.dispatch(target);
 });
-
-const UPDATE_STARTUP_DELAY_MS = 20_000;
 
 let db: Database | null = null;
 let library: PromptLibrary | null = null;
@@ -1291,10 +1290,9 @@ if (!gotSingleInstanceLock) {
   syncPokeTimer = setInterval(() => desktopSync?.poke(), 60_000);
   syncPokeTimer.unref?.();
 
-  updateStartupTimer = setTimeout(() => {
+  updateStartupTimer = scheduleAutomaticUpdateCheck(() => {
     void updateService?.checkAutomaticallyAtStartup();
-  }, UPDATE_STARTUP_DELAY_MS);
-  updateStartupTimer.unref?.();
+  });
 
   installAppMenu();
   // Dev mode runs the bare Electron binary, whose dock icon is the Electron

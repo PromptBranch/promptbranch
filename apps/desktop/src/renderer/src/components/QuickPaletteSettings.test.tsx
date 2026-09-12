@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuickPaletteState } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
@@ -16,7 +16,12 @@ const DISABLED: QuickPaletteState = {
 
 let bridge: MockBridge;
 
+function usePlatform(platform: string): void {
+  vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+}
+
 beforeEach(() => {
+  vi.restoreAllMocks();
   bridge = installMockBridge();
   bridge.quickPalette.getState.mockResolvedValue(DISABLED);
 });
@@ -61,6 +66,48 @@ describe("QuickPaletteSettings", () => {
       accelerator: "Control+Alt+P",
     });
     expect(await screen.findByText("Registered")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      platform: "MacIntel",
+      saved: "Command+P",
+      displayed: "⌘ P",
+    },
+    {
+      platform: "Win32",
+      saved: "Super+P",
+      displayed: "Win + P",
+    },
+    {
+      platform: "Linux x86_64",
+      saved: "Super+P",
+      displayed: "Super + P",
+    },
+  ])("records the native primary key on $platform", async ({ platform, saved, displayed }) => {
+    usePlatform(platform);
+    const user = userEvent.setup();
+    bridge.quickPalette.updateSettings.mockResolvedValue({
+      ...DISABLED,
+      settings: { enabled: true, accelerator: saved },
+      registration: "registered",
+    });
+    renderApp(<QuickPaletteSettings />);
+    await user.click(await screen.findByRole("switch", { name: "Enable global shortcut" }));
+    await user.click(screen.getByRole("button", { name: "Record new shortcut" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Keyboard shortcut" }), {
+      key: "p",
+      metaKey: true,
+    });
+
+    expect(screen.getByRole("button", { name: "Keyboard shortcut" })).toHaveTextContent(
+      displayed,
+    );
+    await user.click(screen.getByRole("button", { name: "Save quick access" }));
+    expect(bridge.quickPalette.updateSettings).toHaveBeenCalledWith({
+      enabled: true,
+      accelerator: saved,
+    });
   });
 
   it("shows a conflict and restores the still-working previous binding", async () => {

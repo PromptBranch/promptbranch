@@ -9,18 +9,20 @@ const FALLBACK_SETTINGS: Settings = {
   accelerator: DEFAULT_ACCELERATOR,
 };
 
-const DISPLAY_TOKENS: Record<string, { mac: string; other: string }> = {
-  CommandOrControl: { mac: "⌘", other: "Ctrl" },
-  CmdOrCtrl: { mac: "⌘", other: "Ctrl" },
-  Command: { mac: "⌘", other: "Command" },
-  Cmd: { mac: "⌘", other: "Command" },
-  Control: { mac: "⌃", other: "Ctrl" },
-  Ctrl: { mac: "⌃", other: "Ctrl" },
-  Alt: { mac: "⌥", other: "Alt" },
-  Option: { mac: "⌥", other: "Alt" },
-  Shift: { mac: "⇧", other: "Shift" },
-  Meta: { mac: "⌘", other: "Meta" },
-  Super: { mac: "⌘", other: "Meta" },
+type ShortcutPlatform = "mac" | "windows" | "linux";
+
+const DISPLAY_TOKENS: Record<string, Record<ShortcutPlatform, string>> = {
+  CommandOrControl: { mac: "⌘", windows: "Ctrl", linux: "Ctrl" },
+  CmdOrCtrl: { mac: "⌘", windows: "Ctrl", linux: "Ctrl" },
+  Command: { mac: "⌘", windows: "Command", linux: "Command" },
+  Cmd: { mac: "⌘", windows: "Command", linux: "Command" },
+  Control: { mac: "⌃", windows: "Ctrl", linux: "Ctrl" },
+  Ctrl: { mac: "⌃", windows: "Ctrl", linux: "Ctrl" },
+  Alt: { mac: "⌥", windows: "Alt", linux: "Alt" },
+  Option: { mac: "⌥", windows: "Alt", linux: "Alt" },
+  Shift: { mac: "⇧", windows: "Shift", linux: "Shift" },
+  Meta: { mac: "⌘", windows: "Win", linux: "Super" },
+  Super: { mac: "⌘", windows: "Win", linux: "Super" },
 };
 
 const RECORDED_KEYS: Record<string, string> = {
@@ -50,19 +52,28 @@ const RECORDED_KEYS: Record<string, string> = {
   "`": "`",
 };
 
-function isMacPlatform(): boolean {
-  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform);
+function shortcutPlatform(): ShortcutPlatform {
+  if (typeof navigator === "undefined") return "linux";
+  if (/Mac|iPhone|iPad|iPod/i.test(navigator.platform)) return "mac";
+  if (/Win/i.test(navigator.platform)) return "windows";
+  return "linux";
 }
 
-export function formatShortcut(accelerator: string, mac = isMacPlatform()): string {
+export function formatShortcut(
+  accelerator: string,
+  platform = shortcutPlatform(),
+): string {
   const tokens = accelerator.split("+").map((token) => {
     const display = DISPLAY_TOKENS[token];
-    return display ? (mac ? display.mac : display.other) : token;
+    return display?.[platform] ?? token;
   });
-  return tokens.join(mac ? " " : " + ");
+  return tokens.join(platform === "mac" ? " " : " + ");
 }
 
-function recordedAccelerator(event: KeyboardEvent<HTMLButtonElement>): string | null {
+function recordedAccelerator(
+  event: KeyboardEvent<HTMLButtonElement>,
+  platform = shortcutPlatform(),
+): string | null {
   if (["Meta", "Control", "Alt", "Shift"].includes(event.key)) return null;
 
   const mapped = RECORDED_KEYS[event.key];
@@ -72,7 +83,7 @@ function recordedAccelerator(event: KeyboardEvent<HTMLButtonElement>): string | 
   if (!key) return null;
 
   const modifiers: string[] = [];
-  if (event.metaKey) modifiers.push("Command");
+  if (event.metaKey) modifiers.push(platform === "mac" ? "Command" : "Super");
   if (event.ctrlKey) modifiers.push("Control");
   if (event.altKey) modifiers.push("Alt");
   if (event.shiftKey) modifiers.push("Shift");

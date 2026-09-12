@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as ipcContract from "./ipc.js";
 import {
   promptCreateSchema,
   promptDuplicateSchema,
@@ -15,6 +16,117 @@ import {
   versionDeleteSchema,
   versionUpdateLabelSchema,
 } from "./ipc.js";
+import { IPC_CHANNELS } from "./channels.js";
+
+interface TestSchema {
+  parse(value: unknown): unknown;
+  safeParse(value: unknown): { success: boolean };
+}
+
+function paletteSchema(name: string): TestSchema {
+  const schema = (ipcContract as unknown as Record<string, TestSchema | undefined>)[name];
+  expect(schema, `${name} must be exported`).toBeDefined();
+  return schema!;
+}
+
+describe("quick palette IPC contract", () => {
+  it("publishes the exact zod-free channel names", () => {
+    expect(IPC_CHANNELS).toMatchObject({
+      quickPaletteGetState: "quick-palette:get-state",
+      quickPaletteUpdateSettings: "quick-palette:update-settings",
+      quickPaletteSearch: "quick-palette:search",
+      quickPaletteResolve: "quick-palette:resolve",
+      quickPaletteRender: "quick-palette:render",
+      quickPaletteCopy: "quick-palette:copy",
+      quickPaletteDismiss: "quick-palette:dismiss",
+      quickPaletteOpened: "quick-palette:opened",
+      quickPaletteClosed: "quick-palette:closed",
+    });
+  });
+
+  it("requires strict settings with a bounded non-empty accelerator", () => {
+    const schema = paletteSchema("quickPaletteSettingsSchema");
+
+    expect(schema.parse({ enabled: true, accelerator: "  CommandOrControl+Shift+Space  " })).toEqual({
+      enabled: true,
+      accelerator: "CommandOrControl+Shift+Space",
+    });
+    expect(schema.safeParse({ enabled: true, accelerator: "" }).success).toBe(false);
+    expect(schema.safeParse({ enabled: true, accelerator: "x".repeat(101) }).success).toBe(false);
+    expect(schema.safeParse({ enabled: true, accelerator: "Ctrl+K", extra: true }).success).toBe(false);
+  });
+
+  it("bounds palette ids and search queries", () => {
+    const search = paletteSchema("quickPaletteSearchSchema");
+    const resolve = paletteSchema("quickPaletteResolveSchema");
+    const copy = paletteSchema("quickPaletteCopySchema");
+    const dismiss = paletteSchema("quickPaletteDismissSchema");
+
+    expect(search.parse({ sessionId: "session-1", query: "שלום 🌙" })).toEqual({
+      sessionId: "session-1",
+      query: "שלום 🌙",
+    });
+    expect(search.safeParse({ sessionId: "", query: "x" }).success).toBe(false);
+    expect(search.safeParse({ sessionId: "session-1", query: "x".repeat(501) }).success).toBe(false);
+    expect(resolve.safeParse({ sessionId: "session-1", promptId: "" }).success).toBe(false);
+    expect(copy.safeParse({ sessionId: "session-1", previewId: "" }).success).toBe(false);
+    expect(dismiss.safeParse({ sessionId: "", extra: true }).success).toBe(false);
+  });
+
+  it("preserves Unicode, multiline, booleans, numbers, and an own __proto__ variable", () => {
+    const schema = paletteSchema("quickPaletteRenderSchema");
+    const variables = Object.create(null) as Record<string, string | number | boolean>;
+    variables["שם"] = "שורה א\nשורה ב 🌙";
+    variables.count = 2;
+    variables.enabled = false;
+    variables.__proto__ = "literal";
+    const expectedVariables = { "שם": "שורה א\nשורה ב 🌙", count: 2, enabled: false } as Record<
+      string,
+      string | number | boolean
+    >;
+    Object.defineProperty(expectedVariables, "__proto__", {
+      value: "literal",
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+
+    expect(
+      schema.parse({
+        sessionId: "session-1",
+        promptId: "prompt-1",
+        versionId: "version-1",
+        variables,
+      }),
+    ).toEqual({
+      sessionId: "session-1",
+      promptId: "prompt-1",
+      versionId: "version-1",
+      variables: expectedVariables,
+    });
+  });
+
+  it("rejects malformed, oversized, and non-finite render variables", () => {
+    const schema = paletteSchema("quickPaletteRenderSchema");
+    const base = {
+      sessionId: "session-1",
+      promptId: "prompt-1",
+      versionId: "version-1",
+    };
+
+    expect(schema.safeParse({ ...base, variables: null }).success).toBe(false);
+    expect(schema.safeParse({ ...base, variables: [] }).success).toBe(false);
+    expect(schema.safeParse({ ...base, variables: new Date() }).success).toBe(false);
+    expect(schema.safeParse({ ...base, variables: { count: Number.POSITIVE_INFINITY } }).success).toBe(false);
+    expect(schema.safeParse({ ...base, variables: { note: "x".repeat(100_001) } }).success).toBe(false);
+    expect(
+      schema.safeParse({
+        ...base,
+        variables: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`v${index}`, "x"])),
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("shareScopeSchema", () => {
   it("accepts a minimal scope and one with a description", () => {

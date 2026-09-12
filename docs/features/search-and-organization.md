@@ -13,6 +13,26 @@ The smaller field above the prompt list filters the visible list by title,
 description, and tags. Use the full search when you need to find text from an
 older version or a note.
 
+## Copy a prompt with Quick access
+
+The optional global prompt palette is a compact, copy-only view for using your
+library while another app is in front. Enable it under **Settings → Quick
+access**, then press the registered shortcut while PromptBranch is running.
+The **Open prompt palette** application-menu item is always available as a
+fallback.
+
+The palette searches eligible saved prompts and shows up to 20 results, with
+starred prompts first when the search is empty. Selecting a match found through
+saved history resolves the prompt's current saved version. Fill any
+`{{variables}}`, check the exact plain-text preview, then choose **Copy** or
+press <kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. Search text and variable
+values are temporary and clear whenever the palette is dismissed.
+
+The feature is off by default and does not launch PromptBranch or create a
+login item. Settings show whether the shortcut registered successfully. If a
+replacement conflicts with the system or another app, the previous working
+shortcut remains active while you choose another shortcut or retry.
+
 ## Filter and sort
 
 Use **Filters** in the library to narrow the list by tag, starred state, or

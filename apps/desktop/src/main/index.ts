@@ -126,6 +126,7 @@ import {
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { createBeforeQuitHandler } from "./shutdown.js";
+import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
 import {
@@ -1083,7 +1084,7 @@ function createQuickPaletteWindow(handlers: QuickPaletteWindowHandlers): QuickPa
   };
 }
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -1107,8 +1108,10 @@ function createWindow(): void {
   });
   mainWindow = window;
   window.on("closed", () => {
-    if (mainWindow === window) mainWindow = null;
+    const wasMainWindow = mainWindow === window;
+    if (wasMainWindow) mainWindow = null;
     importDispatcher.windowClosed();
+    if (wasMainWindow && shouldQuitWhenMainWindowCloses(process.platform)) app.quit();
   });
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
@@ -1183,6 +1186,7 @@ function createWindow(): void {
   } else {
     void window.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+  return window;
 }
 
 // Single instance: a second launch focuses the existing window and quits, so
@@ -1192,10 +1196,7 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    restoreOrCreateMainWindow(mainWindow, createWindow);
     const target = deepLinkFromArgv(argv);
     if (target) importDispatcher.dispatch(target);
   });
@@ -1305,7 +1306,7 @@ if (!gotSingleInstanceLock) {
   if (coldStartTarget) importDispatcher.dispatch(coldStartTarget);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    restoreOrCreateMainWindow(mainWindow, createWindow);
   });
   });
 }

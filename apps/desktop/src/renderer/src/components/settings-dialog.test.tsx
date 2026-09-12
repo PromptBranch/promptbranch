@@ -8,7 +8,7 @@ import { installMockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
 import { SettingsDialog } from "./SettingsDialog";
 
-function OpenSettingsWithSection({ section }: { section: "agent" | "about" }) {
+function OpenSettingsWithSection({ section }: { section: "agent" | "quick-access" | "about" }) {
   const { openSettings } = useAppState();
   useEffect(() => {
     openSettings(section);
@@ -36,6 +36,16 @@ describe("SettingsDialog Agent integration section", () => {
     expect(config.textContent).not.toContain("/repo/packages/mcp/dist/index.js");
     expect(config.textContent).not.toContain("prompthub");
     expect(screen.getByText(/npx -y @promptbranch\/cli@latest get/)).toBeInTheDocument();
+  });
+});
+
+describe("SettingsDialog Quick access section", () => {
+  it("opens the global shortcut controls from settings navigation", async () => {
+    installMockBridge();
+    renderApp(<OpenSettingsWithSection section="quick-access" />);
+
+    expect(await screen.findByRole("heading", { name: "Quick access" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable global shortcut" })).toBeInTheDocument();
   });
 });
 

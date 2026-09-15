@@ -34,6 +34,28 @@ as a standalone prompt, or compare two versions side by side or as a unified
 diff. Duplicate actions always copy the version displayed or explicitly chosen,
 not an unrelated branch head.
 
+## Browse history as a list or graph
+
+Open a prompt's **History** tab and use the **List** / **Graph** switcher to
+choose how you want to browse its saved versions. List is the default view and
+groups versions by branch. Graph lays out the same versions as a read-only
+timeline: solid edges continue a branch and dashed edges show a variation
+created from another version. The graph uses the saved parent relationship, so
+version numbers or gaps never invent a connection.
+
+Select a graph node with the mouse, <kbd>Enter</kbd>, or <kbd>Space</kbd> to
+see its actions. From the selected-version bar you can view, restore, create a
+variation, duplicate as a new prompt, rename, or delete it, with the same
+current-version rules as List view. The compare checkboxes and comparison bar
+work in either view, so you can switch views without losing a pair that is
+already selected.
+
+Drag the empty canvas to pan, use the **Zoom in**, **Zoom out**, and **Fit
+graph** controls to change the viewport, or use trackpad pinch/scroll gestures.
+Nodes themselves cannot be dragged and the graph never changes lineage; use
+the version actions when you want to create or update data. PromptBranch keeps
+your List/Graph choice on this device for the next prompt you open.
+
 ## Use variations
 
 A variation is an alternative direction for a prompt. It keeps experiments away

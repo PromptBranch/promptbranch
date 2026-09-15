@@ -126,13 +126,17 @@ it("renders every version with current and viewing state", () => {
     />,
   );
 
-  expect(screen.getByText("v1")).toBeInTheDocument();
+  expect(screen.getAllByText("v1").length).toBeGreaterThan(0);
   expect(screen.getByText("v2")).toBeInTheDocument();
   expect(screen.getByText("friendly v1")).toBeInTheDocument();
   expect(screen.getByText("Current")).toBeInTheDocument();
   expect(screen.getByText("Viewing")).toBeInTheDocument();
   expect(screen.getAllByText("main").length).toBeGreaterThan(0);
   expect(screen.getByText("friendly")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "History graph for Greeting" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Graph controls" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /v1.*main.*Viewing.*Selected/i })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("group", { name: "Graph legend" })).toHaveTextContent("Continuation");
 });
 
 it("selects a node with click or keyboard without opening the editor", async () => {
@@ -233,4 +237,55 @@ it("renders the existing empty state when there are no versions", () => {
   );
 
   expect(screen.getByText("No versions yet")).toBeInTheDocument();
+});
+
+it("shows the selected version actions and forwards the exact version", async () => {
+  const user = userEvent.setup();
+  renderApp(
+    <HistoryGraphView
+      prompt={prompt}
+      versions={versions}
+      ratingsByVersion={undefined}
+      viewingVersionId={null}
+      selectedVersionId="v-1"
+      compareSelection={[]}
+      onSelect={vi.fn()}
+      onToggleCompare={vi.fn()}
+      actions={actions}
+    />,
+  );
+
+  expect(screen.getByText("Selected version")).toBeInTheDocument();
+  await user.click(screen.getAllByRole("button", { name: "View" })[0]!);
+  await user.click(screen.getByRole("button", { name: "Set as current" }));
+  await user.click(screen.getByRole("button", { name: "Duplicate v1 as variation" }));
+  await user.click(screen.getByRole("button", { name: "Duplicate v1 as new prompt" }));
+  await user.click(screen.getByRole("button", { name: "Rename v1" }));
+  await user.click(screen.getByRole("button", { name: "Delete v1" }));
+
+  expect(actions.onView).toHaveBeenCalledWith("v-1");
+  expect(actions.onSetCurrent).toHaveBeenCalledWith(versions[0]);
+  expect(actions.onDuplicate).toHaveBeenCalledWith(versions[0]);
+  expect(actions.onDuplicateAsPrompt).toHaveBeenCalledWith(versions[0]);
+  expect(actions.onRename).toHaveBeenCalledWith(versions[0]);
+  expect(actions.onDelete).toHaveBeenCalledWith(versions[0]);
+});
+
+it("does not offer Set as current or Delete for a selected current version", () => {
+  renderApp(
+    <HistoryGraphView
+      prompt={prompt}
+      versions={versions}
+      ratingsByVersion={undefined}
+      viewingVersionId={null}
+      selectedVersionId="v-2"
+      compareSelection={[]}
+      onSelect={vi.fn()}
+      onToggleCompare={vi.fn()}
+      actions={actions}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: "Set as current" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Delete v2" })).not.toBeInTheDocument();
 });

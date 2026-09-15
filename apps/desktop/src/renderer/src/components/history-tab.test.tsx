@@ -174,6 +174,7 @@ it("switches between List and Graph while preserving compare selection", async (
   );
 
   expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("group", { name: "History view" })).toBeInTheDocument();
   await user.click(screen.getByRole("checkbox", { name: "Select v1 to compare" }));
   await user.click(screen.getByRole("button", { name: "Graph" }));
 

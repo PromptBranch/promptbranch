@@ -15,7 +15,7 @@ import type { PromptDetail, RatingSummaryDto, VersionDto } from "../../../shared
 import { buildHistoryGraph, type HistoryGraphNodeModel } from "../lib/history-graph";
 import { cx, relativeTime } from "../lib/time";
 import { EmptyState } from "./ui";
-import type { HistoryVersionActionHandlers } from "./HistoryVersionActions";
+import { HistoryVersionActions, type HistoryVersionActionHandlers } from "./HistoryVersionActions";
 
 type HistoryGraphNodeData = {
   version: VersionDto;
@@ -45,7 +45,7 @@ function HistoryVersionNode({ data, selected }: NodeProps<HistoryGraphNode>) {
       role="button"
       tabIndex={0}
       aria-label={accessibleName}
-      aria-selected={selected}
+      aria-pressed={selected}
       onClick={selectNode}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -134,7 +134,11 @@ function HistoryGraphControls({ graphKey }: { graphKey: string }) {
   }, [graphKey]);
 
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-line bg-panel/95 p-1 shadow-lg shadow-black/15">
+    <div
+      role="group"
+      aria-label="Graph controls"
+      className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-line bg-panel/95 p-1 shadow-lg shadow-black/15"
+    >
       <button
         type="button"
         aria-label="Zoom out"
@@ -214,9 +218,11 @@ export function HistoryGraphView({
   compareSelection,
   onSelect,
   onToggleCompare,
+  actions,
 }: HistoryGraphViewProps) {
   const graph = useMemo(() => buildHistoryGraph(versions), [versions]);
   const graphKey = graph.nodes.map((node) => node.id).join("|");
+  const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const nodes = useMemo(
     () =>
       graph.nodes.map((node) =>
@@ -251,27 +257,76 @@ export function HistoryGraphView({
   }
 
   return (
-    <div className="pb-history-graph relative min-h-0 flex-1 overflow-hidden bg-app">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={historyNodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.18, minZoom: 0.45, maxZoom: 1.15 }}
-        minZoom={0.35}
-        maxZoom={1.75}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable
-        panOnDrag
-        zoomOnScroll
-        zoomOnPinch
-        deleteKeyCode={null}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-        <HistoryGraphControls graphKey={graphKey} />
-      </ReactFlow>
+    <div
+      className="pb-history-graph flex min-h-0 flex-1 flex-col overflow-hidden bg-app"
+      role="region"
+      aria-label={`History graph for ${prompt.title}`}
+    >
+      {selectedVersion && (
+        <div
+          data-selected-version-actions
+          role="region"
+          aria-label="Selected version actions"
+          className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-panel px-4 py-2.5"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Selected version</div>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]">
+              <span className="font-semibold text-ink">{selectedVersion.displayLabel}</span>
+              <span className="text-ink-faint">· {selectedVersion.branchName}</span>
+              <span className="text-ink-faint">· {relativeTime(selectedVersion.createdAt)}</span>
+              {selectedVersion.changeNote && (
+                <span className="min-w-0 truncate text-ink-dim" title={selectedVersion.changeNote}>
+                  · {selectedVersion.changeNote}
+                </span>
+              )}
+            </div>
+          </div>
+          <HistoryVersionActions
+            version={selectedVersion}
+            isCurrent={selectedVersion.id === prompt.currentVersionId}
+            alwaysVisible
+            {...actions}
+          />
+        </div>
+      )}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div
+          role="group"
+          aria-label="Graph legend"
+          className="pb-history-graph-legend pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-3 rounded-lg border border-line bg-panel/95 px-2.5 py-2 text-[10px] text-ink-faint shadow-lg shadow-black/10"
+        >
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true" className="h-px w-4 bg-line-strong" />
+            Continuation
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true" className="w-4 border-t border-dashed border-accent" />
+            Variation
+          </span>
+        </div>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={historyNodeTypes}
+          className="pb-history-flow"
+          fitView
+          fitViewOptions={{ padding: 0.18, minZoom: 0.45, maxZoom: 1.15 }}
+          minZoom={0.35}
+          maxZoom={1.75}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable
+          panOnDrag
+          zoomOnScroll
+          zoomOnPinch
+          deleteKeyCode={null}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+          <HistoryGraphControls graphKey={graphKey} />
+        </ReactFlow>
+      </div>
     </div>
   );
 }

@@ -24,6 +24,7 @@ vi.mock("@xyflow/react", () => ({
       data-nodes-draggable={String(props.nodesDraggable)}
       data-nodes-connectable={String(props.nodesConnectable)}
       data-pan-on-drag={String(props.panOnDrag)}
+      data-hide-attribution={String(props.proOptions?.hideAttribution ?? false)}
     >
       {nodes.map((node: any) => {
         const Node = nodeTypes[node.type];
@@ -211,6 +212,7 @@ it("wires labeled zoom and fit controls and disables node editing", async () => 
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-nodes-draggable", "false");
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-nodes-connectable", "false");
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-pan-on-drag", "true");
+  expect(screen.getByTestId("react-flow")).toHaveAttribute("data-hide-attribution", "false");
 
   await user.click(screen.getByRole("button", { name: "Zoom in" }));
   await user.click(screen.getByRole("button", { name: "Zoom out" }));

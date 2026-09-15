@@ -126,6 +126,7 @@ import {
 } from "./backup-scheduler.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
+import { logRendererConsoleMessage } from "./logger.js";
 import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
 import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
 import { applyQaUserDataOverride } from "./qa-profile.js";
@@ -1153,8 +1154,7 @@ function createWindow(): BrowserWindow {
   if (process.env["ELECTRON_RENDERER_URL"]) {
     window.webContents.on("console-message", (event) => {
       const { level, message } = event as unknown as { level: number; message: string };
-      const name = ["verbose", "info", "warning", "error"][level] ?? String(level);
-      console.log(`[renderer:${name}] ${message.slice(0, 500)}`);
+      logRendererConsoleMessage(console, level, message);
     });
   }
 

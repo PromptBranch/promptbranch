@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { initTheme } from "./lib/theme";
 import { RendererRoot } from "./RendererRoot";
+import "@xyflow/react/dist/style.css";
 import "./index.css";
 
 // Applies the stored theme (data-theme on <html>) before React renders;

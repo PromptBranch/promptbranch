@@ -8,6 +8,12 @@ import { renderApp } from "../test/render";
 import { HistoryTab } from "./HistoryTab";
 import { HistoryVersionActions } from "./HistoryVersionActions";
 
+vi.mock("./HistoryGraphView", () => ({
+  HistoryGraphView: ({ compareSelection }: { compareSelection: string[] }) => (
+    <div data-testid="history-graph-view">Graph selection: {compareSelection.join(",")}</div>
+  ),
+}));
+
 const prompt: PromptDetail = {
   id: "prompt-1",
   title: "Greeting",
@@ -148,4 +154,51 @@ it("renders shared actions with current-version visibility rules", async () => {
   expect(onDuplicateAsPrompt).toHaveBeenCalledWith(historicalVersion);
   expect(onRename).toHaveBeenCalledWith(historicalVersion);
   expect(onDelete).toHaveBeenCalledWith(historicalVersion);
+});
+
+it("switches between List and Graph while preserving compare selection", async () => {
+  const user = userEvent.setup();
+  localStorage.clear();
+  installMockBridge();
+  renderApp(
+    <HistoryTab
+      prompt={prompt}
+      versions={[historicalVersion, currentVersion]}
+      onView={vi.fn()}
+      onCompare={vi.fn()}
+      onDuplicate={vi.fn()}
+      onDuplicateAsPrompt={vi.fn()}
+      onRename={vi.fn()}
+      onDelete={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(screen.getByRole("checkbox", { name: "Select v1 to compare" }));
+  await user.click(screen.getByRole("button", { name: "Graph" }));
+
+  expect(screen.getByTestId("history-graph-view")).toHaveTextContent("v-1");
+  expect(localStorage.getItem("promptbuilder:pref:prompt-history-view")).toBe('"graph"');
+
+  await user.click(screen.getByRole("button", { name: "List" }));
+  expect(screen.getByRole("checkbox", { name: "Select v1 to compare" })).toBeChecked();
+});
+
+it("falls back to List for an invalid saved History view preference", () => {
+  localStorage.setItem("promptbuilder:pref:prompt-history-view", JSON.stringify("diagonal"));
+  installMockBridge();
+  renderApp(
+    <HistoryTab
+      prompt={prompt}
+      versions={[historicalVersion, currentVersion]}
+      onView={vi.fn()}
+      onCompare={vi.fn()}
+      onDuplicate={vi.fn()}
+      onDuplicateAsPrompt={vi.fn()}
+      onRename={vi.fn()}
+      onDelete={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
 });

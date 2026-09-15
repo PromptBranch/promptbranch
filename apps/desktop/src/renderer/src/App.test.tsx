@@ -60,6 +60,7 @@ const CREATED_PROMPT: PromptDetail = {
   deletedAt: null,
   currentVersionId: "version-1",
   draftContent: null,
+  draftBaseVersionId: null,
   collectionIds: ["collection-1"],
 };
 

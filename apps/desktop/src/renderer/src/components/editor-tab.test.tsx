@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PromptDetail, VersionContentDto } from "../../../shared/ipc.js";
+import type { PromptDetail, VersionContentDto, VersionDto } from "../../../shared/ipc.js";
 import { qk } from "../hooks/use-data";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { createTestQueryClient, renderApp } from "../test/render";
@@ -39,6 +39,7 @@ const promptA: PromptDetail = {
   deletedAt: null,
   currentVersionId: "version-a",
   draftContent: "Cached A draft",
+  draftBaseVersionId: "version-a",
   collectionIds: [],
 };
 
@@ -65,6 +66,7 @@ const promptB: PromptDetail = {
   title: "Prompt B",
   currentVersionId: "version-b",
   draftContent: null,
+  draftBaseVersionId: null,
 };
 
 const versionB: VersionContentDto = {
@@ -91,11 +93,101 @@ beforeEach(() => {
 });
 
 describe("EditorTab draft durability", () => {
-  it("presents the first save of an empty placeholder as version 1", async () => {
+  it("does not apply a draft that belongs to another saved version", () => {
+    renderApp(
+      <EditorTab
+        prompt={{ ...promptA, draftBaseVersionId: "version-other" }}
+        version={versionA}
+        isCurrent
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Prompt editor" })).toHaveValue(
+      versionA.content,
+    );
+  });
+
+  it("uses Command+S to amend the exact displayed version without opening a dialog", async () => {
+    bridge.versions.updateContent.mockResolvedValue({
+      ...versionA,
+    });
+    renderApp(<EditorTab prompt={promptA} version={versionA} isCurrent />);
+
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+
+    await waitFor(() =>
+      expect(bridge.versions.updateContent).toHaveBeenCalledWith(
+        versionA.id,
+        promptA.draftContent,
+      ),
+    );
+    expect(bridge.versions.create).not.toHaveBeenCalled();
+    expect(screen.queryByText("Save as v2")).not.toBeInTheDocument();
+  });
+
+  it("keeps Save as new version as a separate exact-base flow", async () => {
+    bridge.versions.create.mockResolvedValue({
+      ...versionA,
+      id: "version-a-2",
+      parentVersionId: versionA.id,
+      number: 2,
+      displayLabel: "v2",
+    });
+    renderApp(<EditorTab prompt={promptA} version={versionA} isCurrent />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save as new version" }));
+    expect(await screen.findByText("Save as v2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+
+    await waitFor(() =>
+      expect(bridge.versions.create).toHaveBeenCalledWith({
+        promptId: promptA.id,
+        branchId: versionA.branchId,
+        baseVersionId: versionA.id,
+        content: promptA.draftContent,
+      }),
+    );
+  });
+
+  it("uses Control+S to amend the displayed historical working version", async () => {
+    const currentV3 = "version-a-3";
+    const historicalPrompt = {
+      ...promptA,
+      currentVersionId: currentV3,
+      versionLabel: "v3",
+      draftContent: null,
+      draftBaseVersionId: null,
+    };
+    bridge.versions.updateContent.mockResolvedValue(versionA);
+    renderApp(
+      <EditorTab
+        prompt={historicalPrompt}
+        version={{ ...versionA, isCurrent: false }}
+        isCurrent={false}
+        isEditable
+        nextVersionNumber={4}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt editor" }), {
+      target: { value: "A new direction from v1" },
+    });
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+
+    await waitFor(() =>
+      expect(bridge.versions.updateContent).toHaveBeenCalledWith(
+        versionA.id,
+        "A new direction from v1",
+      ),
+    );
+    expect(bridge.versions.create).not.toHaveBeenCalled();
+  });
+
+  it("uses Save changes to populate an empty version 1 placeholder", async () => {
     const firstContent = "First committed prompt content";
     const emptyV1 = { ...versionA, content: "" };
     const savedV1: VersionContentDto = { ...emptyV1, content: firstContent };
-    bridge.versions.create.mockResolvedValue(savedV1);
+    bridge.versions.updateContent.mockResolvedValue(savedV1);
     renderApp(
       <EditorTab
         prompt={{ ...promptA, draftContent: firstContent }}
@@ -104,16 +196,10 @@ describe("EditorTab draft durability", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Save version 1" }));
-    expect(await screen.findByText("Save as v1")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
-      expect(bridge.versions.create).toHaveBeenCalledWith({
-        promptId: promptA.id,
-        branchId: versionA.branchId,
-        content: firstContent,
-      }),
+      expect(bridge.versions.updateContent).toHaveBeenCalledWith(versionA.id, firstContent),
     );
   });
 
@@ -130,7 +216,12 @@ describe("EditorTab draft durability", () => {
       target: { value: "Newest A draft" },
     });
     await waitFor(
-      () => expect(bridge.drafts.set).toHaveBeenCalledWith(promptA.id, "Newest A draft"),
+      () =>
+        expect(bridge.drafts.set).toHaveBeenCalledWith(
+          promptA.id,
+          "Newest A draft",
+          versionA.id,
+        ),
       { timeout: 2_000 },
     );
     await waitFor(() =>
@@ -206,7 +297,11 @@ describe("EditorTab draft durability", () => {
     view.unmount();
 
     await waitFor(() => expect(bridge.drafts.set).toHaveBeenCalledTimes(2));
-    expect(bridge.drafts.set).toHaveBeenLastCalledWith(promptA.id, "Retryable draft");
+    expect(bridge.drafts.set).toHaveBeenLastCalledWith(
+      promptA.id,
+      "Retryable draft",
+      versionA.id,
+    );
   });
 
   it("keeps the newest draft when an unmount save would otherwise complete before an older debounce save", async () => {
@@ -214,11 +309,11 @@ describe("EditorTab draft durability", () => {
     const newestSave = deferred<void>();
     let persistedDraft: string | null = null;
     bridge.drafts.set
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await firstSave.promise;
         persistedDraft = draft;
       })
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await newestSave.promise;
         persistedDraft = draft;
       });
@@ -254,11 +349,11 @@ describe("EditorTab draft durability", () => {
     const newInstanceSave = deferred<void>();
     let persistedDraft: string | null = null;
     bridge.drafts.set
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await oldInstanceSave.promise;
         persistedDraft = draft;
       })
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await newInstanceSave.promise;
         persistedDraft = draft;
       });
@@ -306,11 +401,11 @@ describe("EditorTab draft durability", () => {
     const clearAfterVersion = deferred<void>();
     let persistedDraft: string | null = null;
     bridge.drafts.set
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await pendingAutosave.promise;
         persistedDraft = draft;
       })
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await clearAfterVersion.promise;
         persistedDraft = draft;
       });
@@ -350,6 +445,90 @@ describe("EditorTab draft durability", () => {
     expect(queryClient.getQueryData<PromptDetail>(qk.prompt(promptA.id))?.draftContent).toBeNull();
   });
 
+  it("does not let a pending autosave resurrect a draft cleared by amending the version", async () => {
+    const pendingAutosave = deferred<void>();
+    const clearAfterUpdate = deferred<void>();
+    let persistedDraft: string | null = null;
+    bridge.drafts.set
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
+        await pendingAutosave.promise;
+        persistedDraft = draft;
+      })
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
+        await clearAfterUpdate.promise;
+        persistedDraft = draft;
+      });
+    bridge.versions.updateContent.mockResolvedValue(versionA);
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryDefaults(qk.prompt(promptA.id), { gcTime: Infinity });
+    queryClient.setQueryData(qk.prompt(promptA.id), { ...promptA, draftContent: null });
+    const view = renderApp(
+      <EditorTab
+        prompt={{ ...promptA, draftContent: null }}
+        version={versionA}
+        isCurrent
+      />,
+      { queryClient },
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt editor" }), {
+      target: { value: "Content amended in version one" },
+    });
+    await waitFor(() => expect(bridge.drafts.set).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(bridge.versions.updateContent).toHaveBeenCalledTimes(1));
+    clearAfterUpdate.resolve();
+    view.unmount();
+    pendingAutosave.resolve();
+
+    await waitFor(() => expect(bridge.drafts.set).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(persistedDraft).toBeNull());
+    expect(queryClient.getQueryData<PromptDetail>(qk.prompt(promptA.id))?.draftContent).toBeNull();
+  });
+
+  it("keeps edits made while an amendment is pending as a draft on the same version", async () => {
+    const updateVersion = deferred<VersionDto>();
+    bridge.versions.updateContent.mockReturnValue(updateVersion.promise);
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryDefaults(qk.prompt(promptA.id), { gcTime: Infinity });
+    queryClient.setQueryData(qk.prompt(promptA.id), {
+      ...promptA,
+      draftContent: "Content submitted as the amendment",
+    });
+    renderApp(
+      <EditorTab
+        prompt={{ ...promptA, draftContent: "Content submitted as the amendment" }}
+        version={versionA}
+        isCurrent
+      />,
+      { queryClient },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(bridge.versions.updateContent).toHaveBeenCalledWith(
+        versionA.id,
+        "Content submitted as the amendment",
+      ),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt editor" }), {
+      target: { value: "New edit made while amendment is pending" },
+    });
+
+    updateVersion.resolve(versionA);
+
+    await waitFor(() =>
+      expect(bridge.drafts.set).toHaveBeenCalledWith(
+        promptA.id,
+        "New edit made while amendment is pending",
+        versionA.id,
+      ),
+    );
+    expect(queryClient.getQueryData<PromptDetail>(qk.prompt(promptA.id))?.draftContent).toBe(
+      "New edit made while amendment is pending",
+    );
+  });
+
   it("keeps edits made while save-version is pending as a draft on the new version", async () => {
     const createVersion = deferred<VersionContentDto>();
     bridge.versions.create.mockReturnValue(createVersion.promise);
@@ -374,6 +553,7 @@ describe("EditorTab draft durability", () => {
       expect(bridge.versions.create).toHaveBeenCalledWith({
         promptId: promptA.id,
         branchId: versionA.branchId,
+        baseVersionId: versionA.id,
         content: "Content submitted as the version",
       }),
     );
@@ -394,6 +574,7 @@ describe("EditorTab draft durability", () => {
       expect(bridge.drafts.set).toHaveBeenCalledWith(
         promptA.id,
         "New edit made while version save is pending",
+        "version-a-2",
       ),
     );
     expect(queryClient.getQueryData<PromptDetail>(qk.prompt(promptA.id))?.draftContent).toBe(
@@ -406,11 +587,11 @@ describe("EditorTab draft durability", () => {
     const revertedSave = deferred<void>();
     let persistedDraft: string | null = null;
     bridge.drafts.set
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await oldInstanceSave.promise;
         persistedDraft = draft;
       })
-      .mockImplementationOnce(async (_promptId, draft) => {
+      .mockImplementationOnce(async (_promptId: string, draft: string | null, _baseVersionId?: string) => {
         await revertedSave.promise;
         persistedDraft = draft;
       });
@@ -493,6 +674,7 @@ describe("EditorTab draft durability", () => {
       expect(bridge.drafts.set).toHaveBeenCalledWith(
         promptA.id,
         "Edit typed after version success",
+        "version-a-2",
       ),
     );
     expect(queryClient.getQueryData<PromptDetail>(qk.prompt(promptA.id))?.draftContent).toBe(

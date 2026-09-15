@@ -5,7 +5,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import { Bold, Braces, Code, Columns2, Eye, Italic, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, X } from "lucide-react";
-import type { PromptDetail, VersionContentDto } from "../../../shared/ipc.js";
+import type { PromptDetail, VersionContentDto, VersionDto } from "../../../shared/ipc.js";
 import { qk, useAppMutation } from "../hooks/use-data";
 import { getPref, usePref } from "../lib/prefs";
 import type { ModelRef } from "../lib/ai-prefs";
@@ -28,9 +28,6 @@ const MODES: Array<{ value: EditorMode; label: string; icon: React.ReactNode }> 
   { value: "preview", label: "Preview", icon: <Eye size={12} /> },
   { value: "split", label: "Split", icon: <Columns2 size={12} /> },
 ];
-
-/** Read-only (historical) versions always open in Preview; the current
-   version opens in the user's default mode (Settings → Appearance). */
 
 function wrapSelection(view: EditorView, before: string, after = before) {
   const { from, to } = view.state.selection.main;
@@ -241,11 +238,20 @@ export const EditorTab = memo(function EditorTab({
   prompt,
   version,
   isCurrent,
+  isEditable,
+  nextVersionNumber,
+  onVersionCreated,
   liveContentRef,
 }: {
   prompt: PromptDetail;
   version: VersionContentDto;
+  /** Whether this saved version is the prompt's preferred/default revision. */
   isCurrent: boolean;
+  /** Active saved versions can be used as an editable working base. */
+  isEditable?: boolean;
+  /** Next display number on this variation, derived from its branch head. */
+  nextVersionNumber?: number;
+  onVersionCreated?: (version: VersionDto) => void;
   /** Mirror of the current editor content (incl. unsaved edits) for the Run flow. */
   liveContentRef?: { current: string | null };
 }) {
@@ -254,14 +260,19 @@ export const EditorTab = memo(function EditorTab({
   const { openSettings } = useAppState();
   const availableModels = useAvailableModels();
   const [improveOpen, setImproveOpen] = useState(false);
-  const initialContent = isCurrent ? (prompt.draftContent ?? version.content) : version.content;
+  const editable = isEditable ?? isCurrent;
+  const draftMatchesVersion =
+    prompt.draftContent !== null &&
+    (prompt.draftBaseVersionId === version.id ||
+      (prompt.draftBaseVersionId === null && isCurrent));
+  const initialContent = draftMatchesVersion ? prompt.draftContent! : version.content;
   const [content, setContent] = useState(initialContent);
-  const [savedAt, setSavedAt] = useState<number | null>(isCurrent && prompt.draftContent ? Date.now() : null);
+  const [savedAt, setSavedAt] = useState<number | null>(draftMatchesVersion ? Date.now() : null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [defaultMode, setDefaultMode] = usePref("editor-mode");
   const [wordWrap] = usePref("word-wrap");
   const resolvedTheme = useResolvedTheme();
-  const [mode, setModeState] = useState<EditorMode>(() => (isCurrent ? defaultMode : "preview"));
+  const [mode, setModeState] = useState<EditorMode>(() => (editable ? defaultMode : "preview"));
   const viewRef = useRef<EditorView | null>(null);
 
   const setMode = (next: EditorMode) => {
@@ -270,21 +281,25 @@ export const EditorTab = memo(function EditorTab({
     setDefaultMode(next);
   };
 
-  const dirty = isCurrent && content !== version.content;
+  const dirty = editable && content !== version.content;
   const isInitialPlaceholder =
+    editable &&
     isCurrent &&
     version.branchName === "main" &&
     version.number === 1 &&
     version.parentVersionId === null &&
     version.content.length === 0;
 
-  // Debounced draft autosave (current version only). lastSavedDraft avoids
-  // redundant writes; refs keep the unmount flush accurate. When the
+  // Debounced draft autosave for the displayed working version. The persisted
+  // base id prevents this content from appearing over another saved revision.
+  // lastSavedDraft avoids redundant writes; refs keep the unmount flush
+  // accurate. When the
   // "autosave drafts" pref is off, drafts are never persisted — edits live
-  // only in memory until saved as a new version.
+  // only in memory until the version is amended or saved as a new version.
   const contentRef = useRef(content);
   const versionContentRef = useRef(version.content);
-  const lastSavedDraftRef = useRef<string | null>(prompt.draftContent ?? null);
+  const draftBaseVersionIdRef = useRef(version.id);
+  const lastSavedDraftRef = useRef<string | null>(draftMatchesVersion ? prompt.draftContent : null);
   const localEditGenerationRef = useRef(0);
   const authoritativeEditGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -304,20 +319,32 @@ export const EditorTab = memo(function EditorTab({
     value: string | null,
     showSavedAt?: boolean,
     editGeneration?: number,
+    baseVersionId?: string,
   ) => void>(() => undefined);
   persistDraft.current = (
     draftValue,
     showSavedAt = true,
     editGeneration = localEditGenerationRef.current,
+    baseVersionId = draftBaseVersionIdRef.current,
   ) => {
+    const persistedBaseVersionId = draftValue === null ? null : baseVersionId;
     enqueuePromptDraftWrite(queryClient, prompt.id, {
       value: draftValue,
-      persist: () => window.promptBuilder.drafts.set(prompt.id, draftValue),
+      persist: () =>
+        draftValue === null
+          ? window.promptBuilder.drafts.set(prompt.id, null)
+          : window.promptBuilder.drafts.set(prompt.id, draftValue, baseVersionId),
       onAccepted: () => {
         lastSavedDraftRef.current = draftValue;
         authoritativeEditGenerationRef.current = editGeneration;
         queryClient.setQueryData<PromptDetail>(qk.prompt(prompt.id), (cached) =>
-          cached ? { ...cached, draftContent: draftValue } : cached,
+          cached
+            ? {
+                ...cached,
+                draftContent: draftValue,
+                draftBaseVersionId: persistedBaseVersionId,
+              }
+            : cached,
         );
         if (mountedRef.current && showSavedAt) setSavedAt(Date.now());
       },
@@ -329,7 +356,7 @@ export const EditorTab = memo(function EditorTab({
 
   const saveDraft = useRef<() => void>(() => undefined);
   saveDraft.current = () => {
-    if (!isCurrent || !getPref("autosave-drafts")) return;
+    if (!editable || !getPref("autosave-drafts")) return;
     if (draftClearRequestedRef.current) {
       persistDraft.current(null, false);
       return;
@@ -343,22 +370,22 @@ export const EditorTab = memo(function EditorTab({
   };
 
   useEffect(() => {
-    if (!isCurrent) return;
-    const refreshedContent = prompt.draftContent ?? version.content;
+    if (!editable) return;
+    const refreshedContent = draftMatchesVersion ? prompt.draftContent! : version.content;
     const hasNewerLocalEdit =
       localEditGenerationRef.current !== authoritativeEditGenerationRef.current;
-    lastSavedDraftRef.current = prompt.draftContent;
+    lastSavedDraftRef.current = draftMatchesVersion ? prompt.draftContent : null;
     if (!hasNewerLocalEdit && contentRef.current !== refreshedContent) {
       contentRef.current = refreshedContent;
       setContent(refreshedContent);
     }
-  }, [isCurrent, prompt.draftContent, version.content]);
+  }, [draftMatchesVersion, editable, prompt.draftContent, version.content]);
 
   useEffect(() => {
-    if (!isCurrent) return;
+    if (!editable) return;
     const timer = window.setTimeout(() => saveDraft.current(), 800);
     return () => window.clearTimeout(timer);
-  }, [content, isCurrent]);
+  }, [content, editable]);
 
   // Flush any pending draft when leaving this prompt/version.
   useEffect(() => {
@@ -374,12 +401,14 @@ export const EditorTab = memo(function EditorTab({
       window.promptBuilder.versions.create({
         promptId: prompt.id,
         branchId: version.branchId,
+        baseVersionId: version.id,
         content: input.content,
         ...(input.changeNote ? { changeNote: input.changeNote } : {}),
       }),
     {
       onSuccess: (created, submitted) => {
         versionContentRef.current = submitted.content;
+        draftBaseVersionIdRef.current = created.id;
         if (contentRef.current === submitted.content) {
           // This editor still contains the content that just became a version.
           // Until invalidation replaces it, every timer/unmount flush must keep
@@ -390,12 +419,57 @@ export const EditorTab = memo(function EditorTab({
           // Edits made while version creation was in flight belong to the new
           // version as its draft; the submitted snapshot alone was promoted.
           draftClearRequestedRef.current = false;
-          persistDraft.current(contentRef.current);
+          persistDraft.current(
+            contentRef.current,
+            true,
+            localEditGenerationRef.current,
+            created.id,
+          );
         }
         toast(`Saved as ${created.displayLabel}`);
+        onVersionCreated?.(created);
       },
     },
   );
+
+  const updateVersion = useAppMutation(
+    (submittedContent: string) =>
+      window.promptBuilder.versions.updateContent(version.id, submittedContent),
+    {
+      onSuccess: (updated, submittedContent) => {
+        versionContentRef.current = submittedContent;
+        draftBaseVersionIdRef.current = version.id;
+        queryClient.setQueryData<VersionContentDto>(qk.versionContent(version.id), (cached) =>
+          cached ? { ...cached, content: submittedContent } : cached,
+        );
+        if (contentRef.current === submittedContent) {
+          draftClearRequestedRef.current = true;
+          persistDraft.current(null, false);
+        } else {
+          draftClearRequestedRef.current = false;
+          persistDraft.current(
+            contentRef.current,
+            true,
+            localEditGenerationRef.current,
+            version.id,
+          );
+        }
+        toast(`Saved changes to ${updated.displayLabel}`);
+      },
+    },
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (editable && dirty && !updateVersion.isPending && !createVersion.isPending) {
+        updateVersion.mutate(contentRef.current);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [createVersion.isPending, dirty, editable, updateVersion.isPending]);
 
   const editor = (
     <CodeMirror
@@ -411,12 +485,12 @@ export const EditorTab = memo(function EditorTab({
       }}
       extensions={[markdown({ base: markdownLanguage }), ...(wordWrap ? [EditorView.lineWrapping] : [])]}
       theme={resolvedTheme === "dark" ? darkTheme : lightTheme}
-      readOnly={!isCurrent}
-      editable={isCurrent}
+      readOnly={!editable}
+      editable={editable}
       basicSetup={{
         lineNumbers: true,
-        highlightActiveLine: isCurrent,
-        highlightActiveLineGutter: isCurrent,
+        highlightActiveLine: editable,
+        highlightActiveLineGutter: editable,
         foldGutter: false,
         autocompletion: false,
         searchKeymap: true,
@@ -427,7 +501,7 @@ export const EditorTab = memo(function EditorTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1 border-b border-line px-2 py-1">
-        {isCurrent && mode !== "preview" &&
+        {editable && mode !== "preview" &&
           TOOLBAR_ACTIONS.map((action) => (
             <button
               key={action.label}
@@ -442,7 +516,7 @@ export const EditorTab = memo(function EditorTab({
               {action.icon}
             </button>
           ))}
-        {isCurrent && mode !== "preview" && (
+        {editable && mode !== "preview" && (
           <button
             type="button"
             title="Improve with AI"
@@ -461,7 +535,7 @@ export const EditorTab = memo(function EditorTab({
             Improve
           </button>
         )}
-        {isCurrent && mode !== "preview" && (
+        {editable && mode !== "preview" && (
           <span className="ml-2 hidden text-[10px] text-ink-faint @md:inline">
             Markdown · use {"{{variable}}"} for placeholders
           </span>
@@ -502,7 +576,7 @@ export const EditorTab = memo(function EditorTab({
 
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5">
         <span className="min-w-0 truncate text-[11px] text-ink-faint">
-          {isCurrent
+          {editable
             ? dirty
               ? savedAt
                 ? `Draft saved ${clockTime(savedAt)}`
@@ -514,19 +588,37 @@ export const EditorTab = memo(function EditorTab({
           <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">
             {wordCount(content)} words · {content.length} chars
           </span>
-          {isCurrent && (
-            <button
-              type="button"
-              disabled={!dirty}
-              onClick={() => setSaveDialogOpen(true)}
-              className={cx(
-                "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-white transition-colors",
-                "bg-accent hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40",
-              )}
-            >
-              <Save size={12} />
-              {isInitialPlaceholder ? "Save version 1" : "Save as new version"}
-            </button>
+          {editable && (
+            <>
+              <button
+                type="button"
+                disabled={!dirty || updateVersion.isPending || createVersion.isPending}
+                onClick={() => updateVersion.mutate(contentRef.current)}
+                className={cx(
+                  "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-ink-dim transition-colors",
+                  "hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                )}
+              >
+                {updateVersion.isPending ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Save size={12} />
+                )}
+                Save changes
+              </button>
+              <button
+                type="button"
+                disabled={!dirty || updateVersion.isPending || createVersion.isPending}
+                onClick={() => setSaveDialogOpen(true)}
+                className={cx(
+                  "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-white transition-colors",
+                  "bg-accent hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40",
+                )}
+              >
+                <Save size={12} />
+                Save as new version
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -538,8 +630,8 @@ export const EditorTab = memo(function EditorTab({
           isInitialPlaceholder
             ? "v1"
             : version.branchName === "main"
-              ? `v${version.number + 1}`
-              : `${version.branchName} v${version.number + 1}`
+              ? `v${nextVersionNumber ?? version.number + 1}`
+              : `${version.branchName} v${nextVersionNumber ?? version.number + 1}`
         }
         onSave={(note) => createVersion.mutate({ changeNote: note, content: contentRef.current })}
       />
@@ -552,7 +644,7 @@ export const EditorTab = memo(function EditorTab({
           localEditGenerationRef.current += 1;
           contentRef.current = improved;
           setContent(improved);
-          toast("Improved draft applied — save it as a new version to keep it");
+          toast("Improved draft applied — save the changes or create a new version to keep it");
         }}
       />
     </div>

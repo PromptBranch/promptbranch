@@ -3,6 +3,7 @@ import * as ipcContract from "./ipc.js";
 import {
   promptCreateSchema,
   promptDuplicateSchema,
+  draftSetSchema,
   shareDeleteSchema,
   shareImportPreviewSchema,
   sharePortalSetSchema,
@@ -14,6 +15,8 @@ import {
   updateSetAutomaticChecksSchema,
   updateStateDtoSchema,
   versionDeleteSchema,
+  versionCreateSchema,
+  versionUpdateContentSchema,
   versionUpdateLabelSchema,
 } from "./ipc.js";
 import { IPC_CHANNELS } from "./channels.js";
@@ -125,6 +128,53 @@ describe("quick palette IPC contract", () => {
         variables: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`v${index}`, "x"])),
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("version-bound editor IPC contract", () => {
+  it("publishes and validates the exact version amendment payload", () => {
+    expect(IPC_CHANNELS.versionUpdateContent).toBe("version:update-content");
+    expect(
+      versionUpdateContentSchema.parse({ versionId: "version-1", content: "revised text" }),
+    ).toEqual({ versionId: "version-1", content: "revised text" });
+    expect(versionUpdateContentSchema.safeParse({ versionId: "", content: "text" }).success).toBe(
+      false,
+    );
+  });
+
+  it("requires the exact base version for desktop version creation", () => {
+    expect(
+      versionCreateSchema.parse({
+        promptId: "prompt-1",
+        branchId: "branch-1",
+        baseVersionId: "version-1",
+        content: "next",
+      }),
+    ).toEqual({
+      promptId: "prompt-1",
+      branchId: "branch-1",
+      baseVersionId: "version-1",
+      content: "next",
+    });
+    expect(
+      versionCreateSchema.safeParse({ promptId: "prompt-1", branchId: "branch-1", content: "next" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("requires a base version for non-null drafts and permits an atomic clear", () => {
+    expect(
+      draftSetSchema.parse({
+        promptId: "prompt-1",
+        content: "working",
+        baseVersionId: "version-1",
+      }),
+    ).toEqual({ promptId: "prompt-1", content: "working", baseVersionId: "version-1" });
+    expect(draftSetSchema.safeParse({ promptId: "prompt-1", content: "working" }).success).toBe(false);
+    expect(draftSetSchema.parse({ promptId: "prompt-1", content: null })).toEqual({
+      promptId: "prompt-1",
+      content: null,
+    });
   });
 });
 

@@ -57,10 +57,11 @@ prompts, record evidence about what worked, and propose improvements. Pending
 suggestions never enter search results or become current until a person reviews
 them in the desktop app's Suggestions view.
 
-`get_prompt` returns an immutable `versionId`. Reuse it as `versionId` with
+`get_prompt` returns a stable `versionId`. Reuse it as `versionId` with
 `get_prompt` or `report_run`, and as `baseVersionId` with
-`suggest_variation`, whenever the workflow must stay tied to exactly the same
-content. Numeric versions are branch-scoped display labels and may contain
+`suggest_variation`, whenever the workflow must stay tied to the same version
+record. A desktop user can amend its content; new versions preserve historical
+snapshots. Numeric versions are branch-scoped display labels and may contain
 gaps.
 
 The server deliberately has no publish or import tool. Sharing remains a

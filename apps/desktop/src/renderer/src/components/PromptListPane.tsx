@@ -44,6 +44,12 @@ const VIEW_TITLES: Record<string, string> = {
   trash: "Trash",
 };
 
+interface DuplicateSourceTarget {
+  prompt: PromptDetail;
+  versionId: string;
+  versionLabel: string;
+}
+
 function FilterPopover() {
   const { filters, setFilters } = useAppState();
   const { data: tags } = useTags();
@@ -315,7 +321,17 @@ export function PromptListPane({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, listSearch, setListSearch, openNewPrompt, filters, selectPrompt } = useAppState();
+  const {
+    view,
+    listSearch,
+    setListSearch,
+    openNewPrompt,
+    filters,
+    selectedPromptId,
+    selectPrompt,
+    viewingVersionId,
+    setViewingVersionId,
+  } = useAppState();
   const { data: prompts, isLoading } = usePromptList();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -326,8 +342,8 @@ export function PromptListPane({
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<PromptSummary | null>(null);
   const [moveTarget, setMoveTarget] = useState<PromptDetail | null>(null);
-  const [duplicateTarget, setDuplicateTarget] = useState<PromptDetail | null>(null);
-  const [duplicatePromptTarget, setDuplicatePromptTarget] = useState<PromptDetail | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<DuplicateSourceTarget | null>(null);
+  const [duplicatePromptTarget, setDuplicatePromptTarget] = useState<DuplicateSourceTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PromptSummary | null>(null);
   const [hardDeleteTarget, setHardDeleteTarget] = useState<PromptSummary | null>(null);
 
@@ -400,17 +416,38 @@ export function PromptListPane({
     }
   };
 
+  const loadDuplicateSource = async (
+    summary: PromptSummary,
+    useSource: (target: DuplicateSourceTarget) => void,
+  ) => {
+    try {
+      const prompt = await window.promptBuilder.prompts.get(summary.id);
+      if (!prompt) throw new Error("Prompt not found");
+      const versionId =
+        selectedPromptId === summary.id
+          ? (viewingVersionId ?? prompt.currentVersionId)
+          : prompt.currentVersionId;
+      if (!versionId) throw new Error("This prompt has no saved version to duplicate");
+      const version = await window.promptBuilder.versions.get(versionId);
+      if (!version) throw new Error("Selected version not found");
+      useSource({ prompt, versionId, versionLabel: version.displayLabel });
+    } catch (error) {
+      toast(userErrorMessage(error), "error");
+    }
+  };
+
   const duplicateAsVariation = async (name: string, description: string) => {
-    const prompt = duplicateTarget;
-    if (!prompt?.currentVersionId) throw new Error("This prompt has no current version to duplicate");
+    const target = duplicateTarget;
+    if (!target) throw new Error("No version selected to duplicate");
     const result = await window.promptBuilder.branches.create({
-      promptId: prompt.id,
+      promptId: target.prompt.id,
       name,
-      fromVersionId: prompt.currentVersionId,
+      fromVersionId: target.versionId,
       ...(description ? { description } : {}),
     });
-    await window.promptBuilder.versions.setCurrent(prompt.id, result.version.id);
     await queryClient.invalidateQueries();
+    selectPrompt(target.prompt.id);
+    setViewingVersionId(result.version.id);
     void window.promptBuilder.sync.now().catch(() => undefined);
     toast(`Variation "${name}" created`);
   };
@@ -550,7 +587,7 @@ export function PromptListPane({
             prompt={prompt}
             onContextMenu={(event) => {
               event.preventDefault();
-              selectPrompt(prompt.id);
+              if (selectedPromptId !== prompt.id) selectPrompt(prompt.id);
               setContextMenu({ prompt, x: event.clientX, y: event.clientY });
             }}
           />
@@ -640,15 +677,15 @@ export function PromptListPane({
                 icon={<Copy size={13} />}
                 label="Duplicate as new prompt…"
                 onClick={() => {
-                  void loadPrompt(contextMenu.prompt, setDuplicatePromptTarget);
+                  void loadDuplicateSource(contextMenu.prompt, setDuplicatePromptTarget);
                   setContextMenu(null);
                 }}
               />
               <PromptMenuItem
                 icon={<GitFork size={13} />}
-                label="Duplicate current version as variation…"
+                label="Duplicate selected version as variation…"
                 onClick={() => {
-                  void loadPrompt(contextMenu.prompt, setDuplicateTarget);
+                  void loadDuplicateSource(contextMenu.prompt, setDuplicateTarget);
                   setContextMenu(null);
                 }}
               />
@@ -702,7 +739,7 @@ export function PromptListPane({
         onOpenChange={(open) => {
           if (!open) setDuplicateTarget(null);
         }}
-        sourceLabel={duplicateTarget?.versionLabel ?? "current version"}
+        sourceLabel={duplicateTarget?.versionLabel ?? "selected version"}
         onSubmit={duplicateAsVariation}
       />
       <NameDialog
@@ -712,13 +749,13 @@ export function PromptListPane({
         }}
         title="Duplicate as new prompt"
         label="Title"
-        initialValue={`${duplicatePromptTarget?.title ?? "Prompt"} copy`}
+        initialValue={`${duplicatePromptTarget?.prompt.title ?? "Prompt"} copy`}
         submitLabel="Duplicate"
         onSubmit={(title) => {
-          if (duplicatePromptTarget?.currentVersionId) {
+          if (duplicatePromptTarget) {
             duplicatePrompt.mutate({
-              promptId: duplicatePromptTarget.id,
-              versionId: duplicatePromptTarget.currentVersionId,
+              promptId: duplicatePromptTarget.prompt.id,
+              versionId: duplicatePromptTarget.versionId,
               title,
             });
           }

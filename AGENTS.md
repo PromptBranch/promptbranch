@@ -14,8 +14,9 @@ unified **`@promptbranch/*`** namespace (`@promptbranch/core`,
 
 Key features:
 
-- Prompt CRUD with soft delete, branches, and append-only per-branch
-  sequential versions (with change notes and a "current" pointer).
+- Prompt CRUD with soft delete, branches, version-bound drafts, editable active
+  versions, and append-new per-branch sequential versions (with change notes
+  and a preferred "current" pointer).
 - Tags, collections, starred prompts, filters/sort, FTS5 search (⌘K), History
   and Notes tabs, JSON import/export, automatic local backups.
 - Evaluation: 1–5 four-dimension ratings, a run log (Results tab), diff
@@ -36,7 +37,7 @@ Key features:
   accounts). Devices pair via a short code verified against a self-signed
   certificate fingerprint, discover each other via mDNS, and exchange
   incremental record-level ops over mutually-pinned TLS with deterministic
-  merges (HLC last-writer-wins; append-only rows union).
+  merges (HLC last-writer-wins per record; independently created rows union).
 
 The root `README.md` and everything under `docs/` are **user-facing product
 documentation** (installation, setup, configuration, usage, supported
@@ -197,9 +198,11 @@ Match that format: emoji, `type(scope): subject`.
 - SQLite migrations are **forward-only and append-only**: add a new numbered
   migration in `packages/core/src/migrations.ts`; never edit an
   already-shipped migration. The runner backs up on-disk DBs before migrating
-  automatically. (Currently at v10: v8 adds exact run prompt snapshots, v9
-  replaces composite-key sync triggers with delimiter-safe record keys, and
-  v10 makes prompt hard-delete tombstones durable.)
+  automatically. (Currently at v13: v8 adds exact run prompt snapshots, v9
+  replaces composite-key sync triggers with delimiter-safe record keys, v10
+  makes prompt hard-delete tombstones durable, v11 canonicalizes natural-key
+  sync, v12 revokes stale model-catalog credential trust, and v13 binds drafts
+  to their exact saved base version.)
 - Comments in the codebase explain *why*, not what; match that density and
   tone (see `packages/core/src/db.ts` / `paths.ts` for the house style).
 - Theming: CSS custom properties (`--pb-*`) in

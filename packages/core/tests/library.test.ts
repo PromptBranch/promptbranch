@@ -141,13 +141,32 @@ describe("prompts", () => {
     expect(lib.search("Doomed")).toHaveLength(0);
   });
 
-  it("stores and clears a draft", () => {
+  it("stores and clears a draft with its exact active base version", () => {
     const prompt = lib.createPrompt({ title: "P", content: "x" });
     expect(lib.getDraft(prompt.id)).toBeNull();
-    lib.setDraft(prompt.id, "work in progress");
+    expect(prompt.draft_base_version_id).toBeNull();
+    lib.setDraft(prompt.id, "work in progress", prompt.current_version_id!);
     expect(lib.getDraft(prompt.id)).toBe("work in progress");
+    expect(lib.getPrompt(prompt.id)?.draft_base_version_id).toBe(prompt.current_version_id);
     lib.setDraft(prompt.id, null);
     expect(lib.getDraft(prompt.id)).toBeNull();
+    expect(lib.getPrompt(prompt.id)?.draft_base_version_id).toBeNull();
+  });
+
+  it("rejects a draft base from another prompt or an inactive suggestion", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "x" });
+    const other = lib.createPrompt({ title: "Other", content: "y" });
+    const pending = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId: prompt.current_version_id!,
+      newContent: "candidate",
+      rationale: "test",
+    }).version;
+
+    expect(() => lib.setDraft(prompt.id, "wrong prompt", other.current_version_id!)).toThrow(
+      /not found on prompt/i,
+    );
+    expect(() => lib.setDraft(prompt.id, "pending", pending.id)).toThrow(/pending/i);
   });
 });
 
@@ -248,6 +267,21 @@ describe("versions", () => {
     expect(v4.number).toBe(4);
   });
 
+  it("clears a draft when its exact base version is deleted", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const v2 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" });
+    lib.setDraft(prompt.id, "unfinished v2 edit", v2.id);
+
+    lib.deleteVersion(v2.id);
+
+    expect(lib.getPrompt(prompt.id)).toMatchObject({
+      draft_content: null,
+      draft_base_version_id: null,
+    });
+  });
+
   it("preserves version numbers when surviving versions share a timestamp", () => {
     db.transaction(() => {
       db.pragma("defer_foreign_keys = ON");
@@ -308,6 +342,66 @@ describe("versions", () => {
     );
   });
 
+  it("amends the exact active version without changing its identity or preferred pointer", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "original amber wording" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const v1 = lib.getVersion(prompt.current_version_id!)!;
+    const v2 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "preferred second version",
+      changeNote: "advance preferred",
+      label: "Production",
+    });
+
+    const amended = lib.updateVersionContent(v1.id, "revised cobalt wording");
+
+    expect(amended).toEqual({ ...v1, content: "revised cobalt wording" });
+    expect(lib.listVersions(prompt.id)).toHaveLength(2);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(v2.id);
+    expect(lib.search("cobalt").map((result) => result.promptId)).toEqual([prompt.id]);
+    expect(lib.search("amber")).toEqual([]);
+  });
+
+  it("preserves legacy run snapshots before amending a version", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "exact text used by legacy run" });
+    const versionId = prompt.current_version_id!;
+    const legacy = lib.addRun({ promptId: prompt.id, versionId });
+    const captured = lib.addRun({
+      promptId: prompt.id,
+      versionId,
+      promptContent: "already captured substituted text",
+    });
+
+    lib.updateVersionContent(versionId, "new editor content");
+
+    const runs = lib.listRuns(prompt.id);
+    expect(runs.find((run) => run.id === legacy.id)?.prompt_content).toBe(
+      "exact text used by legacy run",
+    );
+    expect(runs.find((run) => run.id === captured.id)?.prompt_content).toBe(
+      "already captured substituted text",
+    );
+  });
+
+  it("rejects amending missing, pending, or rejected versions", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const suggestion = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId: prompt.current_version_id!,
+      newContent: "candidate",
+      rationale: "test",
+    }).version;
+
+    expect(() => lib.updateVersionContent("missing-version", "new text")).toThrow(
+      "Version not found: missing-version",
+    );
+    expect(() => lib.updateVersionContent(suggestion.id, "new text")).toThrow(/pending/i);
+    lib.rejectSuggestion(suggestion.id);
+    expect(() => lib.updateVersionContent(suggestion.id, "new text")).toThrow(/rejected/i);
+    expect(lib.getVersion(suggestion.id)?.content).toBe("candidate");
+  });
+
   it("commits the first non-empty save into an empty version 1 placeholder", () => {
     const prompt = lib.createPrompt({ title: "P", content: "" });
     const main = lib.listBranches(prompt.id)[0]!;
@@ -360,6 +454,65 @@ describe("versions", () => {
     expect(lib.getBranchHead(main.id)!.id).toBe(v3.id);
   });
 
+  it("appends from an explicit historical base without changing the preferred version", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const v1 = prompt.current_version_id!;
+    const v2 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    const v3 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" });
+
+    const v4 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      baseVersionId: v1,
+      content: "new direction from v1",
+    });
+
+    expect(v4.number).toBe(4);
+    expect(v4.parent_version_id).toBe(v1);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(v3.id);
+
+    const v5 = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      baseVersionId: v3.id,
+      content: "preferred continues",
+    });
+    expect(v5.number).toBe(5);
+    expect(v5.parent_version_id).toBe(v3.id);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(v5.id);
+    expect(v2.parent_version_id).toBe(v1);
+  });
+
+  it("rejects an explicit version base outside the supplied active variation", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "v1" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const pending = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId: prompt.current_version_id!,
+      newContent: "candidate",
+      rationale: "test",
+    }).version;
+    const other = lib.createPrompt({ title: "Other", content: "other" });
+
+    expect(() =>
+      lib.createVersion({
+        promptId: prompt.id,
+        branchId: main.id,
+        baseVersionId: other.current_version_id!,
+        content: "wrong prompt",
+      }),
+    ).toThrow(/not found on prompt/i);
+    expect(() =>
+      lib.createVersion({
+        promptId: prompt.id,
+        branchId: main.id,
+        baseVersionId: pending.id,
+        content: "pending base",
+      }),
+    ).toThrow(/pending/i);
+  });
+
   it("restores an older version as current", () => {
     const prompt = lib.createPrompt({ title: "P", content: "first" });
     const main = lib.listBranches(prompt.id)[0]!;
@@ -395,6 +548,7 @@ describe("branches", () => {
     expect(version.branch_id).toBe(branch.id);
     expect(version.content).toBe("base content");
     expect(version.parent_version_id).toBe(prompt.current_version_id);
+    expect(lib.getPrompt(prompt.id)?.current_version_id).toBe(prompt.current_version_id);
     expect(lib.listBranches(prompt.id).map((b) => b.name).sort()).toEqual(["experiment", "main"]);
   });
 
@@ -415,6 +569,24 @@ describe("branches", () => {
     expect(() =>
       lib.createBranch({ promptId: prompt.id, name: "alt", fromVersionId: prompt.current_version_id! }),
     ).toThrow(/already exists/);
+  });
+
+  it("rejects creating an active variation from a pending or rejected suggestion", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "base" });
+    const pending = lib.suggestVariation({
+      promptId: prompt.id,
+      baseVersionId: prompt.current_version_id!,
+      newContent: "candidate",
+      rationale: "test",
+    }).version;
+
+    expect(() =>
+      lib.createBranch({ promptId: prompt.id, name: "pending-copy", fromVersionId: pending.id }),
+    ).toThrow(/pending/i);
+    lib.rejectSuggestion(pending.id);
+    expect(() =>
+      lib.createBranch({ promptId: prompt.id, name: "rejected-copy", fromVersionId: pending.id }),
+    ).toThrow(/rejected/i);
   });
 
   it("parents new versions on the branch head, independently of main", () => {

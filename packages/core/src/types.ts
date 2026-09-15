@@ -6,6 +6,8 @@ export interface PromptRow {
   description: string | null;
   icon: string | null;
   draft_content: string | null;
+  /** Saved version whose content the draft edits; null for no/legacy draft. */
+  draft_base_version_id: string | null;
   current_version_id: string | null;
   is_starred: 0 | 1;
   created_at: string;

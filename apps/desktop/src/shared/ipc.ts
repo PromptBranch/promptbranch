@@ -60,12 +60,18 @@ export const promptUpdateSchema = z.object({
 export const versionCreateSchema = z.object({
   promptId: id,
   branchId: id,
+  baseVersionId: id,
   content: longText,
   changeNote: z.string().max(2_000).optional(),
 });
 export type VersionCreateInput = z.infer<typeof versionCreateSchema>;
 
 export const versionSetCurrentSchema = z.object({ promptId: id, versionId: id });
+
+export const versionUpdateContentSchema = z.object({
+  versionId: id,
+  content: longText,
+});
 
 export const versionUpdateLabelSchema = z.object({
   versionId: id,
@@ -74,7 +80,10 @@ export const versionUpdateLabelSchema = z.object({
 
 export const versionDeleteSchema = z.object({ versionId: id });
 
-export const draftSetSchema = z.object({ promptId: id, content: longText.nullable() });
+export const draftSetSchema = z.union([
+  z.object({ promptId: id, content: longText, baseVersionId: id }),
+  z.object({ promptId: id, content: z.null() }),
+]);
 
 export const noteAddSchema = z.object({
   promptId: id,
@@ -569,6 +578,7 @@ export interface PromptSummary {
 export interface PromptDetail extends PromptSummary {
   currentVersionId: string | null;
   draftContent: string | null;
+  draftBaseVersionId: string | null;
   collectionIds: string[];
 }
 
@@ -1059,12 +1069,17 @@ export interface PromptBuilderApi {
     list(promptId: string): Promise<VersionDto[]>;
     get(versionId: string): Promise<VersionContentDto | null>;
     setCurrent(promptId: string, versionId: string): Promise<void>;
+    updateContent(versionId: string, content: string): Promise<VersionDto>;
     updateLabel(versionId: string, label: string | null): Promise<VersionDto>;
     delete(versionId: string): Promise<void>;
   };
   drafts: {
     get(promptId: string): Promise<string | null>;
-    set(promptId: string, content: string | null): Promise<void>;
+    set(
+      ...args:
+        | [promptId: string, content: string, baseVersionId: string]
+        | [promptId: string, content: null]
+    ): Promise<void>;
   };
   branches: {
     list(promptId: string): Promise<BranchDto[]>;

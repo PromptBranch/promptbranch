@@ -83,8 +83,10 @@ promptbranch get "sql-injection-audit" \
 promptbranch get "sql-injection-audit" --branch "experiment/concise"
 ```
 
-JSON output includes `versionId`. Use that immutable id when a script, agent,
-or saved run must retrieve the same revision later. Version numbers are useful
+JSON output includes `versionId`. Use that stable id when a script or agent must
+retrieve the same version record later. A desktop user can amend its content,
+so fetch it again before use when freshness matters and create a new version
+when content must remain a historical snapshot. Version numbers are useful
 display labels scoped to a variation. They remain unchanged when another
 version is deleted, so history can contain gaps. A number can still be
 reconciled if paired devices independently create the same number; it is not a

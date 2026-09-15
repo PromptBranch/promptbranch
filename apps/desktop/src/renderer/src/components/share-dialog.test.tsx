@@ -24,6 +24,7 @@ const prompt: PromptDetail = {
   deletedAt: null,
   currentVersionId: "v-1",
   draftContent: null,
+  draftBaseVersionId: null,
   collectionIds: [],
 };
 

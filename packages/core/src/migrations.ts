@@ -114,7 +114,7 @@ CREATE INDEX idx_shared_snapshots_prompt ON shared_snapshots(prompt_id);
     sql: syncV7Sql(),
   },
   // The version row is only a lineage anchor: users can execute an edited
-  // draft with variable values that differ from that immutable version.
+  // draft with variable values that differ from its saved content.
   // Existing runs stay nullable so their historical behavior can fall back
   // to version content when the exact execution input was never recorded.
   {
@@ -147,6 +147,17 @@ ALTER TABLE runs ADD COLUMN prompt_content TEXT;
     version: 12,
     name: "revoke-model-catalog-credential-trust",
     sql: "DELETE FROM settings WHERE key = 'model_catalog_credential_trusted';",
+  },
+  {
+    version: 13,
+    name: "version-bound-prompt-drafts",
+    sql: "",
+    repair: (db) => {
+      const columns = db.pragma("table_info(prompts)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "draft_base_version_id")) {
+        db.exec("ALTER TABLE prompts ADD COLUMN draft_base_version_id TEXT");
+      }
+    },
   },
 ];
 

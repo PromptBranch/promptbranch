@@ -4,6 +4,38 @@ Notable user-facing changes to PromptBranch are documented here. GitHub
 Releases contain platform downloads, checksums, and release-specific validation
 notes.
 
+## [0.6.0] - 2026-09-16
+
+### Added
+
+- Add an interactive History graph view with List/Graph switching,
+  lineage-aware branch and variation edges, keyboard selection, pan/zoom/fit
+  controls, and the same comparison and version actions available in the list
+  view.
+
+### Changed
+
+- Allow <kbd>⌘S</kbd> on macOS or <kbd>Ctrl+S</kbd> on Windows and Linux to
+  save edits into the displayed version while preserving its identity and
+  place in history.
+- Keep **Save as new version** available when you want to preserve the
+  displayed content as a separate history entry and create a descendant with a
+  change note.
+- Make variation and duplicate actions copy the version currently displayed or
+  explicitly selected, rather than an unrelated branch head.
+- Make search and the global prompt palette open the prompt's preferred/current
+  version by default.
+
+### Fixed
+
+- Prevent renderer logging failures on closed output pipes from surfacing as
+  uncaught application exceptions.
+
+### Packages
+
+- `@promptbranch/desktop` 0.6.0. The CLI, MCP, core, AI, and share package
+  versions are unchanged in this release.
+
 ## [0.3.1] - 2026-09-04
 
 ### Fixed
@@ -44,5 +76,6 @@ notes.
   persistence, and hard-delete convergence.
 - Harden share-size validation, secret scanning, and import boundaries.
 
+[0.6.0]: https://github.com/PromptBranch/promptbranch/compare/v0.5.0...v0.6.0
 [0.3.1]: https://github.com/PromptBranch/promptbranch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/PromptBranch/promptbranch/releases/tag/v0.3.0

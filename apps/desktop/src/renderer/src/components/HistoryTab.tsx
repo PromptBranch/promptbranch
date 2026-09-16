@@ -1,22 +1,15 @@
 import { useEffect, useState } from "react";
-import {
-  Copy,
-  Eye,
-  GitBranch,
-  GitCompare,
-  GitFork,
-  History,
-  Pencil,
-  RotateCcw,
-  Star,
-  Trash2,
-} from "lucide-react";
+import { History } from "lucide-react";
 import type { PromptDetail, VersionDto } from "../../../shared/ipc.js";
 import { useAppMutation, useVersionRatingSummaries } from "../hooks/use-data";
-import { cx, relativeTime } from "../lib/time";
+import { usePref } from "../lib/prefs";
 import { useAppState } from "../state/app-state";
 import { ConfirmDialog } from "./dialogs";
 import { EmptyState } from "./ui";
+import { HistoryCompareBar } from "./HistoryCompareBar";
+import { HistoryGraphView } from "./HistoryGraphView";
+import { HistoryListView } from "./HistoryListView";
+import type { HistoryVersionActionHandlers } from "./HistoryVersionActions";
 
 export function HistoryTab({
   prompt,
@@ -38,31 +31,35 @@ export function HistoryTab({
   onDelete: (version: VersionDto) => void;
 }) {
   const { viewingVersionId } = useAppState();
+  const [historyView, setHistoryView] = usePref("prompt-history-view");
   const [confirmVersion, setConfirmVersion] = useState<VersionDto | null>(null);
   const [compareSelection, setCompareSelection] = useState<string[]>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const { data: ratingsByVersion } = useVersionRatingSummaries(prompt.id);
 
   useEffect(() => {
     const liveIds = new Set(versions.map((version) => version.id));
     setConfirmVersion((target) => (target && liveIds.has(target.id) ? target : null));
     setCompareSelection((selection) => selection.filter((id) => liveIds.has(id)));
+    setSelectedVersionId((selected) => (selected && liveIds.has(selected) ? selected : null));
   }, [versions]);
+
+  useEffect(() => {
+    if (historyView !== "graph") return;
+    const liveIds = new Set(versions.map((version) => version.id));
+    setSelectedVersionId((selected) => {
+      if (selected && liveIds.has(selected)) return selected;
+      const fallback = [viewingVersionId, prompt.currentVersionId, versions.at(-1)?.id].find(
+        (id): id is string => id !== null && id !== undefined && liveIds.has(id),
+      );
+      return fallback ?? null;
+    });
+  }, [historyView, prompt.currentVersionId, versions, viewingVersionId]);
 
   const setCurrent = useAppMutation(
     (versionId: string) => window.promptBuilder.versions.setCurrent(prompt.id, versionId),
     { toast: "Version restored as current" },
   );
-
-  // Group by branch, branches in order of first appearance; versions newest first.
-  const branchNames: string[] = [];
-  const byBranch = new Map<string, VersionDto[]>();
-  for (const version of versions) {
-    if (!byBranch.has(version.branchName)) {
-      byBranch.set(version.branchName, []);
-      branchNames.push(version.branchName);
-    }
-    byBranch.get(version.branchName)!.push(version);
-  }
 
   const toggleCompare = (versionId: string) => {
     setCompareSelection((current) =>
@@ -73,11 +70,20 @@ export function HistoryTab({
   };
 
   const selectedVersions = compareSelection
-    .map((id) => versions.find((v) => v.id === id))
-    .filter((v): v is VersionDto => v !== undefined)
+    .map((id) => versions.find((version) => version.id === id))
+    .filter((version): version is VersionDto => version !== undefined)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const compareBase = selectedVersions[0] ?? null;
   const compareOther = selectedVersions[1] ?? null;
+
+  const actions: HistoryVersionActionHandlers = {
+    onView,
+    onSetCurrent: setConfirmVersion,
+    onDuplicate,
+    onDuplicateAsPrompt,
+    onRename,
+    onDelete,
+  };
 
   if (versions.length === 0) {
     return <EmptyState icon={<History size={16} />} title="No versions yet" />;
@@ -85,171 +91,57 @@ export function HistoryTab({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {branchNames.map((branchName) => {
-          const branchVersions = [...(byBranch.get(branchName) ?? [])].sort((a, b) => b.number - a.number);
-          return (
-            <div key={branchName} className="mb-6">
-              <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
-                <GitBranch size={12} />
-                {branchName}
-              </div>
-              <div className="space-y-1.5 border-l border-line pl-4">
-                {branchVersions.map((version) => {
-                  const isCurrent = version.id === prompt.currentVersionId;
-                  const isViewing = viewingVersionId === version.id;
-                  const isSelected = compareSelection.includes(version.id);
-                  const rating = ratingsByVersion?.[version.id];
-                  return (
-                    <div
-                      key={version.id}
-                      className={cx(
-                        "group relative rounded-lg border p-3 transition-colors",
-                        isCurrent ? "border-accent/40 bg-accent-soft/40" : "border-line bg-panel hover:border-line-strong",
-                        isViewing && "ring-1 ring-accent/40",
-                        isSelected && "border-accent/60",
-                      )}
-                    >
-                      <div className="absolute -left-[21px] top-4 h-2 w-2 rounded-full border-2 border-app bg-ink-faint" />
-                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleCompare(version.id)}
-                            title="Select to compare"
-                            aria-label={`Select ${version.displayLabel} to compare`}
-                            className="shrink-0 accent-accent"
-                          />
-                          <span className="text-[13px] font-semibold text-ink">{version.displayLabel}</span>
-                          {isCurrent && (
-                            <span className="rounded-full bg-accent-soft px-1.5 py-px text-[10px] font-medium text-accent">
-                              Current
-                            </span>
-                          )}
-                          <span className="text-[11px] text-ink-faint">{relativeTime(version.createdAt)}</span>
-                        </div>
-                        <div
-                          className="items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
-                          style={{
-                            display: "flex",
-                            width: "100%",
-                            minWidth: 0,
-                            maxWidth: "100%",
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => onView(version.id)}
-                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-                          >
-                            <Eye size={12} />
-                            View
-                          </button>
-                          {!isCurrent && (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmVersion(version)}
-                              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-                            >
-                              <RotateCcw size={12} />
-                              Set as current
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => onDuplicate(version)}
-                            aria-label={`Duplicate ${version.displayLabel} as variation`}
-                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-                          >
-                            <GitFork size={12} />
-                            Variation
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onDuplicateAsPrompt(version)}
-                            aria-label={`Duplicate ${version.displayLabel} as new prompt`}
-                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-                          >
-                            <Copy size={12} />
-                            New prompt
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onRename(version)}
-                            aria-label={`Rename ${version.displayLabel}`}
-                            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-                          >
-                            <Pencil size={12} />
-                            Rename
-                          </button>
-                          {!isCurrent && (
-                            <button
-                              type="button"
-                              onClick={() => onDelete(version)}
-                              aria-label={`Delete ${version.displayLabel}`}
-                              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-danger transition-colors hover:bg-danger-soft"
-                            >
-                              <Trash2 size={12} />
-                              Delete
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <p className="mt-1 text-[12px] leading-relaxed text-ink-dim">
-                        {version.changeNote ?? <span className="italic text-ink-faint">No change note</span>}
-                      </p>
-                      <p className="mt-1 flex items-center gap-1 text-[11px] text-ink-faint">
-                        {rating && rating.overall !== null ? (
-                          <>
-                            <Star size={10} className="text-star" fill="currentColor" />
-                            <span className="tabular-nums text-ink-dim">{rating.overall.toFixed(1)} avg</span>
-                            <span>· {rating.count} rating{rating.count > 1 ? "s" : ""}</span>
-                          </>
-                        ) : (
-                          "Not rated"
-                        )}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-2">
+        <span className="text-[11px] font-medium text-ink-faint">History view</span>
+        <div
+          role="group"
+          aria-label="History view"
+          className="flex items-center rounded-md border border-line bg-panel p-0.5"
+        >
+          {(["list", "graph"] as const).map((view) => (
+            <button
+              key={view}
+              type="button"
+              aria-pressed={historyView === view}
+              onClick={() => setHistoryView(view)}
+              className="rounded px-2.5 py-1 text-[11px] font-medium capitalize text-ink-dim transition-colors hover:bg-hover hover:text-ink aria-pressed:bg-accent-soft aria-pressed:text-accent"
+            >
+              {view === "list" ? "List" : "Graph"}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Compare bar */}
-      {selectedVersions.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t border-line bg-panel px-5 py-2.5">
-          <span className="min-w-0 text-[12px] text-ink-dim">
-            {compareOther
-              ? `${compareBase!.displayLabel} ↔ ${compareOther.displayLabel} selected`
-              : `${compareBase!.displayLabel} selected — pick one more version to compare`}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCompareSelection([])}
-              className="rounded-md px-2.5 py-1.5 text-[12px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-            >
-              Clear
-            </button>
-            <button
-              type="button"
-              disabled={!compareBase || !compareOther}
-              onClick={() => {
-                if (compareBase && compareOther) onCompare(compareBase, compareOther);
-              }}
-              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <GitCompare size={12} />
-              Compare {compareBase?.displayLabel ?? ""} ↔ {compareOther?.displayLabel ?? "?"}
-            </button>
-          </div>
-        </div>
+      {historyView === "graph" ? (
+        <HistoryGraphView
+          prompt={prompt}
+          versions={versions}
+          ratingsByVersion={ratingsByVersion}
+          viewingVersionId={viewingVersionId}
+          selectedVersionId={selectedVersionId}
+          compareSelection={compareSelection}
+          onSelect={setSelectedVersionId}
+          onToggleCompare={toggleCompare}
+          actions={actions}
+        />
+      ) : (
+        <HistoryListView
+          currentVersionId={prompt.currentVersionId}
+          versions={versions}
+          viewingVersionId={viewingVersionId}
+          compareSelection={compareSelection}
+          ratingsByVersion={ratingsByVersion}
+          onToggleCompare={toggleCompare}
+          actions={actions}
+        />
       )}
+
+      <HistoryCompareBar
+        base={compareBase}
+        other={compareOther}
+        onClear={() => setCompareSelection([])}
+        onCompare={onCompare}
+      />
 
       <ConfirmDialog
         open={confirmVersion !== null}

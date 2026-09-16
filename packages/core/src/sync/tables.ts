@@ -66,6 +66,7 @@ export const SYNCED_TABLES: readonly SyncedTableDef[] = [
       "description",
       "icon",
       "draft_content",
+      "draft_base_version_id",
       "current_version_id",
       "is_starred",
       "created_at",

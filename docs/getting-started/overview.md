@@ -7,8 +7,8 @@ interface you prefer without copying prompts between tools.
 
 ## What you can do
 
-- Create prompts, save immutable versions, and try variations without losing a
-  known-good version.
+- Create prompts, amend a version or save a new one, and try variations without
+  losing a known-good version.
 - Find prompts with search, tags, collections, stars, notes, and filters.
 - While PromptBranch is running, find, preview, and copy a saved prompt from
   another app with the optional Quick access palette.

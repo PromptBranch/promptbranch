@@ -114,7 +114,7 @@ describe("promptbranch cli", () => {
     });
   });
 
-  it("get accepts an immutable version id", () => {
+  it("get accepts a stable version id", () => {
     const json = runJson<Record<string, unknown>>([
       "get",
       promptId,
@@ -129,7 +129,7 @@ describe("promptbranch cli", () => {
     });
   });
 
-  it("rejects an immutable version id combined with a numeric selector", () => {
+  it("rejects a stable version id combined with a numeric selector", () => {
     const result = run([
       "get",
       promptId,

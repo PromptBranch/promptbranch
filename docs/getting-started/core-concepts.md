@@ -9,25 +9,36 @@ A **prompt** is the item in your library: it has a title, optional description,
 content, and organization such as tags or collections. Creating a prompt also
 creates its first version on the `main` variation.
 
-Edit the prompt as a **draft**. With autosave enabled, your in-progress work
-is retained when you switch prompts or close the app. Choose **Save as new
-version** when the change is worth keeping. Versions are immutable; include a
-short change note so you can understand the reason for each one later.
+Edit the displayed saved version as a **draft**. With autosave enabled, your
+in-progress work is retained against that exact version when you switch prompts
+or close the app. Press <kbd>⌘S</kbd> on macOS or <kbd>Ctrl+S</kbd> on Windows
+and Linux, or choose **Save changes**, to update the displayed version without
+changing its ID, label, number, or place in the version tree.
+
+Choose **Save as new version** when you want to preserve the displayed version
+and create a descendant. Include a short change note so you can understand the
+reason for that new version later.
 
 Version numbers are display labels scoped to a variation. Deleting an older
 version leaves every surviving number unchanged, so gaps such as v1, v3, and
-v4 are normal. The CLI and MCP server also return an immutable `versionId`;
-use that id when automation must keep referring to the exact same revision.
+v4 are normal. The CLI and MCP server return a stable `versionId`; use it when
+automation must keep referring to the same version record. Its content can be
+amended in the desktop app, so save a new version when content itself must stay
+as a historical snapshot.
 
 ## Current version and variations
 
-Each prompt has one **current version**. This is what the CLI and MCP server
-return unless a caller asks for a specific version or variation.
+Each prompt has one **current version**: its preferred/default saved revision.
+This is what search, Quick access, the CLI, and the MCP server open or return
+unless a caller asks for a specific version or variation. **Save changes**
+never moves this pointer. **Save as new version** advances it when the displayed
+base is current; saving a descendant from another historical version preserves
+the current pointer until you deliberately change it.
 
 Use **Duplicate as variation** to explore a different approach. A variation
-starts from a selected version and has its own numbered history, while the
-current version remains unchanged until you deliberately set another version
-as current.
+copies the version currently displayed, opens that new working version, and has
+its own numbered history. The current version remains unchanged until you
+deliberately set another version as current.
 
 ## Runs, ratings, and notes
 

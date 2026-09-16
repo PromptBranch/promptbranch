@@ -33,10 +33,22 @@ interface PalettePreloadApi {
   onClosed(callback: (sessionId: string) => void): () => void;
 }
 
+interface EditorPreloadApi {
+  versions: {
+    create(input: unknown): Promise<unknown>;
+    updateContent(versionId: string, content: string): Promise<unknown>;
+  };
+  drafts: { set(promptId: string, content: string | null, baseVersionId?: string): Promise<void> };
+}
+
 function quickPaletteApi(): PalettePreloadApi {
   const api = electron.exposed as { quickPalette?: PalettePreloadApi };
   expect(api.quickPalette, "preload must expose quickPalette").toBeDefined();
   return api.quickPalette!;
+}
+
+function editorApi(): EditorPreloadApi {
+  return electron.exposed as EditorPreloadApi;
 }
 
 describe("quick palette preload bridge", () => {
@@ -74,6 +86,28 @@ describe("quick palette preload bridge", () => {
       [IPC_CHANNELS.quickPaletteRender, render],
       [IPC_CHANNELS.quickPaletteCopy, copy],
       [IPC_CHANNELS.quickPaletteDismiss, dismiss],
+    ]);
+  });
+
+  it("forwards exact version and draft bases", async () => {
+    const api = editorApi();
+    const version = {
+      promptId: "prompt-1",
+      branchId: "branch-1",
+      baseVersionId: "version-1",
+      content: "next",
+    };
+
+    await api.versions.create(version);
+    await api.versions.updateContent("version-1", "revised");
+    await api.drafts.set("prompt-1", "working", "version-1");
+    await api.drafts.set("prompt-1", null);
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.versionCreate, version],
+      [IPC_CHANNELS.versionUpdateContent, { versionId: "version-1", content: "revised" }],
+      [IPC_CHANNELS.draftSet, { promptId: "prompt-1", content: "working", baseVersionId: "version-1" }],
+      [IPC_CHANNELS.draftSet, { promptId: "prompt-1", content: null }],
     ]);
   });
 

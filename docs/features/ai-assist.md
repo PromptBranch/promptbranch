@@ -30,4 +30,6 @@ To refine an existing prompt with targeted instructions:
 Changes are never applied to your draft automatically:
 - PromptBranch shows the generated or improved result in a preview pane.
 - Review the output, then click **Apply to editor** to load it into your editor, or cancel to discard.
-- Once applied, it becomes part of your editable draft — test it with real models and click **Save as new version** when you're happy with it.
+- Once applied, it becomes part of your editable draft — test it with real
+  models, then choose **Save changes** to amend the displayed version or **Save
+  as new version** to preserve both states.

@@ -517,6 +517,8 @@ export class PromptLibrary {
   createVersion(input: {
     promptId: string;
     branchId: string;
+    /** Exact active version being edited. Legacy callers omit this to use the branch head. */
+    baseVersionId?: string;
     content: string;
     changeNote?: string;
     label?: string;
@@ -532,6 +534,25 @@ export class PromptLibrary {
     return this.db.transaction((): VersionRow => {
       let head = this.getBranchHead(input.branchId);
       const prompt = this.mustGetPrompt(input.promptId);
+      const base =
+        input.baseVersionId !== undefined
+          ? this.get<VersionRow>(
+              "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+              input.baseVersionId,
+              input.promptId,
+            )
+          : head;
+      if (input.baseVersionId !== undefined && !base) {
+        throw new Error(`Version ${input.baseVersionId} not found on prompt ${input.promptId}`);
+      }
+      if (base && base.status !== "active") {
+        throw new Error(`Version ${base.id} is ${base.status} — only active versions can be edited`);
+      }
+      if (base && base.branch_id !== input.branchId) {
+        throw new Error(`Version ${base.id} is not on branch ${input.branchId}`);
+      }
+      const promotePreferred =
+        input.baseVersionId === undefined || prompt.current_version_id === base?.id;
       if (
         branch.name === "main" &&
         head?.number === 1 &&
@@ -539,6 +560,7 @@ export class PromptLibrary {
         head.source === "user" &&
         head.content.length === 0 &&
         prompt.current_version_id === head.id &&
+        base?.id === head.id &&
         input.content.length > 0
       ) {
         const committedAt = now();
@@ -559,7 +581,7 @@ export class PromptLibrary {
           );
         if (initialized.changes === 1) {
           // A title-only prompt starts with an empty v1 placeholder. Its first
-          // real save establishes v1; after that, versions remain append-only.
+          // real save establishes v1; later save-as-new operations append.
           this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", committedAt, input.promptId);
           this.reindexPrompt(input.promptId);
           return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", head.id)!;
@@ -575,7 +597,7 @@ export class PromptLibrary {
         versionId,
         input.promptId,
         input.branchId,
-        head?.id ?? null,
+        base?.id ?? null,
         (head?.number ?? 0) + 1,
         input.label ?? null,
         input.content,
@@ -583,12 +605,16 @@ export class PromptLibrary {
         input.changeNote ?? null,
         now(),
       );
-      this.run(
-        "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
-        versionId,
-        now(),
-        input.promptId,
-      );
+      if (promotePreferred) {
+        this.run(
+          "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
+          versionId,
+          now(),
+          input.promptId,
+        );
+      } else {
+        this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), input.promptId);
+      }
       this.reindexPrompt(input.promptId);
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
     })();
@@ -596,6 +622,31 @@ export class PromptLibrary {
 
   getVersion(versionId: string): VersionRow | null {
     return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId) ?? null;
+  }
+
+  /** Updates the content of one active version without changing its identity or lineage. */
+  updateVersionContent(versionId: string, content: string): VersionRow {
+    return this.db.transaction((): VersionRow => {
+      const version = this.getVersion(versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "active") {
+        throw new Error(
+          `Version ${versionId} is ${version.status} — only active versions can be edited`,
+        );
+      }
+
+      // Runs created before exact prompt snapshots were introduced fall back
+      // to version content. Freeze that historical input before amending it.
+      this.run(
+        "UPDATE runs SET prompt_content = ? WHERE version_id = ? AND prompt_content IS NULL",
+        version.content,
+        versionId,
+      );
+      this.run("UPDATE versions SET content = ? WHERE id = ?", content, versionId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      this.reindexPrompt(version.prompt_id);
+      return this.getVersion(versionId)!;
+    }).immediate();
   }
 
   /** Permanently deletes one non-current version and its dependent execution data. */
@@ -616,6 +667,12 @@ export class PromptLibrary {
       this.run("DELETE FROM runs WHERE version_id = ?", versionId);
       this.run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", versionId);
       this.run("UPDATE notes SET version_id = NULL WHERE version_id = ?", versionId);
+      this.run(
+        `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
+         WHERE id = ? AND draft_base_version_id = ?`,
+        version.prompt_id,
+        versionId,
+      );
       this.run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", versionId);
       const deleted = this.db.prepare("DELETE FROM versions WHERE id = ?").run(versionId);
       if (deleted.changes !== 1) throw new Error(`Version not found: ${versionId}`);
@@ -713,6 +770,11 @@ export class PromptLibrary {
       input.promptId,
     );
     if (!source) throw new Error(`Version ${input.fromVersionId} not found on prompt ${input.promptId}`);
+    if (source.status !== "active") {
+      throw new Error(
+        `Version ${source.id} is ${source.status} — only active versions can start a variation`,
+      );
+    }
     if (this.get<BranchRow>("SELECT * FROM branches WHERE prompt_id = ? AND name = ?", input.promptId, input.name)) {
       throw new Error(`Branch "${input.name}" already exists on prompt ${input.promptId}`);
     }
@@ -886,9 +948,35 @@ export class PromptLibrary {
 
   // ------------------------------------------------------------------ draft
 
-  setDraft(promptId: string, content: string | null): void {
-    this.mustGetPrompt(promptId);
-    this.run("UPDATE prompts SET draft_content = ? WHERE id = ?", content, promptId);
+  setDraft(promptId: string, content: string | null, baseVersionId?: string): void {
+    const prompt = this.mustGetPrompt(promptId);
+    if (content === null) {
+      this.run(
+        "UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL WHERE id = ?",
+        promptId,
+      );
+      return;
+    }
+    const resolvedBaseId = baseVersionId ?? prompt.current_version_id;
+    const base = resolvedBaseId
+      ? this.get<VersionRow>(
+          "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+          resolvedBaseId,
+          promptId,
+        )
+      : null;
+    if (!base) {
+      throw new Error(`Version ${resolvedBaseId ?? "current"} not found on prompt ${promptId}`);
+    }
+    if (base.status !== "active") {
+      throw new Error(`Version ${base.id} is ${base.status} — only active versions can have drafts`);
+    }
+    this.run(
+      "UPDATE prompts SET draft_content = ?, draft_base_version_id = ? WHERE id = ?",
+      content,
+      base.id,
+      promptId,
+    );
   }
 
   getDraft(promptId: string): string | null {
@@ -1822,6 +1910,7 @@ export class PromptLibrary {
 
       // -- prompts: inserted with current_version_id NULL, fixed up after versions
       const pendingCurrentVersion: Array<{ promptId: string; oldVersionId: string }> = [];
+      const pendingDraftBaseVersion: Array<{ promptId: string; oldVersionId: string }> = [];
       for (const prompt of data.tables.prompts) {
         const id = claimId(
           "prompts",
@@ -1835,8 +1924,10 @@ export class PromptLibrary {
               )`,
         );
         this.run(
-          `INSERT INTO prompts (id, title, description, icon, draft_content, current_version_id, is_starred, created_at, updated_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+          `INSERT INTO prompts
+             (id, title, description, icon, draft_content, draft_base_version_id,
+              current_version_id, is_starred, created_at, updated_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
           id,
           prompt.title,
           prompt.description,
@@ -1849,6 +1940,9 @@ export class PromptLibrary {
         );
         if (prompt.current_version_id) {
           pendingCurrentVersion.push({ promptId: id, oldVersionId: prompt.current_version_id });
+        }
+        if (prompt.draft_base_version_id) {
+          pendingDraftBaseVersion.push({ promptId: id, oldVersionId: prompt.draft_base_version_id });
         }
       }
 
@@ -1917,6 +2011,13 @@ export class PromptLibrary {
       for (const pending of pendingCurrentVersion) {
         this.run(
           "UPDATE prompts SET current_version_id = ? WHERE id = ?",
+          remap("versions", pending.oldVersionId),
+          pending.promptId,
+        );
+      }
+      for (const pending of pendingDraftBaseVersion) {
+        this.run(
+          "UPDATE prompts SET draft_base_version_id = ? WHERE id = ?",
           remap("versions", pending.oldVersionId),
           pending.promptId,
         );

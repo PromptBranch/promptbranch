@@ -185,6 +185,29 @@ describe("sync engine", () => {
     expect(b.lib.search("sync content").map((result) => result.promptId)).toEqual([prompt.id]);
   });
 
+  it("propagates an in-place version amendment and refreshes peer search", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Amendment", content: "original quartz phrase" });
+    const versionId = prompt.current_version_id!;
+
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+    const peerRun = b.lib.addRun({ promptId: prompt.id, versionId });
+
+    a.lib.updateVersionContent(versionId, "revised topaz phrase");
+    a.engine.refineDirty(2_000);
+    drain(a.engine, b.engine);
+
+    expect(b.lib.getVersion(versionId)?.content).toBe("revised topaz phrase");
+    expect(b.lib.getPrompt(prompt.id)?.current_version_id).toBe(versionId);
+    expect(b.lib.listRuns(prompt.id).find((run) => run.id === peerRun.id)?.prompt_content).toBe(
+      "original quartz phrase",
+    );
+    expect(b.lib.search("topaz").map((result) => result.promptId)).toEqual([prompt.id]);
+    expect(b.lib.search("quartz")).toEqual([]);
+  });
+
   it("syncs provider model ids that contain the composite-key delimiter", () => {
     const a = rig();
     const b = rig();
@@ -2429,13 +2452,57 @@ describe("sync engine", () => {
     a.engine.refineDirty();
     drain(a.engine, b.engine);
 
-    a.lib.setDraft(prompt.id, "draft from A");
+    const versionId = prompt.current_version_id!;
+    a.lib.setDraft(prompt.id, "draft from A", versionId);
     a.engine.refineDirty(Date.now() + 1_000);
-    b.lib.setDraft(prompt.id, "draft from B");
+    b.lib.setDraft(prompt.id, "draft from B", versionId);
     b.engine.refineDirty(Date.now() + 2_000);
     syncBoth(a, b);
     expect(a.lib.getDraft(prompt.id)).toBe("draft from B");
     expect(b.lib.getDraft(prompt.id)).toBe("draft from B");
+    expect(a.lib.getPrompt(prompt.id)?.draft_base_version_id).toBe(versionId);
+    expect(b.lib.getPrompt(prompt.id)?.draft_base_version_id).toBe(versionId);
+  });
+
+  it("clears a version-bound draft when a direct remote tombstone deletes its base", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Draft deletion", content: "v1" });
+    const main = a.lib.listBranches(prompt.id)[0]!;
+    const v2 = a.lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty(1_000);
+    drain(a.engine, b.engine);
+    b.lib.setDraft(prompt.id, "unfinished v2 edit", v2.id);
+
+    b.engine.applyRemote([
+      fixedOp("delete-author", 1, "versions", v2.id, null, 2_000, "delete"),
+    ]);
+
+    expect(b.lib.getPrompt(prompt.id)).toMatchObject({
+      draft_content: null,
+      draft_base_version_id: null,
+    });
+
+    const row = b.lib.getPrompt(prompt.id)!;
+    b.engine.applyRemote([
+      fixedOp(
+        "late-drafter",
+        1,
+        "prompts",
+        prompt.id,
+        {
+          ...row,
+          draft_content: "concurrent stale draft",
+          draft_base_version_id: v2.id,
+        },
+        Date.now() + 100_000,
+      ),
+    ]);
+    expect(b.lib.getPrompt(prompt.id)).toMatchObject({
+      draft_content: null,
+      draft_base_version_id: null,
+    });
   });
 
   it("bootstraps a pre-sync library by marking every row dirty", () => {

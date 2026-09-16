@@ -9,7 +9,7 @@ This guide walks you through creating your first version-controlled prompt, exec
 1. Launch **PromptBranch**.
 2. Click the **+** button (*New prompt*) at the top of the prompt list — or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> and choose **New Prompt**.
 3. Set a title: **`Code Refactoring Assistant`**, plus a brief description: *Refactors messy code into clean, idiomatic, well-tested functions.*
-4. Leave **Initial content (v1)** empty for this walkthrough. Creating a prompt always creates `main` v1, so the save in Step 2 will create v2. You can also use **Generate with AI…** to draft the initial v1 content before creating the prompt.
+4. Leave **Initial content (v1)** empty for this walkthrough. PromptBranch creates an empty `main` v1 placeholder; the first non-empty save in Step 2 initializes that v1 instead of creating v2. You can also use **Generate with AI…** to create the initial v1 content before creating the prompt.
 5. Optionally select existing tags. New tags are created with the **+** button beside **Tags** in the left rail and can be attached after creation.
 6. Click **Create prompt**.
 
@@ -37,7 +37,12 @@ Code to Refactor:
 Provide the refactored code followed by a bulleted summary of the changes and unit tests.
 ````
 
-When you reach a stable point, click **Save as new version** on the toolbar. In the *Save as v2* dialog, enter a change note (e.g. *"Initial prompt template"*) and click **Save version**. The draft is committed as an immutable version on the `main` branch.
+When you reach a stable point, press <kbd>⌘S</kbd> on macOS or <kbd>Ctrl+S</kbd>
+on Windows and Linux, or click **Save changes** on the toolbar. The draft
+initializes the v1 placeholder on the `main` variation while keeping the same
+version ID. Later edits can update that version the same way. Choose **Save as
+new version** and add a change note when you want to preserve the current text
+and create v2, v3, and so on.
 
 ---
 
@@ -90,7 +95,10 @@ PromptBranch streams the responses in parallel, showing live status per model (*
    ```
 4. Click **Save as new version** with the change note: *"Enforce zero-preamble concise output"*.
 
-The version dropdown groups versions by branch, so you can switch between `main` and `experiment/concise-format` instantly.
+The version dropdown groups versions by branch, so you can switch between
+`main` and `experiment/concise-format` instantly. Creating the variation opens
+its copied v1 for editing but leaves the prompt's current/default version
+unchanged.
 
 ---
 

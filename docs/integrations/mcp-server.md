@@ -47,11 +47,13 @@ Prompt references can be a title or id. Title matching tries an exact match,
 then a case-insensitive match, then a unique substring. If a reference is
 ambiguous, the server returns close matches.
 
-`get_prompt` returns the immutable `versionId` for the content it fetched.
+`get_prompt` returns the stable `versionId` for the version record it fetched.
 Pass that id back as `versionId` to `get_prompt` or `report_run`, or as
-`baseVersionId` to `suggest_variation`, when an agent must keep using the exact
-same revision. The numeric `version` and `baseVersion` selectors are convenient
-for browsing, but they are branch-scoped labels rather than durable pins.
+`baseVersionId` to `suggest_variation`, when an agent must keep using the same
+version identity. A desktop user can amend its content, so fetch it again before
+use when freshness matters. The numeric `version` and `baseVersion` selectors
+are convenient for browsing, but they are branch-scoped labels rather than
+durable pins.
 Version numbers stay unchanged after deletion, so histories can contain gaps;
 paired devices can also reconcile a number created concurrently on both
 devices.

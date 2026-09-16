@@ -6,6 +6,7 @@
 import { useSyncExternalStore } from "react";
 
 export type EditorModePref = "edit" | "preview" | "split";
+export type PromptHistoryViewPref = "list" | "graph";
 
 interface PrefsSchema {
   /** CodeMirror font size in px; applied via the --cm-font-size CSS var. */
@@ -16,6 +17,8 @@ interface PrefsSchema {
   "word-wrap": boolean;
   /** Persist in-progress edits as drafts. Off = edits live only in memory until saved as a version. */
   "autosave-drafts": boolean;
+  /** Presentation used by each prompt's History tab. */
+  "prompt-history-view": PromptHistoryViewPref;
 }
 
 export type PrefKey = keyof PrefsSchema;
@@ -25,6 +28,7 @@ const DEFAULTS: PrefsSchema = {
   "editor-mode": "edit",
   "word-wrap": true,
   "autosave-drafts": true,
+  "prompt-history-view": "list",
 };
 
 // Intentionally keeps the pre-rename "promptbuilder:" prefix: renaming the
@@ -42,6 +46,9 @@ export function getPref<K extends PrefKey>(key: K): PrefsSchema[K] {
     const raw = localStorage.getItem(PREFIX + key);
     if (raw !== null) {
       const parsed: unknown = JSON.parse(raw);
+      if (key === "prompt-history-view" && parsed !== "list" && parsed !== "graph") {
+        return DEFAULTS[key];
+      }
       if (typeof parsed === typeof DEFAULTS[key]) return parsed as PrefsSchema[K];
     }
   } catch {

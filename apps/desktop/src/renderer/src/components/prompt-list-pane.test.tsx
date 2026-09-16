@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AppView } from "../state/app-state";
 import { useAppState } from "../state/app-state";
-import type { PromptDetail, PromptSummary } from "../../../shared/ipc.js";
+import type { PromptDetail, PromptSummary, VersionContentDto } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
 import { PromptListPane } from "./PromptListPane";
@@ -35,12 +35,53 @@ const betaDetail: PromptDetail = {
   ...beta,
   currentVersionId: "version-b3",
   draftContent: null,
+  draftBaseVersionId: null,
   collectionIds: [],
 };
 
-function PaneInView({ view }: { view: AppView }) {
-  const { setView } = useAppState();
+const betaCurrentVersion: VersionContentDto = {
+  id: "version-b3",
+  promptId: beta.id,
+  branchId: "branch-main",
+  branchName: "main",
+  parentVersionId: "version-b2",
+  number: 3,
+  label: null,
+  displayLabel: "v3",
+  changeNote: null,
+  author: "human",
+  createdAt: "2026-09-03T10:00:00.000Z",
+  isCurrent: true,
+  content: "Current beta",
+  contentFormat: "text",
+};
+
+const betaHistoricalVersion: VersionContentDto = {
+  ...betaCurrentVersion,
+  id: "version-b1",
+  parentVersionId: null,
+  number: 1,
+  displayLabel: "v1",
+  isCurrent: false,
+  content: "Original beta",
+};
+
+function PaneInView({
+  view,
+  selectedPromptId,
+  viewingVersionId,
+}: {
+  view: AppView;
+  selectedPromptId?: string;
+  viewingVersionId?: string;
+}) {
+  const { setView, selectPrompt, setViewingVersionId } = useAppState();
   useEffect(() => setView(view), [setView, view.kind, view.collectionId, view.collectionName]);
+  useEffect(() => {
+    if (!selectedPromptId) return;
+    selectPrompt(selectedPromptId);
+    setViewingVersionId(viewingVersionId ?? null);
+  }, [selectPrompt, selectedPromptId, setViewingVersionId, viewingVersionId]);
   return <PromptListPane />;
 }
 
@@ -56,6 +97,11 @@ beforeEach(() => {
   bridge = installMockBridge();
   bridge.prompts.list.mockResolvedValue([alpha, beta]);
   bridge.prompts.get.mockImplementation(async (id) => (id === beta.id ? betaDetail : null));
+  bridge.versions.get.mockImplementation(async (id) => {
+    if (id === betaCurrentVersion.id) return betaCurrentVersion;
+    if (id === betaHistoricalVersion.id) return betaHistoricalVersion;
+    return null;
+  });
   bridge.collections.list.mockResolvedValue([
     { id: "collection-1", name: "Work", sortOrder: 0, promptCount: 0 },
   ]);
@@ -71,7 +117,7 @@ describe("PromptListPane context menu", () => {
     expect(menu.getByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Move to collection…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Duplicate as new prompt…" })).toBeInTheDocument();
-    expect(menu.getByRole("menuitem", { name: "Duplicate current version as variation…" })).toBeInTheDocument();
+    expect(menu.getByRole("menuitem", { name: "Duplicate selected version as variation…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Export prompt JSON" })).toBeInTheDocument();
     await user.click(menu.getByRole("menuitem", { name: "Star" }));
 
@@ -133,7 +179,7 @@ describe("PromptListPane context menu", () => {
     renderApp(<PaneInView view={{ kind: "library" }} />);
 
     const menu = await openPromptMenu(user);
-    await user.click(menu.getByRole("menuitem", { name: "Duplicate current version as variation…" }));
+    await user.click(menu.getByRole("menuitem", { name: "Duplicate selected version as variation…" }));
     await user.type(await screen.findByLabelText("Variation name"), "concise");
     await user.click(screen.getByRole("button", { name: "Create variation" }));
 
@@ -144,7 +190,49 @@ describe("PromptListPane context menu", () => {
         fromVersionId: "version-b3",
       }),
     );
-    expect(bridge.versions.setCurrent).toHaveBeenCalledWith(beta.id, "version-new");
+    expect(bridge.versions.setCurrent).not.toHaveBeenCalled();
+  });
+
+  it("duplicates the displayed historical version instead of the preferred version", async () => {
+    bridge.branches.create.mockResolvedValue({
+      branch: {
+        id: "branch-new",
+        name: "original",
+        description: null,
+        createdAt: "2026-09-03T10:00:00.000Z",
+      },
+      version: {
+        ...betaHistoricalVersion,
+        id: "version-new",
+        branchId: "branch-new",
+        branchName: "original",
+        parentVersionId: betaHistoricalVersion.id,
+        displayLabel: "original v1",
+      },
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <PaneInView
+        view={{ kind: "library" }}
+        selectedPromptId={beta.id}
+        viewingVersionId={betaHistoricalVersion.id}
+      />,
+    );
+
+    const menu = await openPromptMenu(user);
+    await user.click(menu.getByRole("menuitem", { name: "Duplicate selected version as variation…" }));
+    expect(await screen.findByRole("dialog", { name: "Duplicate v1 as variation" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Variation name"), "original");
+    await user.click(screen.getByRole("button", { name: "Create variation" }));
+
+    await waitFor(() =>
+      expect(bridge.branches.create).toHaveBeenCalledWith({
+        promptId: beta.id,
+        name: "original",
+        fromVersionId: betaHistoricalVersion.id,
+      }),
+    );
+    expect(bridge.versions.setCurrent).not.toHaveBeenCalled();
   });
 
   it("duplicates the current version as a new prompt", async () => {
@@ -170,6 +258,38 @@ describe("PromptListPane context menu", () => {
         promptId: beta.id,
         versionId: "version-b3",
         title: "Beta standalone",
+      }),
+    );
+  });
+
+  it("duplicates the displayed historical version as a new prompt", async () => {
+    bridge.prompts.duplicate.mockResolvedValue({
+      ...betaDetail,
+      id: "prompt-original-copy",
+      title: "Beta original",
+      currentVersionId: "copy-v1",
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <PaneInView
+        view={{ kind: "library" }}
+        selectedPromptId={beta.id}
+        viewingVersionId={betaHistoricalVersion.id}
+      />,
+    );
+
+    const menu = await openPromptMenu(user);
+    await user.click(menu.getByRole("menuitem", { name: "Duplicate as new prompt…" }));
+    const title = await screen.findByLabelText("Title");
+    await user.clear(title);
+    await user.type(title, "Beta original");
+    await user.click(screen.getByRole("button", { name: "Duplicate" }));
+
+    await waitFor(() =>
+      expect(bridge.prompts.duplicate).toHaveBeenCalledWith({
+        promptId: beta.id,
+        versionId: betaHistoricalVersion.id,
+        title: "Beta original",
       }),
     );
   });

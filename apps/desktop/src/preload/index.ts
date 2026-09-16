@@ -45,12 +45,18 @@ const api: PromptBuilderApi = {
     list: (promptId) => invoke(IPC_CHANNELS.versionList, promptId),
     get: (versionId) => invoke(IPC_CHANNELS.versionGet, versionId),
     setCurrent: (promptId, versionId) => invoke(IPC_CHANNELS.versionSetCurrent, { promptId, versionId }),
+    updateContent: (versionId, content) =>
+      invoke(IPC_CHANNELS.versionUpdateContent, { versionId, content }),
     updateLabel: (versionId, label) => invoke(IPC_CHANNELS.versionUpdateLabel, { versionId, label }),
     delete: (versionId) => invoke(IPC_CHANNELS.versionDelete, { versionId }),
   },
   drafts: {
     get: (promptId) => invoke(IPC_CHANNELS.draftGet, promptId),
-    set: (promptId, content) => invoke(IPC_CHANNELS.draftSet, { promptId, content }),
+    set: (...[promptId, content, baseVersionId]) =>
+      invoke(
+        IPC_CHANNELS.draftSet,
+        content === null ? { promptId, content } : { promptId, content, baseVersionId },
+      ),
   },
   branches: {
     list: (promptId) => invoke(IPC_CHANNELS.branchList, promptId),

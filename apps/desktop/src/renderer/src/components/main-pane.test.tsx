@@ -57,6 +57,7 @@ const prompt: PromptDetail = {
   deletedAt: null,
   currentVersionId: "v-1",
   draftContent: null,
+  draftBaseVersionId: null,
   collectionIds: [],
 };
 
@@ -446,12 +447,83 @@ describe("MainPane restored prompt editing", () => {
     view.unmount();
 
     await waitFor(() =>
-      expect(bridge.drafts.set).toHaveBeenCalledWith(prompt.id, "Restored edit"),
+      expect(bridge.drafts.set).toHaveBeenCalledWith(prompt.id, "Restored edit", version.id),
     );
   });
 });
 
 describe("MainPane version actions", () => {
+  it("opens a new variation from the displayed version without changing the preferred version", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    const variationVersion: VersionDto = {
+      ...historicalVersion,
+      id: "alt-v1",
+      branchId: "branch-alt",
+      branchName: "alt",
+      parentVersionId: historicalVersion.id,
+      displayLabel: "alt v1",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === currentVersion.id
+        ? currentVersion
+        : versionId === variationVersion.id
+          ? variationVersion
+          : historicalVersion),
+      content: versionId === currentVersion.id ? "Current content" : "Historical content",
+      contentFormat: "markdown",
+    }));
+    bridge.branches.create.mockImplementation(async () => {
+      listedVersions = [...listedVersions, variationVersion];
+      return {
+        branch: {
+          id: "branch-alt",
+          promptId: prompt.id,
+          name: "alt",
+          description: null,
+          createdAt: "2026-08-01T09:00:00Z",
+        },
+        version: variationVersion,
+      };
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    screen.getByRole("button", { name: "More actions" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Duplicate as variation…",
+      }),
+    );
+    await user.type(await screen.findByLabelText("Variation name"), "alt");
+    await user.click(screen.getByRole("button", { name: "Create variation" }));
+
+    await waitFor(() =>
+      expect(bridge.branches.create).toHaveBeenCalledWith({
+        promptId: prompt.id,
+        name: "alt",
+        fromVersionId: historicalVersion.id,
+      }),
+    );
+    expect(bridge.versions.setCurrent).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /alt v1/i })).toBeInTheDocument();
+  });
+
   it("duplicates the historical version being viewed into a new prompt", async () => {
     const historicalVersion: VersionDto = { ...version, isCurrent: false };
     const currentVersion: VersionDto = {

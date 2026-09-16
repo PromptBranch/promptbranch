@@ -77,7 +77,7 @@ const versionId = z
   .string()
   .min(1)
   .optional()
-  .describe("Immutable version id; cannot be combined with a version number or branch");
+  .describe("Stable version id; cannot be combined with a version number or branch");
 const versionNumber = z.number().int().positive().optional().describe("Per-branch version number; defaults to the current version");
 const branchName = z.string().min(1).optional().describe("Branch name; defaults to the current version's branch");
 const promptVariables = z
@@ -278,7 +278,7 @@ server.registerTool(
     inputSchema: {
       prompt: promptRef,
       baseVersionId: versionId.describe(
-        "Immutable base version id; cannot be combined with baseVersion",
+        "Stable base version id; cannot be combined with baseVersion",
       ),
       baseVersion: versionNumber.describe("Version number to base the suggestion on; defaults to current"),
       newContent: z.string().min(1),

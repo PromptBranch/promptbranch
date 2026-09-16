@@ -62,6 +62,7 @@ import {
   versionCreateSchema,
   versionDeleteSchema,
   versionSetCurrentSchema,
+  versionUpdateContentSchema,
   versionUpdateLabelSchema,
   type ActivityItemDto,
   type BranchCreateResult,
@@ -125,6 +126,7 @@ import {
 } from "./backup-scheduler.js";
 import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
+import { logRendererConsoleMessage } from "./logger.js";
 import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
 import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
 import { applyQaUserDataOverride } from "./qa-profile.js";
@@ -268,6 +270,7 @@ function toDetail(prompt: PromptRow): PromptDetail {
     ...toPromptSummary(prompt, tagsForPrompt(prompt.id), currentVersionLabelFor(prompt)),
     currentVersionId: prompt.current_version_id,
     draftContent: prompt.draft_content,
+    draftBaseVersionId: prompt.draft_base_version_id,
     collectionIds: lib.listCollectionIdsForPrompt(prompt.id),
   };
 }
@@ -401,6 +404,13 @@ function registerIpcHandlers(): void {
     lib.setCurrentVersion(promptId, versionId);
   });
 
+  ipcMain.handle(IPC_CHANNELS.versionUpdateContent, (_e, payload: unknown) => {
+    const { versionId, content } = versionUpdateContentSchema.parse(payload);
+    const version = lib.updateVersionContent(versionId, content);
+    const prompt = lib.getPrompt(version.prompt_id);
+    return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
+  });
+
   ipcMain.handle(IPC_CHANNELS.versionUpdateLabel, (_e, payload: unknown) => {
     const { versionId, label } = versionUpdateLabelSchema.parse(payload);
     const version = lib.updateVersionLabel(versionId, label);
@@ -426,8 +436,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.draftSet, (_e, payload: unknown) => {
-    const { promptId, content } = draftSetSchema.parse(payload);
-    lib.setDraft(promptId, content);
+    const input = draftSetSchema.parse(payload);
+    lib.setDraft(input.promptId, input.content, "baseVersionId" in input ? input.baseVersionId : undefined);
   });
 
   // -------------------------------------------------------------- branches
@@ -1144,8 +1154,7 @@ function createWindow(): BrowserWindow {
   if (process.env["ELECTRON_RENDERER_URL"]) {
     window.webContents.on("console-message", (event) => {
       const { level, message } = event as unknown as { level: number; message: string };
-      const name = ["verbose", "info", "warning", "error"][level] ?? String(level);
-      console.log(`[renderer:${name}] ${message.slice(0, 500)}`);
+      logRendererConsoleMessage(console, level, message);
     });
   }
 

@@ -34,8 +34,8 @@ control of your data and approve changes before they are saved.
 - 📋 **Copy prompts from another app** while PromptBranch is running with the
   optional Quick access palette, a configurable global shortcut, variable
   inputs, and an exact text preview.
-- 🌿 **Track versions** with branches, immutable revision IDs, stable history
-  labels, change notes, diffs, and duplicate-as-variation workflows.
+- 🌿 **Track versions** with branches, stable version IDs, amend-in-place and
+  save-as-new actions, history labels, change notes, diffs, and variations.
 - 🧪 **Evaluate results** with four-dimension ratings, a Results run log,
   side-by-side comparison, an LLM judge, and an evaluation summary.
 
@@ -205,10 +205,11 @@ record-level changes over mutually-pinned TLS. Enable it in
 - **How it works**: every change (from the app, the CLI or the MCP server —
   they share the database file) is captured into a local op log with
   logical-clock revisions; peers exchange the ops they're missing and merge
-  them deterministically. Append-only records (versions, notes, ratings,
-  runs) union by id; small mutable fields resolve last-writer-wins; same-name
+  them deterministically. Independently created records union by id; changes
+  to the same record resolve last-writer-wins; same-name
   tags/collections/branches merge into one row. Concurrent edits to a prompt
-  simply produce concurrent versions in its history.
+  produce both versions when saved separately, while concurrent amendments to
+  the same version resolve deterministically.
 - **Trust**: each device has a self-signed certificate; the 8-character
   pairing code is derived from the accepting device's certificate
   fingerprint, so a man-in-the-middle on the network produces a mismatching

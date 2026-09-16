@@ -217,6 +217,25 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     versionList.find((v) => v.id === prompt.currentVersionId) ??
     null;
   const isViewingCurrent = viewingVersion !== null && viewingVersion.id === prompt.currentVersionId;
+  const viewingDraftContent =
+    viewingVersion &&
+    prompt.draftContent !== null &&
+    (prompt.draftBaseVersionId === viewingVersion.id ||
+      (prompt.draftBaseVersionId === null && isViewingCurrent))
+      ? prompt.draftContent
+      : null;
+  const nextViewingVersionNumber = viewingVersion
+    ? Math.max(
+        0,
+        ...versionList
+          .filter((candidate) => candidate.branchId === viewingVersion.branchId)
+          .map((candidate) => candidate.number),
+      ) + 1
+    : 1;
+  const handleVersionCreated = useCallback(
+    (created: VersionDto) => setViewingVersionId(created.isCurrent ? null : created.id),
+    [setViewingVersionId],
+  );
 
   const { data: versionContent } = useVersionContent(viewingVersion?.id ?? null);
 
@@ -318,7 +337,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       return window.promptBuilder.ai.run({
         promptId: prompt.id,
         ...(viewingVersion ? { versionId: viewingVersion.id } : {}),
-        content: liveContentRef.current ?? prompt.draftContent ?? versionContent?.content ?? "",
+        content: liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "",
         variables: input.variables,
         modelRefs: input.refs,
       });
@@ -399,7 +418,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     }
     setModelSelection(valid);
     setRunModelSelection(prompt.id, valid);
-    const content = liveContentRef.current ?? prompt.draftContent ?? versionContent?.content ?? "";
+    const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
     const names = extractVariableNames(content);
     if (!skipVariables && names.length > 0) {
       setPendingRefs(valid);
@@ -494,8 +513,8 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     { toast: "Rating saved" },
   );
 
-  // "Duplicate as variation": branch from the source version, make the new
-  // branch head current so it is immediately editable, then switch to it.
+  // A new variation becomes the working version without replacing the
+  // preferred version used by Quick Access, CLI, and MCP.
   const duplicateAsVariation = async (name: string, description: string) => {
     const source = duplicateSource;
     if (!source) return;
@@ -505,10 +524,9 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       fromVersionId: source.id,
       ...(description ? { description } : {}),
     });
-    await window.promptBuilder.versions.setCurrent(prompt.id, result.version.id);
     await queryClient.invalidateQueries();
     toast(`Variation "${name}" created`);
-    setViewingVersionId(null);
+    setViewingVersionId(result.version.id);
     setActiveTab("prompt");
   };
 
@@ -773,7 +791,10 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
                 key={`${prompt.id}:${viewingVersion.id}`}
                 prompt={prompt}
                 version={versionContent}
-                isCurrent={isViewingCurrent && !inTrash}
+                isCurrent={isViewingCurrent}
+                isEditable={!inTrash}
+                nextVersionNumber={nextViewingVersionNumber}
+                onVersionCreated={handleVersionCreated}
                 liveContentRef={liveContentRef}
               />
             ) : (
@@ -842,9 +863,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         onOpenChange={setShareOpen}
         prompt={prompt}
         content={
-          isViewingCurrent
-            ? (liveContentRef.current ?? prompt.draftContent ?? versionContent?.content)
-            : versionContent?.content
+          liveContentRef.current ?? viewingDraftContent ?? versionContent?.content
         }
       />
       <NameDialog

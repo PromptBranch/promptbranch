@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/desktop",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "license": "MIT",
   "description": "PromptBranch desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
@@ -159,6 +159,7 @@
     "@radix-ui/react-tooltip": "^1.2.16",
     "@tanstack/react-query": "^5.102.6",
     "@uiw/react-codemirror": "^4.25.11",
+    "@xyflow/react": "^12.11.6",
     "better-sqlite3": "13.0.3",
     "bonjour-service": "^1.4.4",
     "codemirror": "^6.0.2",

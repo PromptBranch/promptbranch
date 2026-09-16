@@ -59,9 +59,31 @@ describe("migrations", () => {
     }
     const runColumns = db.pragma("table_info(runs)") as Array<{ name: string }>;
     expect(runColumns.map((column) => column.name)).toContain("prompt_content");
+    const promptColumns = db.pragma("table_info(prompts)") as Array<{ name: string }>;
+    expect(promptColumns.map((column) => column.name)).toContain("draft_base_version_id");
     // WAL is not applicable to in-memory databases; asserted on file DBs below.
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     db.close();
+  });
+
+  it("migration 13 adds a nullable draft base without changing existing drafts", () => {
+    const dbPath = tmpDbPath();
+    const seeded = openDatabase(dbPath).db;
+    const lib = new PromptLibrary(seeded);
+    const prompt = lib.createPrompt({ title: "Legacy draft", content: "saved" });
+    lib.setDraft(prompt.id, "legacy draft");
+    seeded.prepare("UPDATE prompts SET draft_base_version_id = NULL WHERE id = ?").run(prompt.id);
+    seeded.pragma("user_version = 12");
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(13);
+    expect(
+      migrated.db
+        .prepare("SELECT draft_content, draft_base_version_id FROM prompts WHERE id = ?")
+        .get(prompt.id),
+    ).toEqual({ draft_content: "legacy draft", draft_base_version_id: null });
+    migrated.db.close();
   });
 
   it("migrating a fresh file DB creates no backup and uses WAL", () => {
@@ -98,7 +120,7 @@ describe("migrations", () => {
 
     const migrated = openDatabase(dbPath);
 
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(12);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(
       migrated.db.prepare("SELECT value FROM settings WHERE key = 'model_catalog'").get(),
     ).toEqual({ value: "offline-cache" });

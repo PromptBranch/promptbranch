@@ -7,7 +7,8 @@ Use search and organization tools to keep a growing library easy to browse.
 Press <kbd>⌘K</kbd> on macOS or <kbd>Ctrl+K</kbd> on Windows and Linux to open
 search. It finds prompt titles, descriptions, tags, notes, and saved version
 content. Start typing a word or part of a word, then select a result to open
-the prompt.
+the prompt in **Library** on its current/default saved version. If several
+versions of one prompt match, the prompt appears once.
 
 The smaller field above the prompt list filters the visible list by title,
 description, and tags. Use the full search when you need to find text from an

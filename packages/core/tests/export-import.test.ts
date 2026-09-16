@@ -55,7 +55,7 @@ function populate(library: PromptLibrary) {
     metrics: { tokens: 100 },
   });
   library.addPromptToCollection(collection.id, prompt.id, 3);
-  library.setDraft(prompt.id, "draft text");
+  library.setDraft(prompt.id, "draft text", v2.id);
   library.setStarred(prompt.id, true);
   // Re-fetch so current_version_id reflects setCurrentVersion above.
   return { prompt: library.getPrompt(prompt.id)!, tag, collection };
@@ -100,6 +100,7 @@ describe("export/import", () => {
     const imported = freshLib.getPrompt(prompt.id)!;
     expect(imported.title).toBe("Reviewer");
     expect(imported.draft_content).toBe("draft text");
+    expect(imported.draft_base_version_id).toBe(prompt.current_version_id);
     expect(imported.is_starred).toBe(1);
     expect(imported.current_version_id).toBe(prompt.current_version_id);
 

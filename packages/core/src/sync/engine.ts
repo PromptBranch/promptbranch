@@ -162,7 +162,7 @@ const MERGE_TABLES = new Set<SyncedTableName>(["tags", "collections", "branches"
  * desktop peer service (and tests) drive it; it never touches the network.
  *
  * Convergence rules:
- * - append-only rows union by primary key (UUIDs never collide);
+ * - independently created rows union by primary key (UUIDs never collide);
  * - mutable rows resolve by (HLC, deviceId) last-writer-wins;
  * - prompt hard deletion is terminal for the prompt and its owned aggregate;
  * - share revocation is grow-only and keeps the earliest non-null timestamp;
@@ -719,7 +719,7 @@ export class SyncEngine {
                   payload = { ...payload, version_id: null };
                 } else {
                   // Runs and version ratings have no meaning without their
-                  // immutable input version. Consume them without leaving
+                  // input version identity. Consume them without leaving
                   // an FK orphan or allowing a later sync to restore them.
                   if (wins) {
                     this.applyDelete(def, recordId, touchedPrompts, touchedBranches, op.hlc);
@@ -1673,6 +1673,15 @@ export class SyncEngine {
       }
       case "prompts": {
         let pointer = payload["current_version_id"];
+        let draftContent = payload["draft_content"];
+        let draftBaseVersionId = payload["draft_base_version_id"];
+        if (
+          typeof draftContent !== "string" ||
+          (typeof draftBaseVersionId === "string" && this.hasVersionTombstone(draftBaseVersionId))
+        ) {
+          draftContent = null;
+          draftBaseVersionId = null;
+        }
         if (typeof pointer === "string") {
           const present = this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(pointer);
           if (this.hasVersionTombstone(pointer)) {
@@ -1699,7 +1708,16 @@ export class SyncEngine {
               .run(String(payload["id"]));
           }
         }
-        this.upsertRow(def, { ...payload, current_version_id: pointer }, []);
+        this.upsertRow(
+          def,
+          {
+            ...payload,
+            draft_content: draftContent,
+            draft_base_version_id: draftBaseVersionId,
+            current_version_id: pointer,
+          },
+          [],
+        );
         touchedPrompts.add(String(payload["id"]));
         return;
       }
@@ -1709,10 +1727,28 @@ export class SyncEngine {
           typeof parentId === "string" && this.hasVersionTombstone(parentId)
             ? { ...payload, parent_version_id: null }
             : payload;
+        const versionId = String(normalized["id"]);
+        const local = this.db
+          .prepare("SELECT content FROM versions WHERE id = ?")
+          .get(versionId) as { content: string } | undefined;
+        if (
+          local !== undefined &&
+          typeof normalized["content"] === "string" &&
+          local.content !== normalized["content"]
+        ) {
+          // Exact run inputs stay device-local because substituted variables
+          // may contain secrets. Preserve the old version fallback locally
+          // before a winning remote amendment replaces that content.
+          this.db
+            .prepare(
+              "UPDATE runs SET prompt_content = ? WHERE version_id = ? AND prompt_content IS NULL",
+            )
+            .run(local.content, versionId);
+        }
         this.upsertRow(def, normalized, []);
         touchedPrompts.add(String(normalized["prompt_id"]));
         touchedBranches.add(String(normalized["branch_id"]));
-        this.fulfillPendingPointer(String(normalized["id"]));
+        this.fulfillPendingPointer(versionId);
         return;
       }
       case "notes":
@@ -1847,6 +1883,11 @@ export class SyncEngine {
            AND target_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
           id,
         );
+        run(
+          `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
+           WHERE draft_base_version_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
+          id,
+        );
         run("UPDATE notes SET version_id = NULL WHERE version_id IN (SELECT id FROM versions WHERE branch_id = ?)", id);
         run(
           `UPDATE versions SET parent_version_id = NULL
@@ -1883,6 +1924,11 @@ export class SyncEngine {
         }
         run("DELETE FROM runs WHERE version_id = ?", id);
         run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", id);
+        run(
+          `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
+           WHERE draft_base_version_id = ?`,
+          id,
+        );
         run("UPDATE notes SET version_id = NULL WHERE version_id = ?", id);
         run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", id);
         run("DELETE FROM sync_pending_pointers WHERE version_id = ?", id);

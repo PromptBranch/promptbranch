@@ -93,7 +93,7 @@ describe("resolveVersion", () => {
     expect(resolveVersion(lib, prompt.id, { branch: "CONCISE", version: 1 }).version.id).toBe(branchV1.id);
   });
 
-  it("resolves an active version by immutable id and scopes it to the prompt", () => {
+  it("resolves an active version by stable id and scopes it to the prompt", () => {
     const { prompt, v1 } = seed();
     const other = lib.createPrompt({ title: "Other", content: "other" });
 

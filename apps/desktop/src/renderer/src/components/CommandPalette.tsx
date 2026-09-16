@@ -150,13 +150,17 @@ export function CommandPalette() {
   const items = useMemo<CommandItem[]>(() => {
     const trimmed = query.trim();
     if (!trimmed) return commands;
-    const promptItems: CommandItem[] = results.map((r) => ({
+    const uniqueResults = Array.from(
+      new Map(results.map((result) => [result.promptId, result])).values(),
+    );
+    const promptItems: CommandItem[] = uniqueResults.map((r) => ({
       id: `prompt:${r.promptId}`,
       kind: "prompt",
       title: r.title,
       hint: r.snippet || undefined,
       icon: <FileText size={14} />,
       run: () => {
+        setView({ kind: "library" });
         selectPrompt(r.promptId);
         close();
       },

@@ -21,7 +21,7 @@ export interface ResolvedVersion {
 /**
  * Picks a concrete active version of a prompt for agent/CLI reads.
  * - No options: the prompt's current version.
- * - `versionId`: that exact immutable version.
+ * - `versionId`: that exact stable version record.
  * - `branch` only: the head of that branch.
  * - `version` (number): that numbered version, on `branch` if given, else on
  *   the current version's branch.

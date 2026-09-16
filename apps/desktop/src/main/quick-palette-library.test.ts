@@ -148,6 +148,22 @@ describe("resolveQuickPalette", () => {
     });
   });
 
+  it("keeps resolving the preferred version after a variation is created", () => {
+    const prompt = library.createPrompt({ title: "Preferred", content: "production text" });
+    const preferredVersionId = prompt.current_version_id!;
+    const variation = library.createBranch({
+      promptId: prompt.id,
+      name: "experiment",
+      fromVersionId: preferredVersionId,
+    });
+
+    expect(resolveQuickPalette(library, prompt.id)).toMatchObject({
+      versionId: preferredVersionId,
+      templateContent: "production text",
+    });
+    expect(variation.version.id).not.toBe(preferredVersionId);
+  });
+
   it("rejects missing, soft-deleted, and current-inactive prompts", () => {
     const deleted = library.createPrompt({ title: "Deleted", content: "x" });
     library.softDeletePrompt(deleted.id);

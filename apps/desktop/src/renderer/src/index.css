@@ -247,3 +247,89 @@ textarea {
 [data-separator="active"] {
   background: var(--color-accent);
 }
+
+/* Prompt history graph. React Flow ships its own neutral palette; keep the
+   canvas, branch edges, and focus states on PromptBranch theme variables so
+   the view follows both dark and light mode without a second theme system. */
+.pb-history-graph .react-flow {
+  --xy-background-color: var(--color-app);
+  --xy-background-pattern-color: var(--pb-line-strong);
+  --xy-edge-stroke: var(--pb-line-strong);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--pb-accent);
+  --xy-handle-background-color: var(--pb-ink-faint);
+  --xy-handle-border-color: var(--pb-panel);
+}
+
+.pb-history-graph .react-flow__background-pattern.dots {
+  opacity: 0.6;
+}
+
+.pb-history-graph .react-flow__pane {
+  cursor: grab;
+}
+
+.pb-history-graph .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.pb-history-graph .react-flow__node {
+  cursor: pointer;
+}
+
+.pb-history-graph .pb-history-node {
+  transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
+}
+
+.pb-history-graph .pb-history-node:hover {
+  border-color: var(--pb-accent);
+}
+
+.pb-history-graph .pb-history-node:focus-visible {
+  outline: 2px solid var(--pb-accent);
+  outline-offset: 3px;
+}
+
+.pb-history-graph .pb-history-node input:focus-visible {
+  outline: 2px solid var(--pb-accent);
+  outline-offset: 2px;
+}
+
+.pb-history-graph .pb-history-edge-continuation .react-flow__edge-path {
+  stroke: var(--pb-line-strong);
+}
+
+.pb-history-graph .pb-history-edge-variation .react-flow__edge-path {
+  stroke: var(--pb-accent);
+  stroke-dasharray: 5 4;
+}
+
+.pb-history-graph-legend {
+  backdrop-filter: blur(8px);
+}
+
+@media (max-width: 640px) {
+  .pb-history-graph-legend {
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+  }
+
+  .pb-history-graph-legend span {
+    gap: 0.25rem;
+  }
+
+  .pb-history-graph-legend > span > span {
+    width: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-history-graph *,
+  .pb-history-graph *::before,
+  .pb-history-graph *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}

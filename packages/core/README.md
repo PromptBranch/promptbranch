@@ -61,8 +61,8 @@ path as `backupPath`; otherwise that value is `null`.
 
 ## Resolve an exact version
 
-Each version has an immutable id. Use it with `resolveVersion()` when a saved
-workflow must keep referring to the exact same prompt content:
+Each version has a stable id. Use it with `resolveVersion()` when a saved
+workflow must keep referring to the same version record:
 
 ```js
 import { resolveVersion } from "@promptbranch/core";
@@ -76,8 +76,9 @@ console.log(exact.version.content);
 
 Numeric version labels are scoped to a branch. Deleting an older version does
 not renumber the surviving history, so gaps are normal. Paired devices may
-also reconcile a true concurrent number collision; use the immutable id as
-the durable reference for automation.
+also reconcile a true concurrent number collision; use the stable id as the
+durable identity for automation. Desktop users can amend that version's
+content, so create a new version when the content must remain a snapshot.
 
 ## Main exports
 
@@ -90,7 +91,7 @@ the durable reference for automation.
 - `extractPromptVariables()`, `missingPromptVariables()`, and
   `substitutePromptVariables()` — `{{variable}}` discovery and substitution.
 - `resolvePrompt()` and `resolveVersion()` — id/title and version reference
-  resolution, including exact lookup by immutable version id.
+  resolution, including exact lookup by stable version id.
 - `SyncEngine` and hybrid logical clock helpers — transport-independent sync
   primitives.
 

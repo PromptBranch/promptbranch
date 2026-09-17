@@ -76,13 +76,36 @@ function waitForSuccessfulExit(child: ReturnType<typeof spawn>, timeoutMs: numbe
 }
 
 function observeExit(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null) return Promise.resolve();
-  return new Promise((resolve) => child.once("exit", () => resolve()));
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const settle = (): void => {
+      child.off("exit", settle);
+      child.off("close", settle);
+      child.off("error", settle);
+      resolve();
+    };
+    child.once("exit", settle);
+    child.once("close", settle);
+    child.once("error", settle);
+  });
 }
 
 beforeEach(() => {
   db = openMemoryDatabase();
   lib = new PromptLibrary(db);
+});
+
+describe("test process cleanup", () => {
+  it("settles observation when a child fails before emitting exit", async () => {
+    const scratchDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "promptbranch-spawn-failure-"));
+    const child = spawn(path.join(scratchDirectory, "missing-executable"), [], { stdio: "ignore" });
+
+    try {
+      await observeExit(child);
+    } finally {
+      fs.rmSync(scratchDirectory, { recursive: true, force: true });
+    }
+  }, 1_000);
 });
 
 describe("prompts", () => {

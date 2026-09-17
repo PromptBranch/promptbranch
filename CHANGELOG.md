@@ -6,8 +6,12 @@ notes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-17
+
 ### Fixed
 
+- Repair version-bound drafts for libraries whose earlier schema marker skipped
+  the draft-base column migration, so automatic draft saves work reliably.
 - Reject incompatible device-to-device sync payload schemas before pairing or
   applying remote changes. Protocol 4 requires sync schema 13, so every paired
   desktop or mobile device must be upgraded before sync can resume.
@@ -31,6 +35,14 @@ notes.
 - A mobile release must implement protocol 4 and sync schema 13 and pass a
   physical desktop-to-mobile interoperability test before mobile sync
   compatibility is considered release-ready.
+
+### Packages
+
+- `@promptbranch/desktop` 0.7.0
+- `@promptbranch/core` 0.2.5
+- `@promptbranch/share` 0.2.2
+- `@promptbranch/cli` 0.2.6
+- `@promptbranch/mcp` 0.2.8
 
 ## [0.6.0] - 2026-09-16
 
@@ -104,6 +116,7 @@ notes.
   persistence, and hard-delete convergence.
 - Harden share-size validation, secret scanning, and import boundaries.
 
+[0.7.0]: https://github.com/PromptBranch/promptbranch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PromptBranch/promptbranch/compare/v0.5.0...v0.6.0
 [0.3.1]: https://github.com/PromptBranch/promptbranch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/PromptBranch/promptbranch/releases/tag/v0.3.0

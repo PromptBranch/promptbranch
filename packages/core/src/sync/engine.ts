@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { SqliteError } from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
-import { reindexPrompt } from "../reindex.js";
+import {
+  deletePromptSearchRows,
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+} from "../reindex.js";
 import { compareHlc, formatHlc, parseHlc } from "./hlc.js";
 import {
   SYNCED_TABLES,
@@ -12,6 +16,12 @@ import {
   type SyncedTableDef,
   type SyncedTableName,
 } from "./tables.js";
+
+interface SearchChanges {
+  // Sets deduplicate owners changed by both a parent op and its junction ops.
+  metadata: Set<string>;
+  versions: Set<string>;
+}
 
 /** One record-level change, as it travels between devices. */
 export interface SyncOp {
@@ -513,7 +523,7 @@ export class SyncEngine {
       const alreadyApplying = this.getMeta("applying") !== null;
       if (!alreadyApplying) this.setMeta("applying", "1");
       try {
-        const touchedPrompts = new Set<string>();
+        const touchedSearch: SearchChanges = { metadata: new Set(), versions: new Set() };
         const touchedBranches = new Set<string>();
         // Migration v11 reduces every natural-key component in one pass. The
         // junction histories are immutable, so grouping them once avoids an
@@ -528,7 +538,7 @@ export class SyncEngine {
           for (const component of this.historicalMergeComponents(def)) {
             const { canonical, members } = this.canonicalRemapComponent(def.name, component);
             for (const member of members) {
-              this.rekeyMergeRow(def, member, canonical, touchedPrompts, touchedBranches);
+              this.rekeyMergeRow(def, member, canonical, touchedSearch, touchedBranches);
             }
 
             const parentKeys = members.map((id) => encodeRecordId(def, [id]));
@@ -541,18 +551,18 @@ export class SyncEngine {
 
             const remapped = this.remapOp(def, winner);
             if (winner.kind === "delete" || remapped.payload === null) {
-              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
+              this.applyDelete(def, canonicalRecordId, touchedSearch, touchedBranches, winner.hlc);
             } else if (this.tombstonedPromptOwner(def, remapped.payload) !== null) {
               // v10's terminal prompt cascade intentionally leaves historical
               // descendant ops for gossip. Repair must consume their winner
               // without recreating an FK child under the deleted prompt.
-              this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
+              this.applyDelete(def, canonicalRecordId, touchedSearch, touchedBranches, winner.hlc);
             } else {
               this.applyUpsert(
                 def,
                 canonicalRecordId,
                 { ...remapped.payload, id: canonical },
-                touchedPrompts,
+                touchedSearch,
                 touchedBranches,
                 winner.hlc,
               );
@@ -566,7 +576,7 @@ export class SyncEngine {
                 members,
                 canonical,
                 winner.kind === "upsert",
-                touchedPrompts,
+                touchedSearch,
                 repairContext,
               );
             }
@@ -576,7 +586,7 @@ export class SyncEngine {
 
         for (const branchId of touchedBranches) this.pruneDerivedEmptyBranch(branchId);
         for (const branchId of touchedBranches) this.renumberBranch(branchId);
-        for (const promptId of touchedPrompts) reindexPrompt(this.db, promptId);
+        this.refreshSearchChanges(touchedSearch);
       } finally {
         if (!alreadyApplying) this.db.prepare("DELETE FROM sync_meta WHERE key = 'applying'").run();
       }
@@ -611,7 +621,7 @@ export class SyncEngine {
            ON CONFLICT(table_name, record_id) DO UPDATE SET hlc = excluded.hlc, device_id = excluded.device_id`,
         );
 
-        const touchedPrompts = new Set<string>();
+        const touchedSearch: SearchChanges = { metadata: new Set(), versions: new Set() };
         const touchedBranches = new Set<string>();
 
         for (const op of sorted) {
@@ -641,7 +651,7 @@ export class SyncEngine {
               recordId,
               payload,
               op,
-              touchedPrompts,
+              touchedSearch,
               touchedBranches,
               historyContext,
             );
@@ -744,7 +754,7 @@ export class SyncEngine {
                 if (typeof branchId === "string") {
                   touchedBranches.add(this.readRemap("branches", branchId) ?? branchId);
                 }
-                touchedPrompts.add(String(payload["prompt_id"]));
+                touchedSearch.versions.add(recordId);
                 if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
                 summary.stale += 1;
                 continue;
@@ -758,7 +768,7 @@ export class SyncEngine {
                   // input version identity. Consume them without leaving
                   // an FK orphan or allowing a later sync to restore them.
                   if (wins) {
-                    this.applyDelete(def, recordId, touchedPrompts, touchedBranches, op.hlc);
+                    this.applyDelete(def, recordId, touchedSearch, touchedBranches, op.hlc);
                     upsertHead.run(table, recordId, op.hlc, op.source);
                     summary.applied += 1;
                   } else {
@@ -781,7 +791,7 @@ export class SyncEngine {
               if (def.name === "versions" && wins) {
                 const branchId = this.restoreMissingBranchFromWinningUpsert(
                   payload,
-                  touchedPrompts,
+                  touchedSearch,
                   touchedBranches,
                 );
                 if (branchId !== null && branchId !== payload["branch_id"]) {
@@ -801,9 +811,9 @@ export class SyncEngine {
           }
 
           if (op.kind === "delete") {
-            this.applyDelete(def, recordId, touchedPrompts, touchedBranches, op.hlc);
+            this.applyDelete(def, recordId, touchedSearch, touchedBranches, op.hlc);
           } else {
-            this.applyUpsert(def, recordId, payload!, touchedPrompts, touchedBranches, op.hlc);
+            this.applyUpsert(def, recordId, payload!, touchedSearch, touchedBranches, op.hlc);
           }
           if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
           summary.applied += 1;
@@ -811,7 +821,7 @@ export class SyncEngine {
 
         for (const branchId of touchedBranches) this.pruneDerivedEmptyBranch(branchId);
         for (const branchId of touchedBranches) this.renumberBranch(branchId);
-        for (const promptId of touchedPrompts) reindexPrompt(this.db, promptId);
+        this.refreshSearchChanges(touchedSearch);
 
         for (const source of new Set(sorted.map((o) => o.source))) this.advanceCursor(source);
       } finally {
@@ -830,6 +840,17 @@ export class SyncEngine {
   }
 
   // ------------------------------------------------------------------- helpers
+
+  private refreshSearchChanges(changes: SearchChanges): void {
+    for (const promptId of changes.metadata) refreshPromptSearchMetadata(this.db, promptId);
+    for (const versionId of changes.versions) refreshVersionSearchRow(this.db, versionId);
+  }
+
+  private touchTagOwners(tagId: string, changes: SearchChanges): void {
+    const owners = this.db.prepare("SELECT prompt_id FROM prompt_tags WHERE tag_id = ?")
+      .all(tagId) as Array<{ prompt_id: string }>;
+    for (const owner of owners) changes.metadata.add(owner.prompt_id);
+  }
 
   /**
    * Resolves the complete remap component, not just its first edge. Old
@@ -1180,7 +1201,7 @@ export class SyncEngine {
     members: readonly string[],
     canonicalId: string,
     parentExists: boolean,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     repairContext: NaturalKeyRepairContext,
   ): boolean {
     const childDef = tableDef(def.name === "tags" ? "prompt_tags" : "collection_prompts")!;
@@ -1218,7 +1239,7 @@ export class SyncEngine {
       const terminalOwner = payload === null ? null : this.tombstonedPromptOwner(childDef, payload);
       if (!parentExists || group.winner.kind === "delete" || terminalOwner !== null || payload === null) {
         changed = changed || this.readRow(childDef, recordId) !== null;
-        this.applyDelete(childDef, recordId, touchedPrompts, new Set(), group.winner.hlc);
+        this.applyDelete(childDef, recordId, touchedSearch, new Set(), group.winner.hlc);
       } else {
         const current = this.readRow(childDef, recordId);
         changed =
@@ -1226,7 +1247,7 @@ export class SyncEngine {
           current === null ||
           childDef.columns.some((column) => current[column] !== (payload[column] ?? null));
         this.upsertRow(childDef, payload, []);
-        touchedPrompts.add(promptId);
+        if (childDef.name === "prompt_tags") touchedSearch.metadata.add(promptId);
       }
     }
     return changed;
@@ -1265,7 +1286,7 @@ export class SyncEngine {
   }
 
   /** Repoints a tag's junction rows before retiring an alias row. */
-  private rekeyTagChildren(fromId: string, toId: string, touchedPrompts: Set<string>): void {
+  private rekeyTagChildren(fromId: string, toId: string, touchedSearch: SearchChanges): void {
     const def = tableDef("prompt_tags")!;
     const rows = this.db
       .prepare("SELECT prompt_id, tag_id FROM prompt_tags WHERE tag_id = ?")
@@ -1278,12 +1299,12 @@ export class SyncEngine {
         .run(row.prompt_id, toId);
       this.db.prepare("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?").run(row.prompt_id, fromId);
       this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
-      touchedPrompts.add(row.prompt_id);
+      touchedSearch.metadata.add(row.prompt_id);
     }
   }
 
   /** Rekeys a collection's junction rows without letting PK conflicts drop membership. */
-  private rekeyCollectionChildren(fromId: string, toId: string, touchedPrompts: Set<string>): void {
+  private rekeyCollectionChildren(fromId: string, toId: string): void {
     const def = tableDef("collection_prompts")!;
     const rows = this.db
       .prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts WHERE collection_id = ?")
@@ -1301,7 +1322,6 @@ export class SyncEngine {
         .prepare("DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
         .run(fromId, row.prompt_id);
       this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
-      touchedPrompts.add(row.prompt_id);
     }
   }
 
@@ -1309,14 +1329,9 @@ export class SyncEngine {
   private rekeyBranchChildren(
     fromId: string,
     toId: string,
-    touchedPrompts: Set<string>,
     touchedBranches: Set<string>,
   ): void {
-    const rows = this.db
-      .prepare("SELECT DISTINCT prompt_id FROM versions WHERE branch_id = ?")
-      .all(fromId) as Array<{ prompt_id: string }>;
     this.db.prepare("UPDATE versions SET branch_id = ? WHERE branch_id = ?").run(toId, fromId);
-    for (const row of rows) touchedPrompts.add(row.prompt_id);
     touchedBranches.add(toId);
   }
 
@@ -1329,7 +1344,7 @@ export class SyncEngine {
     def: SyncedTableDef,
     fromId: string,
     toId: string,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     touchedBranches: Set<string>,
   ): boolean {
     if (fromId === toId) return false;
@@ -1346,13 +1361,15 @@ export class SyncEngine {
 
     switch (def.name) {
       case "tags":
-        this.rekeyTagChildren(fromId, toId, touchedPrompts);
+        this.touchTagOwners(fromId, touchedSearch);
+        this.touchTagOwners(toId, touchedSearch);
+        this.rekeyTagChildren(fromId, toId, touchedSearch);
         break;
       case "collections":
-        this.rekeyCollectionChildren(fromId, toId, touchedPrompts);
+        this.rekeyCollectionChildren(fromId, toId);
         break;
       case "branches":
-        this.rekeyBranchChildren(fromId, toId, touchedPrompts, touchedBranches);
+        this.rekeyBranchChildren(fromId, toId, touchedBranches);
         break;
       default:
         return false;
@@ -1377,7 +1394,7 @@ export class SyncEngine {
     recordId: string,
     payload: Record<string, unknown>,
     incoming: SyncOp,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     touchedBranches: Set<string>,
     historyContext: NaturalKeyRepairContext,
   ): { recordId: string; payload: Record<string, unknown>; structuralChange: boolean } {
@@ -1389,7 +1406,7 @@ export class SyncEngine {
     );
     let structuralChange = remapsChanged;
     for (const member of members) {
-      structuralChange = this.rekeyMergeRow(def, member, canonical, touchedPrompts, touchedBranches) || structuralChange;
+      structuralChange = this.rekeyMergeRow(def, member, canonical, touchedSearch, touchedBranches) || structuralChange;
     }
     const parentKeys = members.map((id) => encodeRecordId(def, [id]));
     const canonicalRecordId = encodeRecordId(def, [canonical]);
@@ -1398,12 +1415,12 @@ export class SyncEngine {
     const parentExists = winner.kind === "upsert";
     if (!parentExists) {
       const before = this.readRow(def, canonicalRecordId) !== null;
-      this.applyDelete(def, canonicalRecordId, touchedPrompts, touchedBranches, winner.hlc);
+      this.applyDelete(def, canonicalRecordId, touchedSearch, touchedBranches, winner.hlc);
       structuralChange = structuralChange || before;
     }
     if (def.name === "tags" || def.name === "collections") {
       structuralChange =
-        this.reduceCanonicalChildren(def, members, canonical, parentExists, touchedPrompts, historyContext) || structuralChange;
+        this.reduceCanonicalChildren(def, members, canonical, parentExists, touchedSearch, historyContext) || structuralChange;
     }
     if (def.name === "branches") touchedBranches.add(canonical);
     return { recordId: canonicalRecordId, payload: { ...payload, id: canonical }, structuralChange };
@@ -1504,7 +1521,7 @@ export class SyncEngine {
   /** Restores a branch removed only as local empty-container cleanup. */
   private restoreMissingBranchFromWinningUpsert(
     versionPayload: Record<string, unknown>,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     touchedBranches: Set<string>,
   ): string | null {
     const branchDef = tableDef("branches")!;
@@ -1523,7 +1540,7 @@ export class SyncEngine {
       branchDef,
       restored.recordId,
       restored.payload,
-      touchedPrompts,
+      touchedSearch,
       touchedBranches,
       winner.hlc,
     );
@@ -1685,7 +1702,7 @@ export class SyncEngine {
     def: SyncedTableDef,
     recordId: string,
     payload: Record<string, unknown>,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     touchedBranches: Set<string>,
     opHlc: string,
   ): void {
@@ -1696,6 +1713,11 @@ export class SyncEngine {
         // A local row with the same natural key absorbs the remote id…
         const local = this.naturalKeyLookup(def, payload);
         const remoteId = String(payload["id"]);
+        if (def.name === "tags") {
+          // A rename can change every owner without producing junction ops.
+          this.touchTagOwners(remoteId, touchedSearch);
+          if (local !== null && local !== remoteId) this.touchTagOwners(local, touchedSearch);
+        }
         if (local !== null && local !== remoteId) {
           this.recordRemap(def.name, remoteId, local);
           // …but the winning op still updates the row's mutable columns.
@@ -1703,7 +1725,6 @@ export class SyncEngine {
         } else {
           this.upsertRow(def, payload, []);
         }
-        if (def.name === "branches") touchedPrompts.add(String(payload["prompt_id"]));
         return;
       }
       case "providers": {
@@ -1729,6 +1750,8 @@ export class SyncEngine {
         return;
       }
       case "prompts": {
+        const previous = this.db.prepare("SELECT title, description FROM prompts WHERE id = ?")
+          .get(String(payload["id"])) as { title: string; description: string | null } | undefined;
         let pointer = payload["current_version_id"];
         let draftContent = payload["draft_content"];
         let draftBaseVersionId = payload["draft_base_version_id"];
@@ -1775,7 +1798,12 @@ export class SyncEngine {
           },
           [],
         );
-        touchedPrompts.add(String(payload["id"]));
+        if (
+          previous === undefined || previous.title !== payload["title"] ||
+          previous.description !== (payload["description"] ?? null)
+        ) {
+          touchedSearch.metadata.add(String(payload["id"]));
+        }
         return;
       }
       case "versions": {
@@ -1786,8 +1814,8 @@ export class SyncEngine {
             : payload;
         const versionId = String(normalized["id"]);
         const local = this.db
-          .prepare("SELECT content FROM versions WHERE id = ?")
-          .get(versionId) as { content: string } | undefined;
+          .prepare("SELECT content, prompt_id, status FROM versions WHERE id = ?")
+          .get(versionId) as { content: string; prompt_id: string; status: string } | undefined;
         if (
           local !== undefined &&
           typeof normalized["content"] === "string" &&
@@ -1803,20 +1831,36 @@ export class SyncEngine {
             .run(local.content, versionId);
         }
         this.upsertRow(def, normalized, []);
-        touchedPrompts.add(String(normalized["prompt_id"]));
+        if (
+          local === undefined || local.content !== normalized["content"] ||
+          local.prompt_id !== normalized["prompt_id"] || local.status !== normalized["status"]
+        ) {
+          touchedSearch.versions.add(versionId);
+        }
         touchedBranches.add(String(normalized["branch_id"]));
         this.fulfillPendingPointer(versionId);
         return;
       }
-      case "notes":
+      case "notes": {
+        const previous = this.db.prepare("SELECT prompt_id, body FROM notes WHERE id = ?")
+          .get(String(payload["id"])) as { prompt_id: string; body: string } | undefined;
+        this.upsertRow(def, payload, []);
+        if (
+          previous === undefined || previous.prompt_id !== payload["prompt_id"] ||
+          previous.body !== payload["body"]
+        ) {
+          if (previous !== undefined) touchedSearch.metadata.add(previous.prompt_id);
+          touchedSearch.metadata.add(String(payload["prompt_id"]));
+        }
+        return;
+      }
       case "prompt_tags": {
         this.upsertRow(def, payload, []);
-        touchedPrompts.add(String(payload["prompt_id"]));
+        touchedSearch.metadata.add(String(payload["prompt_id"]));
         return;
       }
       case "collection_prompts": {
         this.upsertRow(def, payload, []);
-        touchedPrompts.add(String(payload["prompt_id"]));
         return;
       }
       default:
@@ -1876,7 +1920,7 @@ export class SyncEngine {
   private applyDelete(
     def: SyncedTableDef,
     recordId: string,
-    touchedPrompts: Set<string>,
+    touchedSearch: SearchChanges,
     touchedBranches: Set<string>,
     opHlc: string,
   ): void {
@@ -1886,7 +1930,7 @@ export class SyncEngine {
     switch (def.name) {
       case "prompts": {
         // hardDeletePrompt's cascade, mirrored.
-        run("DELETE FROM search_index WHERE prompt_id = ?", id);
+        deletePromptSearchRows(this.db, id);
         run("DELETE FROM runs WHERE prompt_id = ?", id);
         run("DELETE FROM notes WHERE prompt_id = ?", id);
         run(
@@ -1905,6 +1949,7 @@ export class SyncEngine {
         return;
       }
       case "tags":
+        this.touchTagOwners(id, touchedSearch);
         run("DELETE FROM prompt_tags WHERE tag_id = ?", id);
         run("DELETE FROM tags WHERE id = ?", id);
         return;
@@ -1957,10 +2002,10 @@ export class SyncEngine {
         );
         for (const versionId of deletedVersionIds) {
           run("DELETE FROM sync_pending_pointers WHERE version_id = ?", versionId);
+          touchedSearch.versions.add(versionId);
         }
         run("DELETE FROM versions WHERE branch_id = ?", id);
         run("DELETE FROM branches WHERE id = ?", id);
-        if (promptId !== undefined) touchedPrompts.add(promptId);
         return;
       }
       case "versions": {
@@ -1994,6 +2039,7 @@ export class SyncEngine {
         run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", id);
         run("DELETE FROM sync_pending_pointers WHERE version_id = ?", id);
         run("DELETE FROM versions WHERE id = ?", id);
+        touchedSearch.versions.add(id);
         if (row) {
           run(
             `DELETE FROM branches
@@ -2001,7 +2047,6 @@ export class SyncEngine {
             row.branch_id,
             row.branch_id,
           );
-          touchedPrompts.add(row.prompt_id);
           touchedBranches.add(row.branch_id);
         }
         return;
@@ -2011,7 +2056,7 @@ export class SyncEngine {
           | { prompt_id: string }
           | undefined;
         run("DELETE FROM notes WHERE id = ?", id);
-        if (row) touchedPrompts.add(row.prompt_id);
+        if (row) touchedSearch.metadata.add(row.prompt_id);
         return;
       }
       case "ratings":
@@ -2027,13 +2072,12 @@ export class SyncEngine {
       case "prompt_tags": {
         const [promptId, tagId] = values as [string, string];
         run("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?", promptId, tagId);
-        touchedPrompts.add(promptId);
+        touchedSearch.metadata.add(promptId);
         return;
       }
       case "collection_prompts": {
         const [collectionId, promptId] = values as [string, string];
         run("DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?", collectionId, promptId);
-        touchedPrompts.add(promptId);
         return;
       }
       case "provider_models": {

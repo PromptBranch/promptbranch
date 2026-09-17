@@ -82,6 +82,37 @@ function observeHistoryQueries(r: Rig) {
   return { queries, restore: () => spy.mockRestore() };
 }
 
+function observeSearchWrites(r: Rig) {
+  const writes: Array<{ sql: string; parameters: unknown[] }> = [];
+  const prepare = r.db.prepare.bind(r.db);
+  const spy = vi.spyOn(r.db, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (/^\s*(INSERT INTO|DELETE FROM|UPDATE) search_index\b/i.test(sql)) {
+      const run = statement.run.bind(statement);
+      vi.spyOn(statement, "run").mockImplementation((...parameters: unknown[]) => {
+        writes.push({ sql, parameters });
+        return run(...parameters);
+      });
+    }
+    return statement;
+  });
+  return { writes, restore: () => spy.mockRestore() };
+}
+
+function searchRows(r: Rig, promptId: string) {
+  return r.db.prepare("SELECT rowid, * FROM search_index WHERE prompt_id = ? ORDER BY rowid")
+    .all(promptId) as Array<{ rowid: number; version_id: string | null; tags: string; notes: string; content: string }>;
+}
+
+function expectSearchMappingsConsistent(r: Rig): void {
+  expect(r.db.prepare(`SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid`).all())
+    .toEqual(r.db.prepare(`SELECT rowid, prompt_id, version_id FROM search_index_rows ORDER BY rowid`).all());
+  expect(r.db.prepare(`SELECT prompt_id FROM search_index_rows WHERE version_id IS NULL ORDER BY prompt_id`).all())
+    .toEqual(r.db.prepare(`SELECT id AS prompt_id FROM prompts ORDER BY id`).all());
+  expect(r.db.prepare(`SELECT version_id FROM search_index_rows WHERE version_id IS NOT NULL ORDER BY version_id`).all())
+    .toEqual(r.db.prepare(`SELECT id AS version_id FROM versions WHERE status = 'active' ORDER BY id`).all());
+}
+
 function storeHistory(r: Rig, ops: SyncOp[]): void {
   const insert = r.db.prepare(`INSERT INTO sync_ops
     (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
@@ -113,6 +144,242 @@ function normalizedExport(r: Rig) {
 }
 
 describe("sync engine", () => {
+  it.each(["rename", "delete", "merge"] as const)(
+    "incremental FTS refreshes every owner once after a remote tag %s",
+    (change) => {
+      const a = rig();
+      const b = rig();
+      const tag = a.lib.createTag({ name: "oldtagword" });
+      const target = a.lib.createTag({ name: "targettagword" });
+      const prompts = [0, 1, 2].map((index) => a.lib.createPrompt({
+        title: `Tagged ${index}`, content: `version ${index}`, tagIds: [tag.id],
+      }));
+      a.db.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)").run(prompts[2]!.id, target.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      const before = prompts.map((prompt) => searchRows(b, prompt.id).filter((row) => row.version_id !== null));
+      const observed = observeSearchWrites(b);
+      try {
+        if (change === "delete") {
+          // Exercise the parent-only deletion; no junction tombstone can mask lost owners.
+          const remote = fixedOp("tag-delete", 1, "tags", tag.id, null, Date.now() + 100_000, "delete");
+          b.engine.applyRemote([remote]);
+        } else if (change === "merge") {
+          const remote = fixedOp("tag-merge", 1, "tags", "!canonical-tag", {
+            id: "!canonical-tag", name: tag.name, color: null,
+          }, Date.now() + 100_000);
+          b.engine.applyRemote([remote]);
+        } else {
+          a.db.prepare("UPDATE tags SET name = 'newtagword' WHERE id = ?").run(tag.id);
+          a.engine.refineDirty();
+          drain(a.engine, b.engine);
+        }
+        expect(observed.writes).toHaveLength(prompts.length);
+        expect(observed.writes.every((write) => /^\s*UPDATE search_index\b/i.test(write.sql) &&
+          /WHERE rowid = \?/i.test(write.sql))).toBe(true);
+        prompts.forEach((prompt, index) => {
+          expect(searchRows(b, prompt.id).filter((row) => row.version_id !== null)).toEqual(before[index]);
+          const tags = searchRows(b, prompt.id).find((row) => row.version_id === null)!.tags;
+          if (change !== "merge") expect(tags).not.toContain("oldtagword");
+          if (change !== "delete") expect(tags).toContain(change === "merge" ? "oldtagword" : "newtagword");
+        });
+        expectSearchMappingsConsistent(b);
+      } finally {
+        observed.restore();
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
+  it("incremental FTS removes a remote note from metadata without rewriting versions", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Notes", content: "retained version" });
+    const note = a.lib.addNote({ promptId: prompt.id, body: "removednoteword" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const versions = searchRows(b, prompt.id).filter((row) => row.version_id !== null);
+    const observed = observeSearchWrites(b);
+    try {
+      a.lib.deleteNote(note.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/^\s*UPDATE search_index\b/);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== null)).toEqual(versions);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === null)!.notes).toBe("");
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS changes only the remotely amended version row", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Versions", content: "first" });
+    const second = a.lib.createVersion({ promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "second" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id).filter((row) => row.version_id !== second.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.db.prepare("UPDATE versions SET content = 'amendedword' WHERE id = ?").run(second.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/^\s*UPDATE search_index\b/);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== second.id)).toEqual(unchanged);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === second.id)!.content).toBe("amendedword");
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS removes every version of a remotely deleted branch", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Branches", content: "main survives" });
+    const { branch } = a.lib.createBranch({ promptId: prompt.id, name: "removed", fromVersionId: prompt.current_version_id! });
+    a.lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "removed second" });
+    a.lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "removed third" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const deleted = a.lib.listVersions(prompt.id).filter((version) => version.branch_id === branch.id);
+    const surviving = searchRows(b, prompt.id).filter((row) => !deleted.some((version) => version.id === row.version_id));
+    const observed = observeSearchWrites(b);
+    try {
+      b.engine.applyRemote([fixedOp("branch-delete", 1, "branches", branch.id, null, Date.now() + 100_000, "delete")]);
+      expect(searchRows(b, prompt.id)).toEqual(surviving);
+      expect(observed.writes).toHaveLength(deleted.length);
+      expect(observed.writes.every((write) => /DELETE FROM search_index WHERE rowid = \?/i.test(write.sql))).toBe(true);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS inserts and deletes only the remote active version, keeping suggestions absent", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Lifecycle", content: "existing" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      const active = a.lib.createVersion({
+        promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "newactiveword",
+      });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== active.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+      observed.writes.length = 0;
+
+      const { version: suggestion } = a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: active.id, newContent: "suggestionword",
+        rationale: "test suggestion", branchName: "suggestion",
+      });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toEqual([]);
+      expectSearchMappingsConsistent(b);
+
+      a.lib.approveSuggestion(suggestion.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === suggestion.id)?.content).toBe("suggestionword");
+      expectSearchMappingsConsistent(b);
+      observed.writes.length = 0;
+
+      const { version: rejected } = a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: active.id, newContent: "rejectedword",
+        rationale: "test rejected", branchName: "rejected",
+      });
+      a.lib.rejectSuggestion(rejected.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toEqual([]);
+      expectSearchMappingsConsistent(b);
+
+      a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+      a.lib.deleteVersion(active.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/DELETE FROM search_index WHERE rowid = \?/i);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== suggestion.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS ignores remote collection membership, rename, merge, and deletion", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Collection", content: "unchanged" });
+    const collection = a.lib.createCollection({ name: "original" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const before = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.db.prepare("INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, 0)")
+        .run(collection.id, prompt.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      a.db.prepare("UPDATE collections SET name = 'renamed' WHERE id = ?").run(collection.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      b.engine.applyRemote([fixedOp("collection-merge", 1, "collections", "!canonical-collection", {
+        id: "!canonical-collection", name: "renamed", sort_order: 0,
+      }, Date.now() + 100_000)]);
+      b.engine.applyRemote([fixedOp("collection-delete", 1, "collections", collection.id, null, Date.now() + 200_000, "delete")]);
+      expect(observed.writes).toEqual([]);
+      expect(searchRows(b, prompt.id)).toEqual(before);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS hard-delete leaves no remote search rows or mappings", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Deleted", content: "deletedword" });
+    a.lib.createVersion({ promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "another" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const observed = observeSearchWrites(b);
+    try {
+      b.engine.applyRemote([fixedOp("prompt-delete", 1, "prompts", prompt.id, null, Date.now() + 100_000, "delete")]);
+      expect(searchRows(b, prompt.id)).toEqual([]);
+      expect(b.db.prepare("SELECT * FROM search_index_rows WHERE prompt_id = ?").all(prompt.id)).toEqual([]);
+      expect(observed.writes.every((write) => /DELETE FROM search_index WHERE rowid = \?/i.test(write.sql))).toBe(true);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
   it.each(["tags", "collections"] as const)("uses the bound natural-name index for %s", (table) => {
     const r = rig();
     const observed = observeHistoryQueries(r);

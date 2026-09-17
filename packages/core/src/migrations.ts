@@ -175,6 +175,31 @@ CREATE INDEX idx_versions_prompt ON versions(prompt_id, id);
 CREATE INDEX idx_ratings_target ON ratings(target_type, target_id);
 `,
   },
+  {
+    version: 15,
+    name: "incremental-search-row-mapping",
+    sql: `
+CREATE TABLE search_index_rows (
+  rowid INTEGER PRIMARY KEY,
+  prompt_id TEXT NOT NULL,
+  version_id TEXT
+);
+
+CREATE INDEX idx_search_index_rows_prompt
+ON search_index_rows(prompt_id);
+
+CREATE UNIQUE INDEX idx_search_index_rows_prompt_metadata
+ON search_index_rows(prompt_id)
+WHERE version_id IS NULL;
+
+CREATE UNIQUE INDEX idx_search_index_rows_version
+ON search_index_rows(version_id)
+WHERE version_id IS NOT NULL;
+
+INSERT INTO search_index_rows (rowid, prompt_id, version_id)
+SELECT rowid, prompt_id, version_id FROM search_index;
+`,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;

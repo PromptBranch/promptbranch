@@ -28,7 +28,14 @@ export {
   type VersionWithBranch,
 } from "./library.js";
 export { DB_ENV_VAR, DB_FILENAME, resolveDatabasePath } from "./paths.js";
-export { reindexPrompt } from "./reindex.js";
+export {
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+  deleteVersionSearchRow,
+  deletePromptSearchRows,
+  rebuildPromptSearchIndex,
+  reindexPrompt,
+} from "./reindex.js";
 export { compareHlc, formatHlc, parseHlc, type HlcStamp } from "./sync/hlc.js";
 export { SyncEngine, type ApplySummary, type RefineSummary, type SyncOp, type SyncPeerRow } from "./sync/engine.js";
 export { tableDef, SYNCED_TABLES, type SyncedTableDef, type SyncedTableName } from "./sync/tables.js";

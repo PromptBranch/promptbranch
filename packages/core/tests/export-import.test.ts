@@ -93,6 +93,35 @@ function fullDatabaseSnapshot(database: Database): Record<string, unknown[]> {
 }
 
 describe("import preflight", () => {
+  it("rebuilds metadata and every active version mapping for imported and remapped prompts", () => {
+    const { prompt } = populate(lib);
+    const pending = lib.suggestVariation({
+      promptId: prompt.id, baseVersionId: prompt.current_version_id!,
+      newContent: "hiddensuggestion", rationale: "review first",
+    });
+    const bundle = lib.exportLibrary();
+    expect(Object.keys(bundle.tables)).not.toContain("search_index_rows");
+    const target = openMemoryDatabase();
+    try {
+      const imported = new PromptLibrary(target);
+      imported.importLibrary(bundle);
+      imported.importLibrary(bundle);
+      expect(imported.listPrompts()).toHaveLength(2);
+      const actual = target.prepare(`SELECT prompt_id, version_id FROM search_index_rows
+        ORDER BY prompt_id, version_id`).all();
+      expect(actual).toEqual(target.prepare(`SELECT id AS prompt_id, NULL AS version_id FROM prompts
+        UNION ALL SELECT prompt_id, id AS version_id FROM versions WHERE status = 'active'
+        ORDER BY prompt_id, version_id`).all());
+      expect(target.prepare("SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid").all())
+        .toEqual(target.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all());
+      expect(actual).not.toContainEqual(expect.objectContaining({ version_id: pending.version.id }));
+      expect(imported.search("hiddensuggestion")).toEqual([]);
+      expect(new Set(imported.search("carefully").map((row) => row.promptId)).size).toBe(2);
+    } finally {
+      target.close();
+    }
+  });
+
   function bundle(): LibraryExport {
     populate(lib);
     lib.createPrompt({ title: "Other owner", content: "foreign content" });

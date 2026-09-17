@@ -30,6 +30,61 @@ function physicalDatabase(dbPath: string, version: number): { db: Database.Datab
   return { db };
 }
 
+/** Keep old physical fixtures independent of the current derived-index writers. */
+function seedLegacyPrompt(
+  db: Database.Database,
+  input: { id: string; title: string; content: string },
+): { id: string; branch_id: string; current_version_id: string } {
+  const branchId = `${input.id}-main`;
+  const versionId = `${input.id}-v1`;
+  const createdAt = "2026-09-03T00:00:00.000Z";
+  db.prepare("INSERT INTO prompts (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .run(input.id, input.title, createdAt, createdAt);
+  db.prepare("INSERT INTO branches (id, prompt_id, name, created_at) VALUES (?, ?, 'main', ?)")
+    .run(branchId, input.id, createdAt);
+  db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+    VALUES (?, ?, ?, 1, ?, ?)`).run(versionId, input.id, branchId, input.content, createdAt);
+  db.prepare("UPDATE prompts SET current_version_id = ? WHERE id = ?").run(versionId, input.id);
+  db.prepare(`INSERT INTO search_index
+    (prompt_id, version_id, title, description, tags, notes, content)
+    VALUES (?, NULL, ?, '', '', '', ''), (?, ?, '', '', '', '', ?)`)
+    .run(input.id, input.title, input.id, versionId, input.content);
+  return { id: input.id, branch_id: branchId, current_version_id: versionId };
+}
+
+function seedLegacySearchIndex(db: Database.Database): void {
+  const stellar = seedLegacyPrompt(db, {
+    id: "stellar", title: "Stellar manual", content: "Map a nebula precisely",
+  });
+  seedLegacyPrompt(db, { id: "aurora", title: "Aurora guide", content: "Observe the aurora" });
+  db.prepare("UPDATE prompts SET description = 'Meteor observation' WHERE id = 'stellar'").run();
+  db.prepare("INSERT INTO tags (id, name) VALUES ('cosmic-tag', 'cosmic')").run();
+  db.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES ('stellar', 'cosmic-tag')").run();
+  db.prepare(`INSERT INTO notes (id, prompt_id, body, created_at)
+    VALUES ('orbit-note', 'stellar', 'Track the orbit', '2026-09-03T00:00:00.000Z')`).run();
+  const insertVersion = db.prepare(`INSERT INTO versions
+    (id, prompt_id, branch_id, number, content, status, created_at)
+    VALUES (?, 'stellar', ?, ?, ?, ?, '2026-09-03T00:00:00.000Z')`);
+  insertVersion.run("stellar-v2", stellar.branch_id, 2, "A second nebula map", "active");
+  insertVersion.run("stellar-pending", stellar.branch_id, 3, "pendingmarker", "pending");
+  insertVersion.run("stellar-rejected", stellar.branch_id, 4, "rejectedmarker", "rejected");
+  // Sparse rowids catch a backfill that numbers rows anew or joins the wrong version.
+  db.prepare("DELETE FROM search_index").run();
+  db.prepare(`INSERT INTO search_index
+    (rowid, prompt_id, version_id, title, description, tags, notes, content) VALUES
+    (7, 'stellar', NULL, 'Stellar manual', 'Meteor observation', 'cosmic', 'Track the orbit', ''),
+    (21, 'stellar', 'stellar-v1', '', '', '', '', 'Map a nebula precisely'),
+    (96, 'stellar', 'stellar-v2', '', '', '', '', 'A second nebula map'),
+    (103, 'aurora', NULL, 'Aurora guide', '', '', '', ''),
+    (211, 'aurora', 'aurora-v1', '', '', '', '', 'Observe the aurora')`).run();
+  new SyncEngine(db).refineDirty(100);
+  db.prepare(`INSERT INTO sync_ops
+    (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+    VALUES ('legacy', 1, 'legacy-fts-op', 'tags', 'legacy-tag', 'upsert', ?,
+            '0000000000100:000000', '2026-09-03T00:00:00.000Z')`)
+    .run('{ "id": "legacy-tag", "name": "archive", "color": null }');
+}
+
 afterEach(() => {
   while (tmpDirs.length > 0) {
     fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
@@ -72,8 +127,7 @@ describe("migrations", () => {
   it("migration 13 adds a nullable draft base without changing existing drafts", () => {
     const dbPath = tmpDbPath();
     const seeded = physicalDatabase(dbPath, 12).db;
-    const lib = new PromptLibrary(seeded);
-    const prompt = lib.createPrompt({ title: "Legacy draft", content: "saved" });
+    const prompt = seedLegacyPrompt(seeded, { id: "legacy-draft", title: "Legacy draft", content: "saved" });
     seeded.prepare("UPDATE prompts SET draft_content = 'legacy draft' WHERE id = ?").run(prompt.id);
     expect((seeded.pragma("table_info(prompts)") as Array<{ name: string }>).map((c) => c.name))
       .not.toContain("draft_base_version_id");
@@ -93,7 +147,7 @@ describe("migrations", () => {
     const dbPath = tmpDbPath();
     const seeded = physicalDatabase(dbPath, 13).db;
     const lib = new PromptLibrary(seeded);
-    const prompt = lib.createPrompt({ title: "Indexed history", content: "saved" });
+    const prompt = seedLegacyPrompt(seeded, { id: "indexed-history", title: "Indexed history", content: "saved" });
     lib.setDraft(prompt.id, "draft");
     lib.addRating({ targetType: "prompt", targetId: prompt.id, clarity: 4 });
     const engine = new SyncEngine(seeded);
@@ -120,8 +174,7 @@ describe("migrations", () => {
     const before = snapshot(seeded);
     seeded.close();
 
-    const migrated = openDatabase(dbPath);
-    expect(migrated.backupPath).not.toBeNull();
+    const migrated = physicalDatabase(dbPath, 14);
     expect(migrated.db.pragma("user_version", { simple: true })).toBe(14);
     expect(indexNames(migrated.db)).toEqual(expect.arrayContaining(indexes));
     const ratingSummaryPlan = migrated.db.prepare(`EXPLAIN QUERY PLAN
@@ -145,6 +198,112 @@ describe("migrations", () => {
     expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
     migrated.db.close();
   });
+
+  it.each([13, 14])("migration 15 creates an empty rowid mapping from physical v%i", (version) => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, version).db;
+    expect(seeded.prepare("SELECT name FROM sqlite_master WHERE name = 'search_index_rows'").get())
+      .toBeUndefined();
+    expect(seeded.prepare("SELECT rowid FROM search_index").all()).toEqual([]);
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    try {
+      expect(migrated.db.pragma("user_version", { simple: true })).toBe(15);
+      expect(migrated.backupPath).not.toBeNull();
+      expect(migrated.db.prepare("SELECT * FROM search_index_rows").all()).toEqual([]);
+      const columns = migrated.db.pragma("table_info(search_index_rows)") as Array<{
+        name: string; type: string; notnull: number; pk: number;
+      }>;
+      expect(columns.map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })))
+        .toEqual([
+          { name: "rowid", type: "INTEGER", notnull: 0, pk: 1 },
+          { name: "prompt_id", type: "TEXT", notnull: 1, pk: 0 },
+          { name: "version_id", type: "TEXT", notnull: 0, pk: 0 },
+        ]);
+      const indexes = migrated.db.pragma("index_list(search_index_rows)") as Array<{
+        name: string; unique: number; partial: number;
+      }>;
+      expect(indexes.map(({ name, unique, partial }) => ({ name, unique, partial })))
+        .toEqual(expect.arrayContaining([
+          { name: "idx_search_index_rows_prompt", unique: 0, partial: 0 },
+          { name: "idx_search_index_rows_prompt_metadata", unique: 1, partial: 1 },
+          { name: "idx_search_index_rows_version", unique: 1, partial: 1 },
+        ]));
+    } finally {
+      migrated.db.close();
+    }
+  });
+
+  it.each([13, 14])(
+    "migration 15 backfills exact FTS mappings from physical v%i without changing search or sync ops",
+    (version) => {
+      const dbPath = tmpDbPath();
+      const seeded = physicalDatabase(dbPath, version).db;
+      seedLegacySearchIndex(seeded);
+      const ftsRows = (db: Database.Database) => db.prepare("SELECT rowid, * FROM search_index ORDER BY rowid").all();
+      const syncOps = (db: Database.Database) => db.prepare(
+        "SELECT * FROM sync_ops ORDER BY source_device_id, seq",
+      ).all();
+      const queries = ["stellar", "nebula", "meteor", "cosmic", "orbit", "aurora"];
+      const searchResults = (db: Database.Database) => {
+        const library = new PromptLibrary(db);
+        return queries.map((query) => library.search(query));
+      };
+      const beforeFts = ftsRows(seeded);
+      const beforeOps = syncOps(seeded);
+      const beforeSearch = searchResults(seeded);
+      expect(beforeSearch.every((results) => results.length > 0)).toBe(true);
+      seeded.close();
+
+      const migrated = openDatabase(dbPath);
+      try {
+        expect(migrated.db.pragma("user_version", { simple: true })).toBe(15);
+        expect(migrated.backupPath).not.toBeNull();
+        expect(migrated.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual([
+          { rowid: 7, prompt_id: "stellar", version_id: null },
+          { rowid: 21, prompt_id: "stellar", version_id: "stellar-v1" },
+          { rowid: 96, prompt_id: "stellar", version_id: "stellar-v2" },
+          { rowid: 103, prompt_id: "aurora", version_id: null },
+          { rowid: 211, prompt_id: "aurora", version_id: "aurora-v1" },
+        ]);
+        expect(ftsRows(migrated.db)).toEqual(beforeFts);
+        expect(searchResults(migrated.db)).toEqual(beforeSearch);
+        expect(syncOps(migrated.db)).toEqual(beforeOps);
+        const library = new PromptLibrary(migrated.db);
+        expect(library.search("pendingmarker")).toEqual([]);
+        expect(library.search("rejectedmarker")).toEqual([]);
+        const lookupPlan = migrated.db.prepare(
+          "EXPLAIN QUERY PLAN SELECT rowid FROM search_index_rows WHERE prompt_id = ?",
+        ).all("stellar") as Array<{ detail: string }>;
+        expect(lookupPlan.some((row) => row.detail.includes("idx_search_index_rows_prompt")))
+          .toBe(true);
+        expect(() => migrated.db.prepare(
+          "INSERT INTO search_index_rows (rowid, prompt_id, version_id) VALUES (300, 'stellar', NULL)",
+        ).run()).toThrow(/UNIQUE constraint failed/);
+        expect(() => migrated.db.prepare(
+          "INSERT INTO search_index_rows (rowid, prompt_id, version_id) VALUES (301, 'aurora', 'stellar-v1')",
+        ).run()).toThrow(/UNIQUE constraint failed/);
+        expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
+      } finally {
+        migrated.db.close();
+      }
+
+      const reopened = openDatabase(dbPath);
+      try {
+        expect(reopened.backupPath).toBeNull();
+        expect(reopened.db.pragma("user_version", { simple: true })).toBe(15);
+        expect(reopened.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual(
+          reopened.db.prepare("SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid").all(),
+        );
+        expect(ftsRows(reopened.db)).toEqual(beforeFts);
+        expect(searchResults(reopened.db)).toEqual(beforeSearch);
+        expect(syncOps(reopened.db)).toEqual(beforeOps);
+      } finally {
+        reopened.db.close();
+      }
+    },
+  );
 
   it("migrating a fresh file DB creates no backup and uses WAL", () => {
     const dbPath = tmpDbPath();

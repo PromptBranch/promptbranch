@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { reindexPrompt as reindexPromptRows } from "./reindex.js";
+import {
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+  deleteVersionSearchRow,
+  deletePromptSearchRows,
+  rebuildPromptSearchIndex,
+} from "./reindex.js";
 import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
 import type BetterSqlite3 from "better-sqlite3";
 import type {
@@ -316,7 +322,8 @@ export class PromptLibrary {
         );
       }
 
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
+      refreshVersionSearchRow(this.db, versionId);
       return this.mustGetPrompt(promptId);
     })();
   }
@@ -374,7 +381,9 @@ export class PromptLibrary {
         this.run("UPDATE prompts SET description = ? WHERE id = ?", patch.description, promptId);
       if (patch.icon !== undefined) this.run("UPDATE prompts SET icon = ? WHERE id = ?", patch.icon, promptId);
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), promptId);
-      this.reindexPrompt(promptId);
+      if (patch.title !== undefined || patch.description !== undefined) {
+        refreshPromptSearchMetadata(this.db, promptId);
+      }
       return this.mustGetPrompt(promptId);
     })();
   }
@@ -469,7 +478,7 @@ export class PromptLibrary {
   hardDeletePrompt(promptId: string): void {
     this.mustGetPrompt(promptId);
     this.db.transaction(() => {
-      this.run("DELETE FROM search_index WHERE prompt_id = ?", promptId);
+      deletePromptSearchRows(this.db, promptId);
       this.run("DELETE FROM runs WHERE prompt_id = ?", promptId);
       this.run("DELETE FROM notes WHERE prompt_id = ?", promptId);
       // Ratings targeting versions have no FK — delete them explicitly, before
@@ -561,7 +570,7 @@ export class PromptLibrary {
           // A title-only prompt starts with an empty v1 placeholder. Its first
           // real save establishes v1; later save-as-new operations append.
           this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", committedAt, input.promptId);
-          this.reindexPrompt(input.promptId);
+          refreshVersionSearchRow(this.db, head.id);
           return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", head.id)!;
         }
         // Another process may have initialized the placeholder after our read.
@@ -593,7 +602,7 @@ export class PromptLibrary {
       } else {
         this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), input.promptId);
       }
-      this.reindexPrompt(input.promptId);
+      refreshVersionSearchRow(this.db, versionId);
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
     }).immediate();
   }
@@ -622,7 +631,7 @@ export class PromptLibrary {
       );
       this.run("UPDATE versions SET content = ? WHERE id = ?", content, versionId);
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
-      this.reindexPrompt(version.prompt_id);
+      refreshVersionSearchRow(this.db, versionId);
       return this.getVersion(versionId)!;
     }).immediate();
   }
@@ -671,7 +680,7 @@ export class PromptLibrary {
       }
 
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
-      this.reindexPrompt(version.prompt_id);
+      deleteVersionSearchRow(this.db, versionId);
     }).immediate();
   }
 
@@ -782,7 +791,7 @@ export class PromptLibrary {
         `Branched from version ${source.number}`,
         ts,
       );
-      this.reindexPrompt(input.promptId);
+      refreshVersionSearchRow(this.db, versionId);
       return {
         branch: this.get<BranchRow>("SELECT * FROM branches WHERE id = ?", branchId)!,
         version: this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!,
@@ -900,7 +909,7 @@ export class PromptLibrary {
     }
     return this.db.transaction((): VersionRow => {
       this.run("UPDATE versions SET status = 'active' WHERE id = ?", versionId);
-      this.reindexPrompt(version.prompt_id);
+      refreshVersionSearchRow(this.db, versionId);
       if (options.setAsCurrent) {
         this.run(
           "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
@@ -920,8 +929,11 @@ export class PromptLibrary {
     if (version.status !== "pending") {
       throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
     }
-    this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
-    return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    return this.db.transaction(() => {
+      this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
+      deleteVersionSearchRow(this.db, versionId);
+      return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    })();
   }
 
   // ------------------------------------------------------------------ draft
@@ -983,7 +995,7 @@ export class PromptLibrary {
         input.body,
         now(),
       );
-      this.reindexPrompt(input.promptId);
+      refreshPromptSearchMetadata(this.db, input.promptId);
       return this.get<NoteRow>("SELECT * FROM notes WHERE id = ?", id)!;
     })();
   }
@@ -1008,7 +1020,7 @@ export class PromptLibrary {
     if (!note) throw new Error(`Note not found: ${noteId}`);
     this.db.transaction(() => {
       this.run("DELETE FROM notes WHERE id = ?", noteId);
-      this.reindexPrompt(note.prompt_id);
+      refreshPromptSearchMetadata(this.db, note.prompt_id);
     })();
   }
 
@@ -1032,7 +1044,7 @@ export class PromptLibrary {
     this.mustGetPrompt(promptId);
     this.db.transaction(() => {
       this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1048,7 +1060,7 @@ export class PromptLibrary {
   removeTagFromPrompt(promptId: string, tagId: string): void {
     this.db.transaction(() => {
       this.run("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?", promptId, tagId);
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1060,7 +1072,7 @@ export class PromptLibrary {
       for (const tagId of tagIds) {
         this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
       }
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1756,11 +1768,6 @@ export class PromptLibrary {
     }));
   }
 
-  /** Rebuilds all search_index rows for one prompt. Call inside the mutating transaction. */
-  private reindexPrompt(promptId: string): void {
-    reindexPromptRows(this.db, promptId);
-  }
-
   // ----------------------------------------------------------- export/import
 
   /**
@@ -2096,7 +2103,7 @@ export class PromptLibrary {
 
       // Rebuild search rows for every prompt we touched.
       const touched = new Set<string>(idMaps.prompts.values());
-      for (const promptId of touched) this.reindexPrompt(promptId);
+      for (const promptId of touched) rebuildPromptSearchIndex(this.db, promptId);
     })();
 
     return summary;

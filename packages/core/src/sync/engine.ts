@@ -64,6 +64,15 @@ export interface RefineSummary {
 const RUN_OUTPUT_CAP = 2_000_000;
 const TRUNCATION_MARKER = "\n\n[…sync-truncated]";
 const DEFAULT_BYTE_BUDGET = 1_000_000;
+// Leave room for fixed parameters and predicates that bind each id twice,
+// even on SQLite builds with the older 999-variable limit.
+const HISTORY_ID_CHUNK = 400;
+
+function* idChunks(ids: readonly string[]): Generator<readonly string[]> {
+  for (let offset = 0; offset < ids.length; offset += HISTORY_ID_CHUNK) {
+    yield ids.slice(offset, offset + HISTORY_ID_CHUNK);
+  }
+}
 
 interface OpRow {
   source_device_id: string;
@@ -89,9 +98,22 @@ interface ChildHistoryEntry {
   values: string[];
 }
 
+type ChildHistoryIndex = Map<NaturalKeyChildTable, Map<string, ChildHistoryEntry[]>>;
+
 interface NaturalKeyRepairContext {
-  childHistoryByParent: Map<NaturalKeyChildTable, Map<string, ChildHistoryEntry[]>>;
+  /** Only committed gossip survives a failed bulk apply and its per-op retry. */
+  childHistoryByParent: ChildHistoryIndex;
+  delta?: { childHistoryByParent: ChildHistoryIndex; opKeys: Set<string> };
   onChildHistoryLoad?: (table: NaturalKeyChildTable) => void;
+}
+
+function appendChildHistory(index: ChildHistoryIndex, table: NaturalKeyChildTable, entry: ChildHistoryEntry): void {
+  let byParent = index.get(table);
+  if (byParent === undefined) index.set(table, (byParent = new Map()));
+  const parentId = entry.values[table === "prompt_tags" ? 1 : 0]!;
+  const entries = byParent.get(parentId);
+  if (entries === undefined) byParent.set(parentId, [entry]);
+  else entries.push(entry);
 }
 
 /** Small union-find for the historical aliases that must reduce together. */
@@ -455,8 +477,9 @@ export class SyncEngine {
       if (!tableDef(op.table)) throw new Error(`Unknown synced table in op: ${op.table}`);
     }
 
+    const historyContext: NaturalKeyRepairContext = { childHistoryByParent: new Map() };
     try {
-      return this.applyInTransaction(sorted);
+      return this.applyInTransaction(sorted, historyContext);
     } catch (err) {
       if (!isForeignKeyFailure(err)) throw err;
       // Rollback left no partial state; retry op-by-op so one orphan cannot
@@ -465,7 +488,7 @@ export class SyncEngine {
       const summary: ApplySummary = { applied: 0, skipped: 0, stale: 0, deferred: 0 };
       for (const op of sorted) {
         try {
-          const one = this.applyInTransaction([op]);
+          const one = this.applyInTransaction([op], historyContext);
           summary.applied += one.applied;
           summary.skipped += one.skipped;
           summary.stale += one.stale;
@@ -560,8 +583,12 @@ export class SyncEngine {
     })();
   }
 
-  private applyInTransaction(sorted: SyncOp[]): ApplySummary {
+  private applyInTransaction(sorted: SyncOp[], committedHistory: NaturalKeyRepairContext): ApplySummary {
     const summary: ApplySummary = { applied: 0, skipped: 0, stale: 0, deferred: 0 };
+    const historyContext: NaturalKeyRepairContext = {
+      ...committedHistory,
+      delta: { childHistoryByParent: new Map(), opKeys: new Set() },
+    };
 
     this.db.transaction(() => {
       // Referenced rows may appear later in the batch (or, for the prompt
@@ -616,6 +643,7 @@ export class SyncEngine {
               op,
               touchedPrompts,
               touchedBranches,
+              historyContext,
             );
             recordId = canonicalized.recordId;
             payload = canonicalized.payload;
@@ -641,7 +669,7 @@ export class SyncEngine {
             compareRevisions(op.hlc, op.source, localHead.hlc, localHead.device_id) > 0;
 
           // Store verbatim for gossip even when the op loses LWW locally.
-          insertOp.run(
+          const stored = insertOp.run(
             op.source,
             op.seq,
             op.opId,
@@ -652,6 +680,14 @@ export class SyncEngine {
             op.hlc,
             op.createdAt,
           );
+          if (stored.changes > 0 && (op.table === "prompt_tags" || op.table === "collection_prompts")) {
+            // Stale operations are still immutable gossip and can decide a
+            // later canonical reduction; materialized LWW status is irrelevant.
+            historyContext.delta!.opKeys.add(JSON.stringify([op.source, op.opId]));
+            appendChildHistory(historyContext.delta!.childHistoryByParent, op.table, {
+              op, values: decodeRecordId(def, op.recordId),
+            });
+          }
           this.observeStamp(op.hlc);
 
           const promptHardDelete = table === "prompts" && op.kind === "delete";
@@ -782,6 +818,14 @@ export class SyncEngine {
         this.db.prepare("DELETE FROM sync_meta WHERE key = 'applying'").run();
       }
     })();
+    // A failed transaction never reaches this merge. Unloaded tables will
+    // include these commits when first queried, so they need no eager cache.
+    for (const [table, byParent] of historyContext.delta!.childHistoryByParent) {
+      if (!committedHistory.childHistoryByParent.has(table)) continue;
+      for (const entries of byParent.values()) {
+        for (const entry of entries) appendChildHistory(committedHistory.childHistoryByParent, table, entry);
+      }
+    }
     return summary;
   }
 
@@ -836,8 +880,7 @@ export class SyncEngine {
       aliases.some(
         (alias) => !componentMappings.some(({ remote_id, local_id }) => remote_id === alias && local_id === canonical),
       );
-    const affected = members;
-    if (affected.length > 0) {
+    for (const affected of idChunks(members)) {
       const placeholders = affected.map(() => "?").join(", ");
       this.db
         .prepare(
@@ -920,7 +963,8 @@ export class SyncEngine {
     incomingId: string,
     payload: Record<string, unknown>,
   ): string[] {
-    const canonicalPromptId = this.canonicalPromptIdResolver();
+    const promptComponent = this.promptIdComponentResolver();
+    const canonicalPromptId = (id: string): string => promptComponent(id)[0]!;
     const incomingKey = this.mergeNaturalKey(def, payload, canonicalPromptId);
     if (incomingKey === null) return [incomingId];
 
@@ -933,19 +977,25 @@ export class SyncEngine {
       .all(def.name) as RemapRow[];
     for (const { remote_id, local_id } of remaps) components.connect(remote_id, local_id);
 
-    const historical = this.db
-      .prepare(
-        `SELECT * FROM sync_ops
-         WHERE table_name = ? AND payload_json IS NOT NULL
-           AND json_extract(payload_json, '$.name') = ?`,
-      )
-      .all(def.name, String(payload["name"])) as OpRow[];
-    for (const row of historical) {
-      const op = opFromRow(row);
-      if (op.payload === null || typeof op.payload["id"] !== "string") continue;
-      if (this.mergeNaturalKey(def, op.payload, canonicalPromptId) !== incomingKey) continue;
-      components.connect(incomingId, op.payload["id"]);
-      components.connect(row.record_id, op.payload["id"]);
+    const promptChunks = def.name === "branches"
+      ? idChunks(promptComponent(String(payload["prompt_id"]))) : [null];
+    for (const promptIds of promptChunks) {
+      const promptFilter = promptIds === null ? "" :
+        ` AND json_extract(payload_json, '$.prompt_id') IN (${promptIds.map(() => "?").join(", ")})`;
+      const historical = this.db
+        .prepare(
+          `SELECT * FROM sync_ops
+           WHERE table_name = ? AND payload_json IS NOT NULL
+             AND json_extract(payload_json, '$.name') = ?${promptFilter}`,
+        )
+        .all(def.name, String(payload["name"]), ...(promptIds ?? [])) as OpRow[];
+      for (const row of historical) {
+        const op = opFromRow(row);
+        if (op.payload === null || typeof op.payload["id"] !== "string") continue;
+        if (this.mergeNaturalKey(def, op.payload, canonicalPromptId) !== incomingKey) continue;
+        components.connect(incomingId, op.payload["id"]);
+        components.connect(row.record_id, op.payload["id"]);
+      }
     }
 
     return components.groups().find((component) => component.includes(incomingId)) ?? [incomingId];
@@ -966,6 +1016,12 @@ export class SyncEngine {
 
   /** Resolves legacy prompt remap components without mutating them during a read. */
   private canonicalPromptIdResolver(): (promptId: string) => string {
+    const component = this.promptIdComponentResolver();
+    return (promptId) => component(promptId)[0]!;
+  }
+
+  /** Includes raw historical ids on both sides of chained or inverse remaps. */
+  private promptIdComponentResolver(): (promptId: string) => readonly string[] {
     const mappings = this.db
       .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'prompts'")
       .all() as RemapRow[];
@@ -979,7 +1035,10 @@ export class SyncEngine {
       rightNeighbors.add(left);
     };
     for (const { remote_id, local_id } of mappings) connect(remote_id, local_id);
-    return (promptId: string): string => {
+    const cache = new Map<string, readonly string[]>();
+    return (promptId: string): readonly string[] => {
+      const cached = cache.get(promptId);
+      if (cached !== undefined) return cached;
       const visited = new Set([promptId]);
       const queue = [promptId];
       while (queue.length > 0) {
@@ -990,7 +1049,9 @@ export class SyncEngine {
           queue.push(neighbor);
         }
       }
-      return [...visited].sort()[0]!;
+      const members = [...visited].sort();
+      for (const member of members) cache.set(member, members);
+      return members;
     };
   }
 
@@ -1120,7 +1181,7 @@ export class SyncEngine {
     canonicalId: string,
     parentExists: boolean,
     touchedPrompts: Set<string>,
-    repairContext?: NaturalKeyRepairContext,
+    repairContext: NaturalKeyRepairContext,
   ): boolean {
     const childDef = tableDef(def.name === "tags" ? "prompt_tags" : "collection_prompts")!;
     const foreignColumn = def.name === "tags" ? "tag_id" : "collection_id";
@@ -1172,22 +1233,15 @@ export class SyncEngine {
   }
 
   /**
-   * Live canonicalization reads the affected table on demand. Migration repair
-   * shares a parent-key index across components so each immutable child op is
-   * decoded once, then visited only for its own natural-key component.
+   * Decode committed child gossip once per table and batch. The transaction's
+   * new ops stay separate so an FK rollback cannot poison subsequent retries.
    */
   private childHistoryEntries(
     childDef: SyncedTableDef,
     foreignIndex: number,
     members: readonly string[],
-    repairContext?: NaturalKeyRepairContext,
+    repairContext: NaturalKeyRepairContext,
   ): ChildHistoryEntry[] {
-    if (repairContext === undefined) {
-      return (this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(childDef.name) as OpRow[]).map(
-        (row) => ({ op: opFromRow(row), values: decodeRecordId(childDef, row.record_id) }),
-      );
-    }
-
     const table = childDef.name as NaturalKeyChildTable;
     let byParent = repairContext.childHistoryByParent.get(table);
     if (byParent === undefined) {
@@ -1195,6 +1249,7 @@ export class SyncEngine {
       byParent = new Map();
       const rows = this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(table) as OpRow[];
       for (const row of rows) {
+        if (repairContext.delta?.opKeys.has(JSON.stringify([row.source_device_id, row.op_id]))) continue;
         const values = decodeRecordId(childDef, row.record_id);
         const parentId = values[foreignIndex]!;
         const entries = byParent.get(parentId);
@@ -1205,7 +1260,8 @@ export class SyncEngine {
       repairContext.childHistoryByParent.set(table, byParent);
     }
 
-    return members.flatMap((member) => byParent.get(member) ?? []);
+    const staged = repairContext.delta?.childHistoryByParent.get(table);
+    return members.flatMap((member) => [...(byParent.get(member) ?? []), ...(staged?.get(member) ?? [])]);
   }
 
   /** Repoints a tag's junction rows before retiring an alias row. */
@@ -1323,6 +1379,7 @@ export class SyncEngine {
     incoming: SyncOp,
     touchedPrompts: Set<string>,
     touchedBranches: Set<string>,
+    historyContext: NaturalKeyRepairContext,
   ): { recordId: string; payload: Record<string, unknown>; structuralChange: boolean } {
     const incomingId = String(payload["id"]);
     const historicalMembers = this.historicalNaturalKeyComponent(def, incomingId, payload);
@@ -1346,7 +1403,7 @@ export class SyncEngine {
     }
     if (def.name === "tags" || def.name === "collections") {
       structuralChange =
-        this.reduceCanonicalChildren(def, members, canonical, parentExists, touchedPrompts) || structuralChange;
+        this.reduceCanonicalChildren(def, members, canonical, parentExists, touchedPrompts, historyContext) || structuralChange;
     }
     if (def.name === "branches") touchedBranches.add(canonical);
     return { recordId: canonicalRecordId, payload: { ...payload, id: canonical }, structuralChange };
@@ -1883,11 +1940,15 @@ export class SyncEngine {
            AND target_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
           id,
         );
-        run(
-          `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
-           WHERE draft_base_version_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
-          id,
-        );
+        // Migration v11 invokes this reducer before v13 adds bound drafts.
+        // Old schemas have no draft-version relationship to clear.
+        if ((this.db.pragma("user_version", { simple: true }) as number) >= 13) {
+          run(
+            `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
+             WHERE draft_base_version_id IN (SELECT id FROM versions WHERE branch_id = ?)`,
+            id,
+          );
+        }
         run("UPDATE notes SET version_id = NULL WHERE version_id IN (SELECT id FROM versions WHERE branch_id = ?)", id);
         run(
           `UPDATE versions SET parent_version_id = NULL

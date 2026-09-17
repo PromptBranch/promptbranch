@@ -264,12 +264,48 @@ describe("sync session", () => {
     a.engine.refineDirty();
     expect(a.engine.opsSince({}, 10_000_000).ops.length).toBeGreaterThan(5_000);
 
-    const [sessionA, sessionB] = sessionPair(a, b);
-    await vi.waitFor(() => expect(sessionA.currentState).toBe("steady"), { timeout: 15_000 });
-    await vi.waitFor(() => expect(sessionB.currentState).toBe("steady"), { timeout: 15_000 });
+    const historyLoads = { prompt_tags: 0, collection_prompts: 0 };
+    const batchLoads: Array<typeof historyLoads> = [];
+    const prepare = b.db.prepare.bind(b.db);
+    const prepareSpy = vi.spyOn(b.db, "prepare").mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (/SELECT \* FROM sync_ops\s+WHERE table_name = \?\s*$/.test(sql)) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...parameters: unknown[]) => {
+          const table = parameters[0];
+          if (table === "prompt_tags" || table === "collection_prompts") historyLoads[table] += 1;
+          return all(...parameters);
+        });
+      }
+      return statement;
+    });
+    const applyRemote = b.engine.applyRemote.bind(b.engine);
+    const applySpy = vi.spyOn(b.engine, "applyRemote").mockImplementation((ops) => {
+      historyLoads.prompt_tags = 0;
+      historyLoads.collection_prompts = 0;
+      const result = applyRemote(ops);
+      batchLoads.push({ ...historyLoads });
+      return result;
+    });
 
-    expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(2_600);
-    sessionA.close();
-    sessionB.close();
+    const [sessionA, sessionB] = sessionPair(a, b);
+    try {
+      await vi.waitFor(() => expect(sessionA.currentState).toBe("steady"), { timeout: 15_000 });
+      await vi.waitFor(() => expect(sessionB.currentState).toBe("steady"), { timeout: 15_000 });
+
+      expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(2_600);
+      expect(batchLoads.length).toBeGreaterThan(0);
+      for (const batch of batchLoads) {
+        expect(batch.prompt_tags).toBeLessThanOrEqual(1);
+        expect(batch.collection_prompts).toBeLessThanOrEqual(1);
+      }
+    } finally {
+      applySpy.mockRestore();
+      prepareSpy.mockRestore();
+      sessionA.close();
+      sessionB.close();
+      a.db.close();
+      b.db.close();
+    }
   }, 20_000);
 });

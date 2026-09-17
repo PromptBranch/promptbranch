@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../src/db.js";
 import { formatHlc } from "../src/sync/hlc.js";
 import { PromptLibrary } from "../src/library.js";
@@ -61,6 +61,37 @@ function seedPrompt(r: Rig, id: string): void {
   r.db.prepare("DELETE FROM sync_dirty").run();
 }
 
+/** Observe actual SQLite work without replacing query results or the engine. */
+function observeHistoryQueries(r: Rig) {
+  const queries: Array<{ sql: string; parameters: unknown[]; rows: number; plan: string }> = [];
+  const prepare = r.db.prepare.bind(r.db);
+  const spy = vi.spyOn(r.db, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (/SELECT \* FROM sync_ops\s+WHERE table_name = \?/.test(sql)) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...parameters: unknown[]) => {
+        const rows = all(...parameters);
+        const plan = (prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters) as Array<{ detail: string }>)
+          .map((row) => row.detail).join("; ");
+        queries.push({ sql, parameters, rows: rows.length, plan });
+        return rows;
+      });
+    }
+    return statement;
+  });
+  return { queries, restore: () => spy.mockRestore() };
+}
+
+function storeHistory(r: Rig, ops: SyncOp[]): void {
+  const insert = r.db.prepare(`INSERT INTO sync_ops
+    (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  r.db.transaction(() => {
+    for (const op of ops) insert.run(op.source, op.seq, op.opId, op.table, op.recordId, op.kind,
+      op.payload === null ? null : JSON.stringify(op.payload), op.hlc, op.createdAt);
+  })();
+}
+
 /** Export with table arrays sorted by stable keys, for cross-device equality. */
 function normalizedExport(r: Rig) {
   const data = r.lib.exportLibrary();
@@ -82,6 +113,204 @@ function normalizedExport(r: Rig) {
 }
 
 describe("sync engine", () => {
+  it.each(["tags", "collections"] as const)("uses the bound natural-name index for %s", (table) => {
+    const r = rig();
+    const observed = observeHistoryQueries(r);
+    try {
+      r.engine.applyRemote([fixedOp("source", 1, table, "named", table === "tags"
+        ? { id: "named", name: "prod", color: null }
+        : { id: "named", name: "prod", sort_order: 0 }, 100)]);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups).toHaveLength(1);
+      expect(lookups[0]!.parameters).toEqual([table, "prod"]);
+      expect(lookups[0]!.plan).toContain("idx_sync_ops_natural_name_lookup");
+      expect(lookups[0]!.plan).toContain("table_name=? AND <expr>=?");
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it("looks up main branches by the full indexed prompt key across thousands of unrelated prompts", () => {
+    const r = rig();
+    const ops: SyncOp[] = [];
+    r.db.transaction(() => {
+      for (let index = 0; index < 2_400; index += 1) {
+        const promptId = `prompt-${index}`;
+        seedPrompt(r, promptId);
+        ops.push(fixedOp("history", index + 1, "branches", `branch-${index}`, {
+          id: `branch-${index}`, prompt_id: promptId, name: "main", description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        }, 100));
+      }
+    })();
+    storeHistory(r, ops);
+    const observed = observeHistoryQueries(r);
+    try {
+      const started = performance.now();
+      r.engine.applyRemote(ops.slice(0, 20).map((op, index) => fixedOp("incoming", index + 1,
+        "branches", `new-${index}`, { ...op.payload, id: `new-${index}` }, 200)));
+      console.info(`indexed branch lookup: ${(performance.now() - started).toFixed(1)}ms`);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups).toHaveLength(20);
+      for (const query of lookups) {
+        expect(query.rows).toBe(1);
+        expect(query.parameters).toHaveLength(3);
+        expect(query.sql).toContain("json_extract(payload_json, '$.prompt_id') IN (");
+        expect(query.plan).toContain("idx_sync_ops_natural_name_lookup");
+        expect(query.plan).toContain("table_name=? AND <expr>=? AND <expr>=?");
+      }
+      expect(r.db.prepare("SELECT count(*) AS n FROM branches").get()).toEqual({ n: 20 });
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it("finds same-name branch history under every raw prompt alias with bounded IN chunks", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-a");
+    const aliases = Array.from({ length: 1_100 }, (_, i) => `prompt-z-${i}`);
+    const insertRemap = r.db.prepare(
+      "INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES ('prompts', ?, ?)",
+    );
+    r.db.transaction(() => {
+      for (let i = 0; i < aliases.length; i += 1) insertRemap.run(aliases[i], i === 0 ? "prompt-a" : aliases[0]);
+    })();
+    const branch = (id: string, promptId: string, seq: number) => fixedOp("history", seq, "branches", id, {
+      id, prompt_id: promptId, name: "main", description: null, created_at: "2026-09-03T00:00:00.000Z",
+    }, 100 + seq);
+    storeHistory(r, [branch("branch-a", aliases[0]!, 1), branch("branch-b", aliases[1099]!, 2)]);
+    const observed = observeHistoryQueries(r);
+    try {
+      r.engine.applyRemote([branch("branch-c", "prompt-a", 3)]);
+      expect(r.db.prepare("SELECT id, prompt_id, name FROM branches").all())
+        .toEqual([{ id: "branch-a", prompt_id: "prompt-a", name: "main" }]);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups.length).toBeGreaterThan(1);
+      const queriedIds = lookups.flatMap((query) => query.parameters.slice(2));
+      expect(new Set(queriedIds)).toEqual(new Set(["prompt-a", ...aliases]));
+      expect(lookups.reduce((total, query) => total + query.rows, 0)).toBe(2);
+      for (const query of lookups) {
+        expect(query.parameters.length).toBeLessThan(999);
+        expect(query.plan).toContain("table_name=? AND <expr>=? AND <expr>=?");
+      }
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it.each([false, true])("loads child history once for 4,000 live ops (FK fallback: %s)", (orphan) => {
+    const r = rig();
+    r.db.transaction(() => {
+      for (let i = 0; i < 1_000; i += 1) seedPrompt(r, `prompt-${i}`);
+    })();
+    const ops: SyncOp[] = [];
+    for (let i = 0; i < 1_000; i += 1) {
+      const tagId = `tag-${i}`;
+      const collectionId = `collection-${i}`;
+      const promptId = `prompt-${i}`;
+      const collectionPromptId = orphan && i === 999 ? "missing-prompt" : promptId;
+      ops.push(
+        fixedOp("source", i * 4 + 1, "tags", tagId, { id: tagId, name: tagId, color: null }, 100),
+        fixedOp("source", i * 4 + 2, "collections", collectionId,
+          { id: collectionId, name: collectionId, sort_order: 0 }, 100),
+        fixedOp("source", i * 4 + 3, "prompt_tags", `${promptId}:${tagId}`,
+          { prompt_id: promptId, tag_id: tagId }, 200),
+        fixedOp("source", i * 4 + 4, "collection_prompts", `${collectionId}:${collectionPromptId}`,
+          { collection_id: collectionId, prompt_id: collectionPromptId, sort_order: i }, 200),
+      );
+    }
+    const observed = observeHistoryQueries(r);
+    try {
+      const started = performance.now();
+      expect(r.engine.applyRemote(ops)).toEqual({ applied: orphan ? 3_999 : 4_000,
+        skipped: 0, stale: 0, deferred: orphan ? 1 : 0 });
+      console.info(`4,000 live ops, fallback=${orphan}: ${(performance.now() - started).toFixed(1)}ms`);
+      for (const table of ["prompt_tags", "collection_prompts"]) {
+        const loads = observed.queries.filter((query) => query.parameters[0] === table &&
+          !query.sql.includes("record_id IN"));
+        expect(loads, table).toHaveLength(1);
+      }
+      expect(r.db.prepare("SELECT count(*) AS n FROM prompt_tags").get()).toEqual({ n: 1_000 });
+      expect(r.db.prepare("SELECT count(*) AS n FROM collection_prompts").get())
+        .toEqual({ n: orphan ? 999 : 1_000 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      expect(r.engine.opsSince({}, 10_000_000).ops).toHaveLength(orphan ? 3_999 : 4_000);
+      if (orphan) {
+        seedPrompt(r, "missing-prompt");
+        expect(r.engine.applyRemote(ops)).toEqual({ applied: 1, skipped: 3_999, stale: 0, deferred: 0 });
+      }
+      expect(r.engine.haveVector()).toMatchObject({ source: 4_000 });
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  }, 60_000);
+
+  it.each(["forward", "reverse", "split"])("keeps stale child gossip and tombstones convergent (%s)", (delivery) => {
+    const receiver = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [receiver, relay, third]) seedPrompt(r, "prompt-1");
+    const ops: SyncOp[] = [];
+    for (const table of ["tags", "collections"] as const) {
+      const parent = (id: string, millis: number) => fixedOp(`${table}-${id}`, millis, table, id,
+        table === "tags" ? { id, name: "prod", color: `#${millis}` }
+          : { id, name: "prod", sort_order: millis }, millis);
+      const child = (id: string, millis: number, deleted = false) => fixedOp(`child-${table}-${millis}`, 1,
+        table === "tags" ? "prompt_tags" : "collection_prompts",
+        table === "tags" ? `prompt-1:${id}` : `${id}:prompt-1`, deleted ? null
+          : table === "tags" ? { prompt_id: "prompt-1", tag_id: id }
+            : { collection_id: id, prompt_id: "prompt-1", sort_order: millis }, millis,
+        deleted ? "delete" : "upsert");
+      ops.push(parent("parent-b", 100), child("parent-b", 110), child("parent-b", 300, true),
+        fixedOp(`delete-${table}`, 1, table, "parent-b", null, 400, "delete"),
+        parent("parent-a", 200), child("parent-a", 250), parent("parent-a", 500));
+    }
+    try {
+      if (delivery === "split") {
+        for (const op of ops) receiver.engine.applyRemote([op]);
+      } else {
+        receiver.engine.applyRemote(delivery === "reverse" ? [...ops].reverse() : ops);
+      }
+      relay.engine.applyRemote([...ops].reverse());
+      // Force another reduction after the losing child upsert has been stored.
+      const later = fixedOp("later", 1, "tags", "parent-a",
+        { id: "parent-a", name: "prod", color: "#latest" }, 550);
+      receiver.engine.applyRemote([later]);
+      relay.engine.applyRemote([later]);
+      const gossip = relay.engine.opsSince({}, 10_000_000).ops;
+      third.engine.applyRemote(gossip);
+      expect(normalizedExport(receiver)).toEqual(normalizedExport(relay));
+      expect(normalizedExport(third)).toEqual(normalizedExport(relay));
+      for (const r of [receiver, relay, third]) {
+        expect(r.db.prepare("SELECT * FROM prompt_tags").all()).toEqual([]);
+        expect(r.db.prepare("SELECT * FROM collection_prompts").all()).toEqual([]);
+        expect(r.db.prepare("SELECT id FROM tags").all()).toEqual([{ id: "parent-a" }]);
+        expect(r.db.prepare("SELECT id FROM collections").all()).toEqual([{ id: "parent-a" }]);
+        expect(r.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 14, stale: 0, deferred: 0 });
+        const stored = r.engine.opsSince({}, 10_000_000).ops;
+        for (const op of ops) expect(stored).toContainEqual(op);
+        expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      }
+      // Terminal prompt deletion still wins over a later membership upsert.
+      const terminal = fixedOp("terminal", 1, "prompts", "prompt-1", null, 600, "delete");
+      const lateChild = fixedOp("late-child", 1, "prompt_tags", "prompt-1:parent-b",
+        { prompt_id: "prompt-1", tag_id: "parent-b" }, 700);
+      receiver.engine.applyRemote([terminal, lateChild]);
+      relay.engine.applyRemote([terminal]);
+      relay.engine.applyRemote([lateChild]);
+      third.engine.applyRemote([lateChild, terminal]);
+      expect(normalizedExport(receiver)).toEqual(normalizedExport(relay));
+      expect(normalizedExport(third)).toEqual(normalizedExport(relay));
+      expect(receiver.db.prepare("SELECT * FROM prompt_tags").all()).toEqual([]);
+    } finally {
+      for (const r of [receiver, relay, third]) r.db.close();
+    }
+  });
+
   it("relays and applies stored schema-12 prompt ops with legacy-null draft bases", () => {
     const origin = rig();
     const relay = rig();

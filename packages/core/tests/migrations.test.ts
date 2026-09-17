@@ -11,6 +11,7 @@ import {
   SyncEngine,
 } from "../src/index.js";
 import { SCHEMA_SQL } from "../src/schema.js";
+import { runMigrationsThrough } from "../src/migrations.js";
 
 const tmpDirs: string[] = [];
 
@@ -20,11 +21,13 @@ function tmpDbPath(): string {
   return path.join(dir, "library.db");
 }
 
-/** Rewinds a latest-schema fixture so migrations v9 and later run again. */
-function rewindBeforeV9(db: Database.Database): void {
-  db.prepare("DROP TRIGGER IF EXISTS sync_prompt_tombstone_del").run();
-  db.prepare("DROP TABLE IF EXISTS sync_prompt_tombstones").run();
-  db.pragma("user_version = 8");
+/** Apply the shipped migration list, leaving later columns/triggers/indexes absent. */
+function physicalDatabase(dbPath: string, version: number): { db: Database.Database } {
+  const db = new Database(dbPath);
+  db.pragma("foreign_keys = ON");
+  runMigrationsThrough(db, version);
+  expect(db.pragma("user_version", { simple: true })).toBe(version);
+  return { db };
 }
 
 afterEach(() => {
@@ -68,21 +71,61 @@ describe("migrations", () => {
 
   it("migration 13 adds a nullable draft base without changing existing drafts", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 12).db;
     const lib = new PromptLibrary(seeded);
     const prompt = lib.createPrompt({ title: "Legacy draft", content: "saved" });
-    lib.setDraft(prompt.id, "legacy draft");
-    seeded.prepare("UPDATE prompts SET draft_base_version_id = NULL WHERE id = ?").run(prompt.id);
-    seeded.pragma("user_version = 12");
+    seeded.prepare("UPDATE prompts SET draft_content = 'legacy draft' WHERE id = ?").run(prompt.id);
+    expect((seeded.pragma("table_info(prompts)") as Array<{ name: string }>).map((c) => c.name))
+      .not.toContain("draft_base_version_id");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(13);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(
       migrated.db
         .prepare("SELECT draft_content, draft_base_version_id FROM prompts WHERE id = ?")
         .get(prompt.id),
     ).toEqual({ draft_content: "legacy draft", draft_base_version_id: null });
+    migrated.db.close();
+  });
+
+  it("migration 14 adds lookup indexes without changing v13 rows or immutable sync state", () => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, 13).db;
+    const lib = new PromptLibrary(seeded);
+    const prompt = lib.createPrompt({ title: "Indexed history", content: "saved" });
+    lib.setDraft(prompt.id, "draft");
+    lib.addRating({ targetType: "prompt", targetId: prompt.id, clarity: 4 });
+    const engine = new SyncEngine(seeded);
+    engine.refineDirty(100);
+    // Keep pending dirty rows as well as already refined gossip and heads.
+    lib.createTag({ name: "unrefined" });
+    seeded.prepare("INSERT INTO sync_cursors (source_device_id, last_seq) VALUES ('peer', 7)").run();
+    seeded.prepare(`INSERT INTO sync_ops
+      (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+      VALUES ('legacy', 1, 'legacy', 'tags', 'old-tag', 'upsert', ?,
+              '0000000000100:000000', '2026-09-03T00:00:00.000Z')`)
+      .run('{ "id": "old-tag", "name": "old", "color": null }');
+    const indexes = ["idx_sync_ops_natural_name_lookup", "idx_versions_prompt", "idx_ratings_target"];
+    const indexNames = (db: Database.Database) => db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+    ).all().map((row) => (row as { name: string }).name);
+    for (const index of indexes) expect(indexNames(seeded)).not.toContain(index);
+    const tables = (seeded.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string }>).map((row) => row.name);
+    const snapshot = (db: Database.Database) => Object.fromEntries(
+      tables.map((table) => [table, db.prepare(`SELECT * FROM "${table}"`).all()
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]),
+    );
+    const before = snapshot(seeded);
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    expect(migrated.backupPath).not.toBeNull();
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(14);
+    expect(indexNames(migrated.db)).toEqual(expect.arrayContaining(indexes));
+    expect(snapshot(migrated.db)).toEqual(before);
+    expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
     migrated.db.close();
   });
 
@@ -107,7 +150,7 @@ describe("migrations", () => {
 
   it("migration 12 preserves offline catalog data but revokes old credential provenance", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 11).db;
     seeded
       .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog', 'offline-cache')")
       .run();
@@ -115,7 +158,6 @@ describe("migrations", () => {
       .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog_credential_trusted', '1')")
       .run();
     seeded.prepare("INSERT INTO settings (key, value) VALUES ('portable', 'keep-me')").run();
-    seeded.pragma("user_version = 11");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
@@ -184,7 +226,7 @@ describe("migrations", () => {
 
   it("repairs pending provider-model keys written by delimiter-based sync triggers", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     const lib = new PromptLibrary(first.db);
     const provider = lib.createProvider({
       type: "ollama",
@@ -213,9 +255,6 @@ describe("migrations", () => {
          WHERE table_name = 'provider_models' AND record_id = json_array('tenant:one', 'llama')`,
       )
       .run();
-    // Re-run only migrations newer than the last shipped sync schema. Once
-    // the repair migration exists this models opening its immediate predecessor.
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -237,7 +276,7 @@ describe("migrations", () => {
 
   it("repairs JSON-looking legacy composite tombstones without changing their tuple", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     first.db
       .prepare(
         `INSERT INTO providers (id, type, driver, name, created_at)
@@ -261,7 +300,6 @@ describe("migrations", () => {
          WHERE table_name = 'provider_models' AND kind = 'delete'`,
       )
       .run(legacyRecordId);
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -279,7 +317,7 @@ describe("migrations", () => {
 
   it("canonicalizes already-refined legacy composite history before serving it", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     first.db
       .prepare(
         `INSERT INTO providers (id, type, driver, name, created_at)
@@ -304,7 +342,6 @@ describe("migrations", () => {
     first.db
       .prepare("UPDATE sync_heads SET record_id = ? WHERE table_name = 'provider_models'")
       .run(legacyRecordId);
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -357,7 +394,7 @@ describe("migrations", () => {
 
   it("migration 10 backfills prompt tombstones and removes already-resurrected aggregates", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 9);
     const lib = new PromptLibrary(first.db);
     const historical = lib.createPrompt({ title: "Historical delete", content: "v1" });
     const pending = lib.createPrompt({ title: "Pending delete", content: "v1" });
@@ -393,9 +430,6 @@ describe("migrations", () => {
       publishedAt: "2026-09-02T00:00:00.000Z",
     });
     first.db.prepare("DELETE FROM sync_dirty").run();
-    first.db.prepare("DROP TRIGGER IF EXISTS sync_prompt_tombstone_del").run();
-    first.db.prepare("DROP TABLE IF EXISTS sync_prompt_tombstones").run();
-    first.db.pragma("user_version = 9");
     first.db
       .prepare(
         `INSERT INTO sync_ops
@@ -524,7 +558,7 @@ describe("migrations", () => {
     ];
 
     const seedReleasedV10 = (dbPath: string, localTagId: "tag-a" | "tag-b") => {
-      const seeded = openDatabase(dbPath).db;
+      const seeded = physicalDatabase(dbPath, 10).db;
       seeded
         .prepare(
           `INSERT INTO prompts (id, title, created_at, updated_at)
@@ -559,7 +593,6 @@ describe("migrations", () => {
       // not yet refined before the upgrade. It must become a normal immutable
       // op before repair reduces the historical tag component.
       seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('pending-tag', 'pending', '#00cc00')").run();
-      seeded.pragma("user_version = 10");
       const verbatimOps = seeded
         .prepare(
           `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
@@ -654,7 +687,7 @@ describe("migrations", () => {
 
   it("compresses v10 tag remap chains and reciprocal edges directly to the minimum id", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 10).db;
     seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-a', 'prod', '#112233')").run();
     seeded
       .prepare(
@@ -665,7 +698,6 @@ describe("migrations", () => {
       )
       .run();
     seeded.prepare("DELETE FROM sync_dirty").run();
-    seeded.pragma("user_version = 10");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
@@ -689,7 +721,7 @@ describe("migrations", () => {
 
   it("keeps terminally deleted prompt aggregates absent while repairing v10 history", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 10).db;
     const library = new PromptLibrary(seeded);
     const prompt = library.createPrompt({ title: "Terminal history", content: "v1" });
     const tag = library.createTag({ name: "Terminal tag" });
@@ -732,7 +764,6 @@ describe("migrations", () => {
          ORDER BY table_name, record_id`,
       )
       .all();
-    seeded.pragma("user_version = 10");
     seeded.close();
 
     const migrated = openDatabase(dbPath);

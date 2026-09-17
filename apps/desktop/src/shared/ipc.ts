@@ -467,6 +467,8 @@ export type AiModelHideInput = z.infer<typeof aiModelHideSchema>;
 const modelRefSchema = z.object({ providerId: id, modelId: z.string().trim().min(1).max(200) });
 
 export const aiRunSchema = z.object({
+  /** Renderer-generated correlation only; never persisted as a run identity. */
+  requestId: z.string().uuid(),
   promptId: id,
   /** Defaults to the prompt's current version. */
   versionId: id.optional(),
@@ -503,6 +505,7 @@ export type AiRunCancelResult = z.infer<typeof aiRunCancelResultSchema>;
  * directly. Parsed again on the renderer side (defense in depth).
  */
 export const aiRunProgressEventSchema = z.object({
+  requestId: z.string().uuid(),
   runGroupId: id,
   providerId: id,
   modelId: z.string().trim().min(1).max(200),

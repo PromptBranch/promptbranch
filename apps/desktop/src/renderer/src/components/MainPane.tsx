@@ -19,7 +19,7 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import type { PromptDetail, VersionDto } from "../../../shared/ipc.js";
+import type { AiRunInput, PromptDetail, VersionDto } from "../../../shared/ipc.js";
 import { aiRunProgressEventSchema } from "../../../shared/ipc.js";
 import { useAppMutation, useNotes, useRunGroups, useRuns, useVersionContent, useVersions } from "../hooks/use-data";
 import {
@@ -260,16 +260,22 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   // The in-flight run, shown live in the compare view: placeholder columns
   // created when the run starts, updated by ai:run-progress events until
   // the final DTO (kind "fresh") replaces them. runGroupId is adopted from
-  // the first event — the per-model "queued" event, emitted at request time,
+  // the first matching "queued" event, emitted at request time,
   // so Cancel works before the first token (the ai:run invoke resolves only
   // at the end). Closing the view mid-run only dismisses it — tracking
   // continues so the Run button keeps showing "Running n/m…"; completion
   // reopens the settled view unless another group was opened meanwhile.
   const [live, setLive] = useState<{
+    requestId: string;
     group: CompareGroup;
     cancelling: boolean;
     dismissed: boolean;
   } | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
+  // Detached mutations retain their original callbacks, so consult the
+  // current view when deciding where their completion belongs.
+  const runViewRef = useRef({ promptId: prompt.id, compare });
+  runViewRef.current = { promptId: prompt.id, compare };
 
   useEffect(() => {
     setModelSelection(getRunModelSelection(prompt.id) ?? []);
@@ -277,10 +283,11 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     // Mid-run prompt switch (F13): the run keeps going in the background —
     // the live view is dropped and the completion toast reroutes instead.
     setLive(null);
+    activeRequestIdRef.current = null;
   }, [prompt.id]);
 
   // Live progress side channel. Zod-parsed here (defense in depth — the
-  // sandboxed preload forwards the raw payload). Events for other groups
+  // sandboxed preload forwards the raw payload). Events for other requests
   // (e.g. late events of a finished run) are ignored.
   useEffect(() => {
     return window.promptBuilder.ai.onRunProgress((raw) => {
@@ -288,11 +295,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       if (!parsed.success) return;
       const event = parsed.data;
       setLive((current) => {
-        if (!current) return current;
-        // NOTE: while runGroupId is still "" (before the first queued event),
-        // any group's events would be adopted — accepted as a known narrow
-        // window (queued events arrive at request time).
-        if (current.group.runGroupId !== "" && current.group.runGroupId !== event.runGroupId) return current;
+        if (!current || current.requestId !== event.requestId) return current;
         const runs = current.group.runs.map((run): CompareRun => {
           if (run.providerId !== event.providerId || run.modelId !== event.modelId) return run;
           switch (event.phase) {
@@ -323,49 +326,51 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
               };
           }
         });
-        return { ...current, group: { ...current.group, runGroupId: event.runGroupId, runs } };
+        const runGroupId = current.group.runGroupId === "" && event.phase === "queued"
+          ? event.runGroupId
+          : current.group.runGroupId;
+        return { ...current, group: { ...current.group, runGroupId, runs } };
       });
     });
   }, []);
 
-  // Which prompt the in-flight run was started on — a mid-run switch must not
-  // pop the compare dialog on an unrelated prompt.
-  const runStartRef = useRef<{ promptId: string; title: string } | null>(null);
-
   const runModels = useAppMutation(
-    (input: { refs: ModelRef[]; variables: Record<string, string> }) => {
-      runStartRef.current = { promptId: prompt.id, title: prompt.title };
-      return window.promptBuilder.ai.run({
-        promptId: prompt.id,
-        ...(viewingVersion ? { versionId: viewingVersion.id } : {}),
-        content: liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "",
-        variables: input.variables,
-        modelRefs: input.refs,
-      });
-    },
+    ({ promptTitle: _promptTitle, ...input }: AiRunInput & { promptTitle: string }) =>
+      window.promptBuilder.ai.run(input),
     {
-      toast: (group) => {
-        const started = runStartRef.current;
-        if (started && started.promptId !== prompt.id) {
-          return `Run finished for "${started.title}" — open it from Results`;
+      toast: (group, input) => {
+        if (input.promptId !== runViewRef.current.promptId || activeRequestIdRef.current !== input.requestId) {
+          return `Run finished for "${input.promptTitle}" — open it from Results`;
         }
         const summary = `Run complete — ${group.runs.filter((r) => r.status === "completed").length}/${group.runs.length} succeeded`;
         // Another group was opened while this run was dismissed — the toast
         // reroutes instead of hijacking the open view.
-        return compare !== null ? `${summary} — open it from Results` : summary;
+        return runViewRef.current.compare !== null ? `${summary} — open it from Results` : summary;
       },
-      onSuccess: (group) => {
-        const started = runStartRef.current;
-        setLive(null);
-        if (started && started.promptId !== prompt.id) return;
+      onSuccess: (group, input) => {
+        if (activeRequestIdRef.current !== input.requestId) return;
+        activeRequestIdRef.current = null;
+        setLive((current) => current?.requestId === input.requestId ? null : current);
+        if (input.promptId !== runViewRef.current.promptId) return;
         // The user explicitly opened another group while this run was in
         // flight (dismissed live view) — don't clobber it with the result.
-        if (compare !== null) return;
+        if (runViewRef.current.compare !== null) return;
         setCompare({ kind: "fresh", group: fromRunResult(group) });
       },
-      onError: () => setLive(null),
+      onError: (_error, input) => {
+        if (activeRequestIdRef.current !== input.requestId) return;
+        activeRequestIdRef.current = null;
+        setLive((current) => current?.requestId === input.requestId ? null : current);
+      },
     },
   );
+
+  const resetRunModels = runModels.reset;
+  useEffect(() => {
+    // Detach this prompt's observer so another prompt can run while the
+    // previous invocation finishes in the background.
+    resetRunModels();
+  }, [prompt.id, resetRunModels]);
 
   const cancelRun = useAppMutation(
     (runGroupId: string) => window.promptBuilder.ai.runCancel({ runGroupId }),
@@ -387,6 +392,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
    * live progress arrives via events meanwhile).
    */
   const beginRun = (refs: ModelRef[], variables: Record<string, string>) => {
+    const requestId = crypto.randomUUID();
     const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
     const currentVariables = projectRunVariables(extractVariableNames(content), variables);
     setRunVariables(prompt.id, currentVariables);
@@ -396,12 +402,22 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         availableModels.find((m) => modelRefKey(m) === modelRefKey(ref))?.providerName ?? ref.providerId,
     }));
     setCompare(null);
+    activeRequestIdRef.current = requestId;
     setLive({
+      requestId,
       group: placeholderGroup(withNames, viewingVersion?.id ?? ""),
       cancelling: false,
       dismissed: false,
     });
-    runModels.mutate({ refs, variables: currentVariables });
+    runModels.mutate({
+      requestId,
+      promptId: prompt.id,
+      promptTitle: prompt.title,
+      ...(viewingVersion ? { versionId: viewingVersion.id } : {}),
+      content,
+      modelRefs: refs,
+      variables: currentVariables,
+    });
   };
 
   /**

@@ -26,6 +26,31 @@ interface TestSchema {
   safeParse(value: unknown): { success: boolean };
 }
 
+describe("AI run request correlation", () => {
+  const requestId = "550e8400-e29b-41d4-a716-446655440001";
+  const invocation = {
+    promptId: "prompt-1", content: "Hi", variables: {},
+    modelRefs: [{ providerId: "provider-1", modelId: "model-1" }],
+  };
+
+  it("requires and preserves a UUID on invocations", () => {
+    for (const invalid of [undefined, "", "request-1"]) {
+      expect(ipcContract.aiRunSchema.safeParse({ ...invocation, requestId: invalid }).success).toBe(false);
+    }
+    expect(ipcContract.aiRunSchema.parse({ ...invocation, requestId })).toMatchObject({ requestId });
+  });
+
+  it.each(["queued", "started", "delta", "completed", "error"])(
+    "requires and preserves a UUID on %s progress", (phase) => {
+      const event = { runGroupId: "group-1", providerId: "provider-1", modelId: "model-1", phase };
+      for (const invalid of [undefined, "", "request-1"]) {
+        expect(ipcContract.aiRunProgressEventSchema.safeParse({ ...event, requestId: invalid }).success).toBe(false);
+      }
+      expect(ipcContract.aiRunProgressEventSchema.parse({ ...event, requestId })).toEqual({ ...event, requestId });
+    },
+  );
+});
+
 function paletteSchema(name: string): TestSchema {
   const schema = (ipcContract as unknown as Record<string, TestSchema | undefined>)[name];
   expect(schema, `${name} must be exported`).toBeDefined();

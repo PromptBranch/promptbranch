@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS } from "../shared/channels.js";
+import type { AiRunInput, AiRunProgressEvent, PromptBuilderApi } from "../shared/ipc.js";
 
 const electron = vi.hoisted(() => ({
   exposed: undefined as unknown,
@@ -109,6 +110,28 @@ describe("quick palette preload bridge", () => {
       [IPC_CHANNELS.draftSet, { promptId: "prompt-1", content: "working", baseVersionId: "version-1" }],
       [IPC_CHANNELS.draftSet, { promptId: "prompt-1", content: null }],
     ]);
+  });
+
+  it("preserves request correlation through invocation and progress subscription", async () => {
+    const api = electron.exposed as PromptBuilderApi;
+    const input: AiRunInput = {
+      requestId: "550e8400-e29b-41d4-a716-446655440001",
+      promptId: "prompt-1", content: "Hi", variables: {},
+      modelRefs: [{ providerId: "provider-1", modelId: "model-1" }],
+    };
+    await api.ai.run(input);
+    expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.aiRun, input);
+    const received = vi.fn();
+    const unsubscribe = api.ai.onRunProgress(received);
+    const listener = electron.on.mock.calls[0]![1] as (_event: unknown, payload: AiRunProgressEvent) => void;
+    const event: AiRunProgressEvent = {
+      requestId: input.requestId, runGroupId: "group-1", providerId: "provider-1",
+      modelId: "model-1", phase: "queued",
+    };
+    listener({}, event);
+    expect(received).toHaveBeenCalledWith(event);
+    unsubscribe();
+    expect(electron.removeListener).toHaveBeenCalledWith(IPC_CHANNELS.aiRunProgress, listener);
   });
 
   it("unsubscribes the exact listeners installed for open and closed events", () => {

@@ -689,13 +689,24 @@ export async function runModelGroup(
   // runGroupId immediately, so Cancel works in the window before the first
   // token ("started" keeps its first-token meaning).
   for (const p of prepared) {
-    emit({ runGroupId, providerId: p.provider.id, modelId: p.modelId, phase: "queued" });
+    emit({
+      requestId: input.requestId,
+      runGroupId,
+      providerId: p.provider.id,
+      modelId: p.modelId,
+      phase: "queued",
+    });
   }
 
   try {
     const runs: AiRunResultDto[] = await Promise.all(
       prepared.map(async (p): Promise<AiRunResultDto> => {
-        const base = { runGroupId, providerId: p.provider.id, modelId: p.modelId };
+        const base = {
+          requestId: input.requestId,
+          runGroupId,
+          providerId: p.provider.id,
+          modelId: p.modelId,
+        };
         // "started" fires on the first token (not at request time — that is
         // the "queued" event above): before that, the model is effectively
         // waiting on the provider, and a fast-failing request yields just the

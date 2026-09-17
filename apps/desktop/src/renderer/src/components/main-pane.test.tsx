@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiProviderDto,
   AiRunGroupDto,
+  AiRunInput,
+  AiRunProgressEvent,
   PromptDetail,
   RunGroupDto,
   VersionDto,
@@ -167,6 +169,71 @@ function HistoricalVersionControl({ versionId }: { versionId: string }) {
 }
 
 describe("MainPane live run progress", () => {
+  async function overlappingRuns() {
+    const user = userEvent.setup();
+    const pending: { input: AiRunInput; resolve: (group: AiRunGroupDto) => void; reject: (error: Error) => void }[] = [];
+    bridge.ai.run.mockImplementation((input) => new Promise<AiRunGroupDto>((resolve, reject) => {
+      pending.push({ input, resolve, reject });
+    }));
+    const view = renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    view.rerender(<MainPane prompt={{ ...prompt, id: "prompt-2", title: "Farewell" }} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await startRun(user);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    return { user, first: pending[0]!, second: pending[1]! };
+  }
+
+  function progress(input: AiRunInput, runGroupId: string, phase: AiRunProgressEvent["phase"], text?: string) {
+    act(() => bridge.emitRunProgress({
+      requestId: input.requestId, runGroupId, providerId: "prov-local", modelId: "model-live",
+      phase, ...(text === undefined ? {} : { text }),
+    }));
+  }
+
+  it("ignores delayed A events before B queues and cancels only B's group", async () => {
+    const { user, first, second } = await overlappingRuns();
+    expect(first.input.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second.input.requestId).not.toBe(first.input.requestId);
+    for (const phase of ["queued", "started", "delta", "completed", "error"] as const) {
+      progress(first.input, "group-a", phase, "stale A output");
+    }
+    expect(screen.queryByText("stale A output")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // Matching non-queued progress cannot choose the persistent cancellation identity.
+    progress(second.input, "not-queued", "delta", "B output");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    progress(second.input, "group-b", "queued");
+    progress(second.input, "replacement-group", "queued");
+    progress(first.input, "group-a", "delta", "stale A output");
+    expect(screen.queryByText("stale A output")).toBeNull();
+    expect(screen.getByText("B output")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(bridge.ai.runCancel).toHaveBeenCalledExactlyOnceWith({ runGroupId: "group-b" });
+  });
+
+  it.each(["success", "error"] as const)("obsolete %s cannot clear or replace a newer live request", async (outcome) => {
+    const { first, second } = await overlappingRuns();
+    progress(second.input, "group-b", "queued");
+    progress(second.input, "group-b", "delta", "B stays live");
+    await act(async () => {
+      if (outcome === "success") first.resolve(freshGroup);
+      else first.reject(new Error("A failed"));
+    });
+    expect(within(screen.getByRole("dialog")).getByText("B stays live")).toBeInTheDocument();
+    expect(screen.queryByText("fresh output")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("attributes A's completion toast to A after B starts on a different prompt", async () => {
+    const { first } = await overlappingRuns();
+    expect(first.input.promptId).toBe("prompt-1");
+    await act(async () => first.resolve(freshGroup));
+    expect(await screen.findByText('Run finished for "Greeting" — open it from Results')).toBeInTheDocument();
+    expect(screen.queryByText(/Run finished for "Farewell"/)).toBeNull();
+  });
+
   it("drops stale variable keys before dialog submission, persistence and invocation", async () => {
     const user = userEvent.setup();
     setRunVariables(prompt.id, { stale: "secret", name: "Ada" });
@@ -217,6 +284,7 @@ describe("MainPane live run progress", () => {
     // before the first token (R6).
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",
@@ -227,6 +295,7 @@ describe("MainPane live run progress", () => {
 
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",
@@ -238,6 +307,7 @@ describe("MainPane live run progress", () => {
 
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",
@@ -266,6 +336,7 @@ describe("MainPane live run progress", () => {
 
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",
@@ -293,6 +364,7 @@ describe("MainPane live run progress", () => {
     await screen.findByText(/waiting to start/i);
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",
@@ -308,6 +380,7 @@ describe("MainPane live run progress", () => {
     for (const text of ["Hello", "Hello wor", "Hello world"]) {
       act(() => {
         bridge.emitRunProgress({
+          requestId: bridge.ai.run.mock.calls[0]![0].requestId,
           runGroupId: "rg-live",
           providerId: "prov-local",
           modelId: "model-live",
@@ -327,6 +400,7 @@ describe("MainPane live run progress", () => {
     await screen.findByText(/waiting to start/i);
     act(() => {
       bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
         runGroupId: "rg-live",
         providerId: "prov-local",
         modelId: "model-live",

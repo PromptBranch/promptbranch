@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openDatabase, openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
 
 let db: Database;
@@ -974,24 +974,61 @@ describe("ratings", () => {
     const main = lib.listBranches(prompt.id)[0]!;
     const v1Id = prompt.current_version_id!;
     const v2 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    const unrated = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "unrated",
+    });
 
     lib.addRating({ targetType: "version", targetId: v1Id, effectiveness: 4, clarity: 2 });
     lib.addRating({ targetType: "version", targetId: v1Id, effectiveness: 2 });
     lib.addRating({ targetType: "version", targetId: v2.id, completeness: 5 });
+    const other = lib.createPrompt({ title: "Q", content: "y" });
+    lib.addRating({ targetType: "version", targetId: other.current_version_id!, clarity: 1 });
 
     const summaries = lib.getVersionRatingSummaries(prompt.id);
     expect(summaries).toHaveLength(2);
     const s1 = summaries.find((s) => s.version_id === v1Id)!;
     expect(s1.count).toBe(2);
     expect(s1.effectiveness).toBeCloseTo(3);
+    expect(s1.clarity).toBeCloseTo(2);
+    expect(s1.completeness).toBeNull();
+    expect(s1.actionability).toBeNull();
     expect(s1.overall).toBeCloseTo((4 + 2 + 2) / 3);
     const s2 = summaries.find((s) => s.version_id === v2.id)!;
+    expect(s2.effectiveness).toBeNull();
+    expect(s2.clarity).toBeNull();
+    expect(s2.completeness).toBeCloseTo(5);
+    expect(s2.actionability).toBeNull();
     expect(s2.overall).toBeCloseTo(5);
+    expect(summaries.find((s) => s.version_id === unrated.id)).toBeUndefined();
+    expect(summaries.find((s) => s.version_id === other.current_version_id)).toBeUndefined();
+  });
 
-    // Ratings on other prompts' versions don't leak in.
-    const other = lib.createPrompt({ title: "Q", content: "y" });
-    lib.addRating({ targetType: "version", targetId: other.current_version_id!, clarity: 1 });
-    expect(lib.getVersionRatingSummaries(prompt.id)).toHaveLength(2);
+  it("summarizes every rated version with one select", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "x" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const versionIds = [
+      prompt.current_version_id!,
+      lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" }).id,
+      lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" }).id,
+    ];
+    for (const [index, versionId] of versionIds.entries()) {
+      lib.addRating({ targetType: "version", targetId: versionId, effectiveness: index + 1 });
+    }
+
+    const prepare = db.prepare.bind(db);
+    const selects: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (/^\s*SELECT\b/i.test(sql)) selects.push(sql);
+      return prepare(sql);
+    });
+    try {
+      expect(lib.getVersionRatingSummaries(prompt.id)).toHaveLength(versionIds.length);
+      expect(selects).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("sorts and filters prompts by average prompt-level rating", () => {

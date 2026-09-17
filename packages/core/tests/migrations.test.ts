@@ -124,6 +124,23 @@ describe("migrations", () => {
     expect(migrated.backupPath).not.toBeNull();
     expect(migrated.db.pragma("user_version", { simple: true })).toBe(14);
     expect(indexNames(migrated.db)).toEqual(expect.arrayContaining(indexes));
+    const ratingSummaryPlan = migrated.db.prepare(`EXPLAIN QUERY PLAN
+      SELECT v.id AS version_id,
+             AVG(r.effectiveness) AS effectiveness,
+             AVG(r.clarity) AS clarity,
+             AVG(r.completeness) AS completeness,
+             AVG(r.actionability) AS actionability,
+             COUNT(*) AS count,
+             (TOTAL(r.effectiveness) + TOTAL(r.clarity) + TOTAL(r.completeness) +
+              TOTAL(r.actionability)) /
+             NULLIF(COUNT(r.effectiveness) + COUNT(r.clarity) + COUNT(r.completeness) +
+                    COUNT(r.actionability), 0) AS overall
+      FROM versions AS v
+      JOIN ratings AS r ON r.target_type = 'version' AND r.target_id = v.id
+      WHERE v.prompt_id = ?
+      GROUP BY v.id`).all(prompt.id) as Array<{ detail: string }>;
+    expect(ratingSummaryPlan.some((row) => row.detail.includes("idx_versions_prompt"))).toBe(true);
+    expect(ratingSummaryPlan.some((row) => row.detail.includes("idx_ratings_target"))).toBe(true);
     expect(snapshot(migrated.db)).toEqual(before);
     expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
     migrated.db.close();

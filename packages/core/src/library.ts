@@ -1312,16 +1312,23 @@ export class PromptLibrary {
 
   /** Average ratings per version of a prompt, for versions that have ratings. */
   getVersionRatingSummaries(promptId: string): Array<AverageRatings & { version_id: string }> {
-    const ids = this.all<{ target_id: string }>(
-      `SELECT DISTINCT target_id FROM ratings
-       WHERE target_type = 'version'
-         AND target_id IN (SELECT id FROM versions WHERE prompt_id = ?)`,
+    return this.all<AverageRatings & { version_id: string }>(
+      `SELECT v.id AS version_id,
+              AVG(r.effectiveness) AS effectiveness,
+              AVG(r.clarity) AS clarity,
+              AVG(r.completeness) AS completeness,
+              AVG(r.actionability) AS actionability,
+              COUNT(*) AS count,
+              (TOTAL(r.effectiveness) + TOTAL(r.clarity) + TOTAL(r.completeness) +
+               TOTAL(r.actionability)) /
+              NULLIF(COUNT(r.effectiveness) + COUNT(r.clarity) + COUNT(r.completeness) +
+                     COUNT(r.actionability), 0) AS overall
+       FROM versions AS v
+       JOIN ratings AS r ON r.target_type = 'version' AND r.target_id = v.id
+       WHERE v.prompt_id = ?
+       GROUP BY v.id`,
       promptId,
     );
-    return ids.map(({ target_id }) => ({
-      version_id: target_id,
-      ...this.getAverageRatings("version", target_id),
-    }));
   }
 
   // ------------------------------------------------------------------- runs

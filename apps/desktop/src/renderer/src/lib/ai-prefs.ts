@@ -68,11 +68,21 @@ export function setRunVariables(promptId: string, variables: Record<string, stri
   write(`run-variables:${promptId}`, variables);
 }
 
+/** Keep only supplied values for this template, preserving its first-appearance order. */
+export function projectRunVariables(
+  names: readonly string[],
+  values: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return Object.fromEntries([...new Set(names)]
+    .filter((name) => Object.hasOwn(values, name))
+    .map((name) => [name, values[name]!]));
+}
+
 /** {{variable}} names in a prompt's content, in order of first appearance. */
 export function extractVariableNames(content: string): string[] {
-  const names: string[] = [];
+  const names = new Set<string>();
   for (const match of content.matchAll(/\{\{\s*([\p{L}\p{N}_.-]+)\s*\}\}/gu)) {
-    if (!names.includes(match[1]!)) names.push(match[1]!);
+    names.add(match[1]!);
   }
-  return names;
+  return [...names];
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { projectRunVariables } from "../lib/ai-prefs";
 
 const inputClass =
   "w-full rounded-md border border-line bg-app px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/40";
@@ -21,12 +22,12 @@ export function RunVariablesDialog({
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (open) setValues(initialValues);
-  }, [open, initialValues]);
+    if (open) setValues(projectRunVariables(names, initialValues));
+  }, [open, initialValues, names]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    onSubmit(values);
+    onSubmit(projectRunVariables(names, values));
     onOpenChange(false);
   };
 

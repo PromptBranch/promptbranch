@@ -32,6 +32,7 @@ import {
   type TokenUsage,
 } from "@promptbranch/ai";
 import type { PromptLibrary, ProviderRow, RunRow } from "@promptbranch/core";
+import { renderPromptVariablesBounded } from "@promptbranch/core";
 import type {
   AiAssistInput,
   AiAssistResult,
@@ -539,9 +540,7 @@ export function runFailureMessage(reason: { message: string }): string {
 
 /** Substitutes {{variable}} placeholders; unknown variables are left as-is. */
 export function substituteVariables(content: string, variables: Record<string, string>): string {
-  return content.replace(/\{\{\s*([\p{L}\p{N}_.-]+)\s*\}\}/gu, (raw, name: string) =>
-    Object.hasOwn(variables, name) ? variables[name]! : raw,
-  );
+  return renderPromptVariablesBounded(content, variables);
 }
 
 /**

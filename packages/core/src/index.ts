@@ -37,6 +37,14 @@ export {
   extractPromptVariables,
   missingPromptVariables,
   substitutePromptVariables,
+  renderPromptVariablesBounded,
+  PromptVariableError,
+  MAX_PROMPT_VARIABLES,
+  MAX_PROMPT_VARIABLE_VALUE_LENGTH,
+  MAX_PROMPT_VARIABLE_INPUT_LENGTH,
+  MAX_RENDERED_PROMPT_LENGTH,
+  type PromptVariableErrorCode,
+  type PromptVariableLimits,
   type PromptVariableValue,
 } from "./variables.js";
 export type {

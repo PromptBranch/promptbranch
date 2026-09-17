@@ -4,6 +4,7 @@ import {
   extractVariableNames,
   getRunModelSelection,
   getRunVariables,
+  projectRunVariables,
   setRunModelSelection,
   setRunVariables,
 } from "./ai-prefs";
@@ -60,6 +61,14 @@ describe("run model selection prefs", () => {
 });
 
 describe("run variable prefs", () => {
+  it("projects own saved values onto current names in template order", () => {
+    const saved = { stale: "secret", second: "B", first: "A", empty: "" };
+    const values = projectRunVariables(["first", "missing", "second", "empty", "first", "constructor"], saved);
+    expect(values).toEqual({ first: "A", second: "B", empty: "" });
+    expect(Object.keys(values)).toEqual(["first", "second", "empty"]);
+    expect(projectRunVariables([], saved)).toEqual({});
+    expect(saved.stale).toBe("secret");
+  });
   it("defaults to an empty object and round-trips values", () => {
     expect(getRunVariables("p1")).toEqual({});
     setRunVariables("p1", { name: "Ada", topic: "testing" });

@@ -13,6 +13,7 @@ import {
   resolveQuickPalette,
   searchQuickPalette,
 } from "./quick-palette-library.js";
+import { quickPaletteRenderSchema } from "../shared/ipc.js";
 
 let db: Database;
 let library: PromptLibrary;
@@ -299,6 +300,31 @@ describe("renderQuickPalette", () => {
 });
 
 describe("quickPaletteFailure", () => {
+  it("accepts the exact rendered limit through core and palette IPC", () => {
+    const prompt = library.createPrompt({ title: "Exact", content: "{{a}}".repeat(10) });
+    const input = { sessionId: "session", promptId: prompt.id, versionId: prompt.current_version_id!,
+      variables: { a: "x".repeat(100_000) },
+    };
+    expect(quickPaletteRenderSchema.safeParse(input).success).toBe(true);
+    expect(renderQuickPalette(library, input)).toEqual({ status: "ready", content: "x".repeat(1_000_000) });
+  });
+  it("rejects aggregate input before rendering even when output would fit", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `v${i}`);
+    const prompt = library.createPrompt({ title: "Aggregate", content: names.map((name) => `{{${name}}}`).join("") });
+    const input = { sessionId: "session", promptId: prompt.id, versionId: prompt.current_version_id!,
+      variables: Object.fromEntries(names.map((name) => [name, "x".repeat(100_000)])),
+    };
+    expect(quickPaletteRenderSchema.safeParse(input).success).toBe(false);
+    expect(() => renderQuickPalette(library, input)).toThrowError(
+      expect.objectContaining({ code: "invalid-input" }),
+    );
+  });
+
+  it("rejects aggregate supplied-name overflow at IPC", () => {
+    expect(quickPaletteRenderSchema.safeParse({ sessionId: "session", promptId: "prompt", versionId: "version",
+      variables: { ["a".repeat(500_000)]: "", ["b".repeat(500_001)]: "" },
+    }).success).toBe(false);
+  });
   it("preserves expected palette codes and normalizes unknown failures", () => {
     expect(quickPaletteFailure(new QuickPaletteError("revision-changed", "Refresh"))).toEqual({
       ok: false,

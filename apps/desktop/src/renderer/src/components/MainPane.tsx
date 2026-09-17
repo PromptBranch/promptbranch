@@ -26,6 +26,7 @@ import {
   extractVariableNames,
   getRunModelSelection,
   getRunVariables,
+  projectRunVariables,
   setRunModelSelection,
   setRunVariables,
   type ModelRef,
@@ -386,6 +387,9 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
    * live progress arrives via events meanwhile).
    */
   const beginRun = (refs: ModelRef[], variables: Record<string, string>) => {
+    const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
+    const currentVariables = projectRunVariables(extractVariableNames(content), variables);
+    setRunVariables(prompt.id, currentVariables);
     const withNames = refs.map((ref) => ({
       ...ref,
       providerName:
@@ -397,7 +401,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       cancelling: false,
       dismissed: false,
     });
-    runModels.mutate({ refs, variables });
+    runModels.mutate({ refs, variables: currentVariables });
   };
 
   /**
@@ -423,11 +427,11 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
     if (!skipVariables && names.length > 0) {
       setPendingRefs(valid);
       setVariableNames(names);
-      setVariableInitialValues(getRunVariables(prompt.id));
+      setVariableInitialValues(projectRunVariables(names, getRunVariables(prompt.id)));
       setVariablesOpen(true);
       return;
     }
-    beginRun(valid, getRunVariables(prompt.id));
+    beginRun(valid, projectRunVariables(names, getRunVariables(prompt.id)));
   };
 
   // Memoized: a fresh object every render would reset RunCompareView's
@@ -987,7 +991,6 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         names={variableNames}
         initialValues={variableInitialValues}
         onSubmit={(values) => {
-          setRunVariables(prompt.id, values);
           beginRun(pendingRefs, values);
         }}
       />

@@ -669,6 +669,41 @@ describe("test model selection", () => {
 });
 
 describe("runModelGroup", () => {
+  it.each([
+    ["count", "plain", Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`v${i}`, ""])), "too-many-variables"],
+    ["template count", Array.from({ length: 101 }, (_, i) => `{{v${i}}}`).join(""), {}, "too-many-variables"],
+    ["value", "{{a}}", { a: "x".repeat(100_001) }, "variable-input-too-large"],
+    ["aggregate", "plain", Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(100_000)])), "variable-input-too-large"],
+    ["output", "{{a}}".repeat(11), { a: "x".repeat(100_000) }, "rendered-content-too-large"],
+  ] as const)("rejects variable %s before provider preparation or network traffic", async (_label, content, variables, code) => {
+    const deps = makeDeps();
+    const prompt = deps.lib.createPrompt({ title: "Bounded", content: "saved" });
+    const requests = seenUrls.length;
+    // An unknown provider fails during preparation, so the variable error proves ordering.
+    await expect(runModelGroup(deps, { promptId: prompt.id, content, variables,
+      modelRefs: [{ providerId: "must-not-be-prepared", modelId: "model-a" }],
+    })).rejects.toMatchObject({ code });
+    expect(seenUrls).toHaveLength(requests);
+    expect(deps.lib.listRuns(prompt.id)).toEqual([]);
+  });
+
+  it.each([
+    Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`v${i}`, ""])),
+    Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(100_000)])),
+  ])("rejects count and aggregate overflow at the IPC boundary", (variables) => {
+    expect(aiRunSchema.safeParse({ promptId: "prompt", content: "plain", variables,
+      modelRefs: [{ providerId: "provider", modelId: "model" }],
+    }).success).toBe(false);
+  });
+
+  it("accepts exact variable count and aggregate input limits at IPC", () => {
+    const parse = (variables: Record<string, string>) => aiRunSchema.safeParse({
+      promptId: "prompt", content: "plain", variables,
+      modelRefs: [{ providerId: "provider", modelId: "model" }],
+    }).success;
+    expect(parse(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`v${i}`, ""])))).toBe(true);
+    expect(parse(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(99_998)])))).toBe(true);
+  });
   it.each(["pending", "rejected"])("rejects a legacy %s version before provider traffic", async (status) => {
     const db = openMemoryDatabase();
     const lib = new PromptLibrary(db);

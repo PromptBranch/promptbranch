@@ -11,6 +11,20 @@ notes.
 - Reject incompatible device-to-device sync payload schemas before pairing or
   applying remote changes. Protocol 4 requires sync schema 13, so every paired
   desktop or mobile device must be upgraded before sync can resume.
+- Reject malformed or internally inconsistent library imports before they can
+  change the library.
+- Keep each live model result tied to the run that started it, even when runs
+  overlap or finish out of order.
+- Keep version saves reliable when another local process is writing at the same
+  time.
+- Enforce count, input-size, and rendered-size limits for prompt variables.
+- Bound portal response bodies while importing, publishing, or revoking a
+  shared prompt.
+
+### Improved
+
+- Speed up large sync-history merges, rating summaries, and search updates
+  while preserving the same results and history.
 
 ### Release requirements
 

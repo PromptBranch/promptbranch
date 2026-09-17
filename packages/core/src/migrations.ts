@@ -159,6 +159,61 @@ ALTER TABLE runs ADD COLUMN prompt_content TEXT;
       }
     },
   },
+  {
+    version: 14,
+    name: "sync-merge-history-lookup-indexes",
+    sql: `
+CREATE INDEX idx_sync_ops_natural_name_lookup
+ON sync_ops (
+  table_name,
+  json_extract(payload_json, '$.name'),
+  json_extract(payload_json, '$.prompt_id')
+)
+WHERE payload_json IS NOT NULL;
+
+CREATE INDEX idx_versions_prompt ON versions(prompt_id, id);
+CREATE INDEX idx_ratings_target ON ratings(target_type, target_id);
+`,
+  },
+  {
+    version: 15,
+    name: "incremental-search-row-mapping",
+    sql: `
+CREATE TABLE search_index_rows (
+  rowid INTEGER PRIMARY KEY,
+  prompt_id TEXT NOT NULL,
+  version_id TEXT
+);
+
+CREATE INDEX idx_search_index_rows_prompt
+ON search_index_rows(prompt_id);
+
+CREATE UNIQUE INDEX idx_search_index_rows_prompt_metadata
+ON search_index_rows(prompt_id)
+WHERE version_id IS NULL;
+
+CREATE UNIQUE INDEX idx_search_index_rows_version
+ON search_index_rows(version_id)
+WHERE version_id IS NOT NULL;
+
+INSERT INTO search_index_rows (rowid, prompt_id, version_id)
+SELECT rowid, prompt_id, version_id FROM search_index;
+`,
+  },
+  // A pre-v16 binary could advance user_version past v13 without running its
+  // repair callback, leaving the draft-base column absent. Keep this forward
+  // repair idempotent so those databases become usable without manual edits.
+  {
+    version: 16,
+    name: "repair-version-bound-prompt-drafts",
+    sql: "",
+    repair: (db) => {
+      const columns = db.pragma("table_info(prompts)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "draft_base_version_id")) {
+        db.exec("ALTER TABLE prompts ADD COLUMN draft_base_version_id TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;
@@ -170,9 +225,17 @@ export function pendingMigrationCount(db: BetterSqlite3.Database): number {
 }
 
 export function runMigrations(db: BetterSqlite3.Database): void {
+  runMigrationsThrough(db, LATEST_SCHEMA_VERSION);
+}
+
+/** Direct-module fixture helper; deliberately absent from the public package API. */
+export function runMigrationsThrough(db: BetterSqlite3.Database, throughVersion: number): void {
+  if (!Number.isInteger(throughVersion) || throughVersion < 0 || throughVersion > LATEST_SCHEMA_VERSION) {
+    throw new Error(`Unknown migration version: ${throughVersion}`);
+  }
   const current = db.pragma("user_version", { simple: true }) as number;
   for (const migration of migrations) {
-    if (migration.version <= current) continue;
+    if (migration.version <= current || migration.version > throughVersion) continue;
     db.transaction(() => {
       db.exec(migration.sql);
       migration.repair?.(db);

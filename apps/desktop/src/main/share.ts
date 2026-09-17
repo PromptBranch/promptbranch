@@ -52,6 +52,9 @@ function buildPayload(deps: ShareServiceDeps, input: ShareScopeInput): SnapshotP
   if (!prompt) throw new Error(`Prompt not found: ${input.promptId}`);
   const current = prompt.current_version_id ? deps.lib.getVersion(prompt.current_version_id) : null;
   if (!current) throw new Error("Prompt has no current version");
+  if (current.prompt_id !== prompt.id || current.status !== "active") {
+    throw new Error("Current version must be active and belong to this prompt");
+  }
   const content = input.content ?? current.content;
   if (!content.trim()) {
     throw new Error("Prompt content is empty — add content before sharing");

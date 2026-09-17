@@ -198,11 +198,13 @@ Match that format: emoji, `type(scope): subject`.
 - SQLite migrations are **forward-only and append-only**: add a new numbered
   migration in `packages/core/src/migrations.ts`; never edit an
   already-shipped migration. The runner backs up on-disk DBs before migrating
-  automatically. (Currently at v13: v8 adds exact run prompt snapshots, v9
+  automatically. (Currently at v16: v8 adds exact run prompt snapshots, v9
   replaces composite-key sync triggers with delimiter-safe record keys, v10
   makes prompt hard-delete tombstones durable, v11 canonicalizes natural-key
-  sync, v12 revokes stale model-catalog credential trust, and v13 binds drafts
-  to their exact saved base version.)
+  sync, v12 revokes stale model-catalog credential trust, v13 binds drafts to
+  their exact saved base version, v14 adds sync-history and rating lookup
+  indexes, v15 maintains incremental search row mappings, and v16 repairs
+  version-bound draft columns left absent by an earlier version marker.)
 - Comments in the codebase explain *why*, not what; match that density and
   tone (see `packages/core/src/db.ts` / `paths.ts` for the house style).
 - Theming: CSS custom properties (`--pb-*`) in

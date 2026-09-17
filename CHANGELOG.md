@@ -4,6 +4,34 @@ Notable user-facing changes to PromptBranch are documented here. GitHub
 Releases contain platform downloads, checksums, and release-specific validation
 notes.
 
+## [Unreleased]
+
+### Fixed
+
+- Reject incompatible device-to-device sync payload schemas before pairing or
+  applying remote changes. Protocol 4 requires sync schema 13, so every paired
+  desktop or mobile device must be upgraded before sync can resume.
+- Reject malformed or internally inconsistent library imports before they can
+  change the library.
+- Keep each live model result tied to the run that started it, even when runs
+  overlap or finish out of order.
+- Keep version saves reliable when another local process is writing at the same
+  time.
+- Enforce count, input-size, and rendered-size limits for prompt variables.
+- Bound portal response bodies while importing, publishing, or revoking a
+  shared prompt.
+
+### Improved
+
+- Speed up large sync-history merges, rating summaries, and search updates
+  while preserving the same results and history.
+
+### Release requirements
+
+- A mobile release must implement protocol 4 and sync schema 13 and pass a
+  physical desktop-to-mobile interoperability test before mobile sync
+  compatibility is considered release-ready.
+
 ## [0.6.0] - 2026-09-16
 
 ### Added

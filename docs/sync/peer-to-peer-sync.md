@@ -22,6 +22,11 @@ Changing the port restarts sync networking; use a port from 1024 to 65535.
 Each pairing code confirms the other device's identity. After pairing,
 PromptBranch connects only to that saved device unless you choose to forget it.
 
+All paired devices must use compatible sync data. Upgrade every paired desktop
+or mobile device to a version that supports protocol 4 and sync schema 13 before
+sync can resume; mixed-version devices are rejected before pairing or applying
+changes.
+
 ## What syncs
 
 Prompts, versions, variations, tags, collections, notes, ratings, run records,
@@ -45,6 +50,8 @@ automatic reconnection; pair it again if you want to restore access.
 
 ## If pairing fails
 
+- Upgrade every paired desktop or mobile device; an older sync protocol or data
+  schema cannot pair or resume sync with a current device.
 - Confirm sync is enabled on both devices and re-open the pairing code.
 - Check that both devices can reach each other on the same network or VPN.
 - On macOS, check that PromptBranch has Local Network permission.

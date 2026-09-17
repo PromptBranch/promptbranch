@@ -4,6 +4,8 @@ import {
   PromptLibrary,
   type Database,
   type LibraryExport,
+  preflightLibraryImport,
+  LibraryImportValidationError,
 } from "../src/index.js";
 
 let db: Database;
@@ -80,6 +82,249 @@ function rowCounts(database: Database): Record<string, number> {
   );
 }
 
+/** Includes FTS shadow tables and every sync side table, not just row counts. */
+function fullDatabaseSnapshot(database: Database): Record<string, unknown[]> {
+  const names = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+    .all() as Array<{ name: string }>;
+  return Object.fromEntries(names.map(({ name }) => [name,
+    database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  ]));
+}
+
+describe("import preflight", () => {
+  it("rebuilds metadata and every active version mapping for imported and remapped prompts", () => {
+    const { prompt } = populate(lib);
+    const pending = lib.suggestVariation({
+      promptId: prompt.id, baseVersionId: prompt.current_version_id!,
+      newContent: "hiddensuggestion", rationale: "review first",
+    });
+    const bundle = lib.exportLibrary();
+    expect(Object.keys(bundle.tables)).not.toContain("search_index_rows");
+    const target = openMemoryDatabase();
+    try {
+      const imported = new PromptLibrary(target);
+      imported.importLibrary(bundle);
+      imported.importLibrary(bundle);
+      expect(imported.listPrompts()).toHaveLength(2);
+      const actual = target.prepare(`SELECT prompt_id, version_id FROM search_index_rows
+        ORDER BY prompt_id, version_id`).all();
+      expect(actual).toEqual(target.prepare(`SELECT id AS prompt_id, NULL AS version_id FROM prompts
+        UNION ALL SELECT prompt_id, id AS version_id FROM versions WHERE status = 'active'
+        ORDER BY prompt_id, version_id`).all());
+      expect(target.prepare("SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid").all())
+        .toEqual(target.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all());
+      expect(actual).not.toContainEqual(expect.objectContaining({ version_id: pending.version.id }));
+      expect(imported.search("hiddensuggestion")).toEqual([]);
+      expect(new Set(imported.search("carefully").map((row) => row.promptId)).size).toBe(2);
+    } finally {
+      target.close();
+    }
+  });
+
+  function bundle(): LibraryExport {
+    populate(lib);
+    lib.createPrompt({ title: "Other owner", content: "foreign content" });
+    const provider = lib.createProvider({ type: "openai", name: "Test provider" });
+    lib.setProviderModels(provider.id, [{ modelId: "test-model" }]);
+    return lib.exportLibrary();
+  }
+
+  function rejected(input: unknown, expectedPath: string): void {
+    const before = fullDatabaseSnapshot(db);
+    let error: unknown;
+    try { lib.importLibrary(input); } catch (caught) { error = caught; }
+    // Check all content even when the expected error is missing or is a SQL error.
+    expect(fullDatabaseSnapshot(db)).toEqual(before);
+    expect(error).toMatchObject({
+      name: "LibraryImportValidationError",
+      issues: expect.arrayContaining([expect.objectContaining({
+        path: expectedPath, code: expect.any(String), message: expect.any(String),
+      })]),
+    });
+  }
+
+  const cases: Array<[string, (data: LibraryExport) => void, string]> = [
+    ["duplicate entity ids", (d) => { d.tables.notes.push({ ...d.tables.notes[0]! }); }, "tables.notes[2].id"],
+    ["blank ids", (d) => { d.tables.tags[0]!.id = "  "; }, "tables.tags[0].id"],
+    ["missing prompt even when destination has it", (d) => { d.tables.prompts = []; }, "tables.branches[0].prompt_id"],
+    ["missing branch even when destination has it", (d) => { d.tables.branches = []; }, "tables.versions[0].branch_id"],
+    ["missing parent", (d) => { d.tables.versions[0]!.parent_version_id = "missing"; }, "tables.versions[0].parent_version_id"],
+    ["missing current", (d) => { d.tables.prompts[0]!.current_version_id = "missing"; }, "tables.prompts[0].current_version_id"],
+    ["missing draft base", (d) => { d.tables.prompts[0]!.draft_base_version_id = "missing"; }, "tables.prompts[0].draft_base_version_id"],
+    ["foreign current", (d) => { d.tables.prompts[0]!.current_version_id = d.tables.versions.at(-1)!.id; }, "tables.prompts[0].current_version_id"],
+    ["foreign draft base", (d) => { d.tables.prompts[0]!.draft_base_version_id = d.tables.versions.at(-1)!.id; }, "tables.prompts[0].draft_base_version_id"],
+    ["draft base without content", (d) => { d.tables.prompts[0]!.draft_content = null; }, "tables.prompts[0].draft_base_version_id"],
+    ["foreign branch", (d) => { d.tables.versions[0]!.branch_id = d.tables.branches.at(-1)!.id; }, "tables.versions[0].branch_id"],
+    ["cross-prompt parent", (d) => { d.tables.versions[0]!.parent_version_id = d.tables.versions.at(-1)!.id; }, "tables.versions[0].parent_version_id"],
+    ["self cycle", (d) => { d.tables.versions[0]!.parent_version_id = d.tables.versions[0]!.id; }, "tables.versions[0].parent_version_id"],
+    ["multi-node cycle", (d) => { d.tables.versions[0]!.parent_version_id = d.tables.versions[1]!.id; }, "tables.versions[0].parent_version_id"],
+    ["foreign note version", (d) => { d.tables.notes[0]!.version_id = d.tables.versions.at(-1)!.id; }, "tables.notes[0].version_id"],
+    ["missing note version", (d) => { d.tables.notes[0]!.version_id = "missing"; }, "tables.notes[0].version_id"],
+    ["missing note prompt", (d) => { d.tables.notes[0]!.prompt_id = "missing"; }, "tables.notes[0].prompt_id"],
+    ["foreign run version", (d) => { d.tables.runs[0]!.version_id = d.tables.versions.at(-1)!.id; }, "tables.runs[0].version_id"],
+    ["missing run version", (d) => { d.tables.runs[0]!.version_id = "missing"; }, "tables.runs[0].version_id"],
+    ["missing run prompt", (d) => { d.tables.runs[0]!.prompt_id = "missing"; }, "tables.runs[0].prompt_id"],
+    ["missing prompt rating", (d) => { d.tables.ratings[0]!.target_id = "missing"; }, "tables.ratings[0].target_id"],
+    ["missing version rating", (d) => { d.tables.ratings[1]!.target_id = "missing"; }, "tables.ratings[1].target_id"],
+    ["missing provider model owner", (d) => { d.tables.provider_models![0]!.provider_id = "missing"; }, "tables.provider_models[0].provider_id"],
+    ["missing junction prompt", (d) => { d.tables.prompt_tags[0]!.prompt_id = "missing"; }, "tables.prompt_tags[0].prompt_id"],
+    ["missing junction tag", (d) => { d.tables.prompt_tags[0]!.tag_id = "missing"; }, "tables.prompt_tags[0].tag_id"],
+    ["missing collection", (d) => { d.tables.collection_prompts[0]!.collection_id = "missing"; }, "tables.collection_prompts[0].collection_id"],
+    ["missing collection prompt", (d) => { d.tables.collection_prompts[0]!.prompt_id = "missing"; }, "tables.collection_prompts[0].prompt_id"],
+    ["duplicate prompt tag", (d) => { d.tables.prompt_tags.push({ ...d.tables.prompt_tags[0]! }); }, "tables.prompt_tags[1]"],
+    ["duplicate collection prompt", (d) => { d.tables.collection_prompts.push({ ...d.tables.collection_prompts[0]! }); }, "tables.collection_prompts[1]"],
+    ["duplicate provider model", (d) => { d.tables.provider_models!.push({ ...d.tables.provider_models![0]! }); }, "tables.provider_models[1]"],
+    ["duplicate tag name", (d) => { d.tables.tags.push({ ...d.tables.tags[0]!, id: "new-tag" }); }, "tables.tags[1].name"],
+    ["duplicate collection name", (d) => { d.tables.collections.push({ ...d.tables.collections[0]!, id: "new-collection" }); }, "tables.collections[1].name"],
+    ["duplicate branch name per prompt", (d) => { d.tables.branches.push({ ...d.tables.branches[0]!, id: "new-branch" }); }, "tables.branches[3].name"],
+    ["duplicate setting key", (d) => { d.tables.settings = [{ key: "theme", value: "dark" }, { key: "theme", value: "light" }]; }, "tables.settings[1].key"],
+  ];
+  for (const status of ["pending", "rejected"] as const) {
+    for (const field of ["current_version_id", "draft_base_version_id"] as const) {
+      cases.push([`${status} ${field}`, (d) => {
+        const id = d.tables.prompts[0]![field];
+        d.tables.versions.find((v) => v.id === id)!.status = status;
+      }, `tables.prompts[0].${field}`]);
+    }
+  }
+  it.each(cases)("rejects %s atomically", (_name, mutate, path) => {
+    const data = bundle();
+    mutate(data);
+    rejected(data, path);
+  });
+
+  const primitives: Array<[keyof LibraryExport["tables"], string, unknown]> = [
+    ["prompts", "title", undefined], ["prompts", "title", 42],
+    ["prompts", "description", false], ["prompts", "current_version_id", 3],
+    ["prompts", "is_starred", true], ["prompts", "is_starred", 2],
+    ["prompts", "created_at", "yesterday"], ["prompts", "deleted_at", "2026-02-30T00:00:00Z"],
+    ["branches", "prompt_id", null], ["branches", "description", []],
+    ["versions", "number", 1.5], ["versions", "number", Infinity],
+    ["versions", "status", "approved"], ["versions", "source", "robot"],
+    ["versions", "content", null], ["versions", "parent_version_id", {}],
+    ["notes", "body", 3], ["notes", "created_at", "2026-01-01"],
+    ["tags", "color", 5], ["collections", "sort_order", 0.5],
+    ["collection_prompts", "sort_order", NaN], ["ratings", "target_type", "run"],
+    ["ratings", "effectiveness", 0], ["ratings", "clarity", 6],
+    ["ratings", "completeness", NaN], ["ratings", "actionability", "5"],
+    ["runs", "status", "queued"], ["runs", "latency_ms", 1.5],
+    ["runs", "latency_ms", Infinity], ["runs", "outcome_rating", 6],
+    ["runs", "started_at", false], ["runs", "output", []],
+    ["providers", "enabled", 2], ["providers", "base_url", false],
+    ["provider_models", "enabled", true], ["provider_models", "display_name", 8],
+  ];
+  it.each(primitives)("validates %s.%s = %s atomically", (table, field, value) => {
+    const data = bundle();
+    (data.tables[table]![0] as unknown as Record<string, unknown>)[field] = value;
+    rejected(data, `tables.${table}[0].${field}`);
+  });
+  it.each([null, 3, [], "row"].map((value) => [value]))("rejects a non-object row %s", (value) => {
+    const data = bundle();
+    (data.tables.notes as unknown[])[0] = value;
+    rejected(data, "tables.notes[0]");
+  });
+  it("rejects sparse rows at the unknown boundary", () => {
+    const data = bundle();
+    delete data.tables.notes[0];
+    rejected(data, "tables.notes[0]");
+  });
+  it("validates every supplied field and table row shape", () => {
+    const data = bundle();
+    data.tables.settings.push({ key: "theme", value: "dark" });
+    for (const [table, rows] of Object.entries(data.tables)) {
+      for (const field of Object.keys(rows[0]!)) {
+        const invalid = structuredClone(data);
+        const tables = invalid.tables as unknown as Record<string, Array<Record<string, unknown>>>;
+        tables[table]![0]![field] = {};
+        rejected(invalid, `tables.${table}[0].${field}`);
+      }
+      const invalid = structuredClone(data);
+      (invalid.tables as unknown as Record<string, unknown>)[table] = {};
+      rejected(invalid, `tables.${table}`);
+    }
+  });
+  it.each([null, [], 3].map((value) => [value]))("rejects a non-object envelope %s", (input) => rejected(input, "$"));
+  it("requires tables and the supported format version", () => {
+    const data = bundle();
+    rejected({ ...data, meta: { ...data.meta, formatVersion: 2 } }, "meta.formatVersion");
+    const tables = { ...data.tables } as Record<string, unknown>;
+    delete tables.notes;
+    rejected({ ...data, tables }, "tables.notes");
+    rejected({ ...data, tables: [] }, "tables");
+  });
+  it("accumulates independent issues in deterministic table/index/field order", () => {
+    const data = bundle();
+    const prompts = data.tables.prompts as unknown as Array<Record<string, unknown>>;
+    prompts[0]!.title = false;
+    prompts[0]!.is_starred = 3;
+    prompts[1]!.description = 4;
+    const tags = data.tables.tags as unknown as Array<Record<string, unknown>>;
+    tags[0]!.color = 8;
+    const before = fullDatabaseSnapshot(db);
+    let caught: unknown;
+    try { lib.importLibrary(data); } catch (error) { caught = error; }
+    expect(fullDatabaseSnapshot(db)).toEqual(before);
+    expect(caught).toMatchObject({ name: "LibraryImportValidationError", issues: [
+      expect.objectContaining({ path: "tables.prompts[0].is_starred" }),
+      expect.objectContaining({ path: "tables.prompts[0].title" }),
+      expect.objectContaining({ path: "tables.prompts[1].description" }),
+      expect.objectContaining({ path: "tables.tags[0].color" }),
+    ] });
+  });
+  it("preserves null-base legacy drafts, unresolved run providers and concurrent numbering", () => {
+    const data = bundle();
+    delete (data.tables.prompts[0] as Partial<LibraryExport["tables"]["prompts"][number]>).draft_base_version_id;
+    data.tables.runs[0]!.provider = "deleted-provider";
+    data.tables.versions[1]!.number = data.tables.versions[0]!.number;
+    const fresh = openMemoryDatabase();
+    try {
+      const destination = new PromptLibrary(fresh);
+      destination.importLibrary(data);
+      expect(destination.getPrompt(data.tables.prompts[0]!.id)).toMatchObject({
+        draft_content: "draft text", draft_base_version_id: null,
+      });
+      expect(destination.listRuns(data.tables.prompts[0]!.id)[0]!.provider).toBe("deleted-provider");
+      const expected = structuredClone(data.tables);
+      expected.prompts[0]!.draft_base_version_id = null;
+      expect(destination.exportLibrary().tables).toEqual(expected);
+    } finally { fresh.close(); }
+  });
+  it("normalizes missing provider fields without mutating the input", () => {
+    const data = bundle();
+    const provider = data.tables.providers![0]!;
+    const raw = provider as unknown as Record<string, unknown>;
+    for (const field of ["driver", "base_url", "enabled", "created_at", "api_key_enc"]) delete raw[field];
+    const before = structuredClone(data);
+    const normalized = preflightLibraryImport(data);
+    expect(normalized.tables.providers[0]).toMatchObject({
+      id: provider.id, type: "openai", driver: "openai", base_url: null,
+      enabled: 1, api_key_enc: null, created_at: expect.any(String),
+    });
+    expect(data).toEqual(before);
+    lib.importLibrary(data);
+    expect(lib.listProviders().every((row) => row.api_key_enc === null)).toBe(true);
+  });
+  it("checks deep ancestry iteratively and reports only the cycle members", () => {
+    const data = bundle();
+    const root = data.tables.versions[0]!;
+    for (let i = 0; i < 12_000; i += 1) {
+      data.tables.versions.push({ ...root, id: `deep-${i}`, parent_version_id: i ? `deep-${i - 1}` : root.id });
+    }
+    expect(preflightLibraryImport(data).tables.versions).toHaveLength(12_005);
+    data.tables.versions[5]!.parent_version_id = "deep-11999";
+    let caught: unknown;
+    const before = fullDatabaseSnapshot(db);
+    try { lib.importLibrary(data); } catch (error) { caught = error; }
+    expect(fullDatabaseSnapshot(db)).toEqual(before);
+    expect(caught).toBeInstanceOf(LibraryImportValidationError);
+    const issues = (caught as LibraryImportValidationError).issues;
+    expect(issues).toHaveLength(12_000);
+    expect(issues[0]).toMatchObject({ path: "tables.versions[5].parent_version_id", code: "parent_cycle" });
+    expect(issues.at(-1)).toMatchObject({ path: "tables.versions[12004].parent_version_id", code: "parent_cycle" });
+  });
+});
+
 describe("export/import", () => {
   it("round-trips losslessly into a fresh database", () => {
     const { prompt } = populate(lib);
@@ -93,6 +338,7 @@ describe("export/import", () => {
     const summary = freshLib.importLibrary(payload);
 
     expect(rowCounts(freshDb)).toEqual(rowCounts(db));
+    expect(freshLib.exportLibrary().tables).toEqual(exported.tables);
     expect(summary.prompts!.inserted).toBe(1);
     expect(summary.prompts!.remapped).toBe(0);
 

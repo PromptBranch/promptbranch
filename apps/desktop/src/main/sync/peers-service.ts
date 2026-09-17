@@ -2,7 +2,7 @@ import tls from "node:tls";
 import type { SyncEngine } from "@promptbranch/core";
 import { derivePairingCode, type DeviceIdentity } from "./identity.js";
 import { createFrameReader, encodeFrame } from "./frames.js";
-import { PROTOCOL_VERSION } from "./messages.js";
+import { PROTOCOL_VERSION, SYNC_SCHEMA_VERSION } from "./messages.js";
 import { PairingAcceptor, PairingInitiator } from "./pairing.js";
 import { SyncSession } from "./session.js";
 import type { DiscoveredPeer, Discovery } from "./discovery.js";
@@ -828,6 +828,7 @@ export class PeerService {
             encodeFrame({
               t: "pair-confirmed-v2",
               v: PROTOCOL_VERSION,
+              schemaVersion: SYNC_SCHEMA_VERSION,
               name: this.deps.deviceName(),
             }),
           );
@@ -839,7 +840,11 @@ export class PeerService {
             return;
           }
           socket.end(
-            encodeFrame({ t: "pair-rejected-v2", v: PROTOCOL_VERSION }),
+            encodeFrame({
+              t: "pair-rejected-v2",
+              v: PROTOCOL_VERSION,
+              schemaVersion: SYNC_SCHEMA_VERSION,
+            }),
             () => void connection.close(),
           );
         },

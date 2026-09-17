@@ -336,7 +336,7 @@ export function useSuggestions() {
 export function useAppMutation<TInput, TOutput = unknown>(
   fn: (input: TInput) => Promise<TOutput>,
   options?: {
-    toast?: string | ((result: TOutput) => string);
+    toast?: string | ((result: TOutput, input: TInput) => string);
     quiet?: boolean;
     invalidate?: boolean;
     /** Invalidate only these query keys instead of every query. */
@@ -370,7 +370,7 @@ export function useAppMutation<TInput, TOutput = unknown>(
       // of waiting for the 60s background drain. No-op when sync is off.
       void api().sync.now().catch(() => undefined);
       if (!options?.quiet && options?.toast) {
-        toast(typeof options.toast === "function" ? options.toast(result) : options.toast);
+        toast(typeof options.toast === "function" ? options.toast(result, input) : options.toast);
       }
       options?.onSuccess?.(result, input);
     },

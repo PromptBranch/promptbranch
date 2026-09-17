@@ -127,7 +127,10 @@ export const quickPaletteRenderSchema = z.strictObject({
   }, z.array(z.tuple([
     z.string().min(1).max(1_000_000),
     z.union([z.string().max(100_000), z.number().finite(), z.boolean()]),
-  ])).max(100)).transform((entries) => Object.fromEntries(entries)),
+  ])).max(100).refine(
+    (entries) => entries.reduce((length, [name, value]) => length + name.length + String(value).length, 0) <= 1_000_000,
+    { message: "Prompt variable input exceeds the character limit" },
+  )).transform((entries) => Object.fromEntries(entries)),
 });
 export const quickPaletteCopySchema = z.strictObject({ sessionId: id, previewId: id });
 export const quickPaletteDismissSchema = z.strictObject({ sessionId: id });
@@ -464,12 +467,19 @@ export type AiModelHideInput = z.infer<typeof aiModelHideSchema>;
 const modelRefSchema = z.object({ providerId: id, modelId: z.string().trim().min(1).max(200) });
 
 export const aiRunSchema = z.object({
+  /** Renderer-generated correlation only; never persisted as a run identity. */
+  requestId: z.string().uuid(),
   promptId: id,
   /** Defaults to the prompt's current version. */
   versionId: id.optional(),
   /** Raw prompt content; {{variable}} placeholders are substituted. */
   content: z.string().trim().min(1).max(1_000_000),
-  variables: z.record(z.string().max(200), z.string().max(100_000)).default({}),
+  variables: z.record(z.string().max(200), z.string().max(100_000))
+    .refine((values) => Object.keys(values).length <= 100, { message: "Too many prompt variables" })
+    .refine(
+      (values) => Object.entries(values).reduce((length, [name, value]) => length + name.length + value.length, 0) <= 1_000_000,
+      { message: "Prompt variable input exceeds the character limit" },
+    ).default({}),
   modelRefs: z
     .array(modelRefSchema)
     .min(1)
@@ -495,6 +505,7 @@ export type AiRunCancelResult = z.infer<typeof aiRunCancelResultSchema>;
  * directly. Parsed again on the renderer side (defense in depth).
  */
 export const aiRunProgressEventSchema = z.object({
+  requestId: z.string().uuid(),
   runGroupId: id,
   providerId: id,
   modelId: z.string().trim().min(1).max(200),

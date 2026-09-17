@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../src/db.js";
 import { formatHlc } from "../src/sync/hlc.js";
 import { PromptLibrary } from "../src/library.js";
@@ -61,6 +61,72 @@ function seedPrompt(r: Rig, id: string): void {
   r.db.prepare("DELETE FROM sync_dirty").run();
 }
 
+/** Observe actual SQLite work without replacing query results or the engine. */
+function observeHistoryQueries(r: Rig) {
+  const queries: Array<{ sql: string; parameters: unknown[]; rows: number; plan: string }> = [];
+  const prepare = r.db.prepare.bind(r.db);
+  const spy = vi.spyOn(r.db, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (/SELECT \* FROM sync_ops\s+WHERE table_name = \?/.test(sql)) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...parameters: unknown[]) => {
+        const rows = all(...parameters);
+        const plan = (prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters) as Array<{ detail: string }>)
+          .map((row) => row.detail).join("; ");
+        queries.push({ sql, parameters, rows: rows.length, plan });
+        return rows;
+      });
+    }
+    return statement;
+  });
+  return { queries, restore: () => spy.mockRestore() };
+}
+
+function observeSearchWrites(r: Rig) {
+  const writes: Array<{ sql: string; parameters: unknown[] }> = [];
+  const ownershipScans: string[] = [];
+  const prepare = r.db.prepare.bind(r.db);
+  const spy = vi.spyOn(r.db, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (/^\s*SELECT\b[\s\S]*\bFROM search_index\s+WHERE (prompt_id|version_id)\s*=/i.test(sql)) {
+      ownershipScans.push(sql);
+    }
+    if (/^\s*(INSERT INTO|DELETE FROM|UPDATE) search_index\b/i.test(sql)) {
+      const run = statement.run.bind(statement);
+      vi.spyOn(statement, "run").mockImplementation((...parameters: unknown[]) => {
+        writes.push({ sql, parameters });
+        return run(...parameters);
+      });
+    }
+    return statement;
+  });
+  return { writes, ownershipScans, restore: () => spy.mockRestore() };
+}
+
+function searchRows(r: Rig, promptId: string) {
+  return r.db.prepare("SELECT rowid, * FROM search_index WHERE prompt_id = ? ORDER BY rowid")
+    .all(promptId) as Array<{ rowid: number; version_id: string | null; tags: string; notes: string; content: string }>;
+}
+
+function expectSearchMappingsConsistent(r: Rig): void {
+  expect(r.db.prepare(`SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid`).all())
+    .toEqual(r.db.prepare(`SELECT rowid, prompt_id, version_id FROM search_index_rows ORDER BY rowid`).all());
+  expect(r.db.prepare(`SELECT prompt_id FROM search_index_rows WHERE version_id IS NULL ORDER BY prompt_id`).all())
+    .toEqual(r.db.prepare(`SELECT id AS prompt_id FROM prompts ORDER BY id`).all());
+  expect(r.db.prepare(`SELECT version_id FROM search_index_rows WHERE version_id IS NOT NULL ORDER BY version_id`).all())
+    .toEqual(r.db.prepare(`SELECT id AS version_id FROM versions WHERE status = 'active' ORDER BY id`).all());
+}
+
+function storeHistory(r: Rig, ops: SyncOp[]): void {
+  const insert = r.db.prepare(`INSERT INTO sync_ops
+    (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  r.db.transaction(() => {
+    for (const op of ops) insert.run(op.source, op.seq, op.opId, op.table, op.recordId, op.kind,
+      op.payload === null ? null : JSON.stringify(op.payload), op.hlc, op.createdAt);
+  })();
+}
+
 /** Export with table arrays sorted by stable keys, for cross-device equality. */
 function normalizedExport(r: Rig) {
   const data = r.lib.exportLibrary();
@@ -82,6 +148,854 @@ function normalizedExport(r: Rig) {
 }
 
 describe("sync engine", () => {
+  it.each(["rename", "delete", "merge"] as const)(
+    "incremental FTS refreshes every owner once after a remote tag %s",
+    (change) => {
+      const a = rig();
+      const b = rig();
+      const tag = a.lib.createTag({ name: "oldtagword" });
+      const target = a.lib.createTag({ name: "targettagword" });
+      const prompts = [0, 1, 2].map((index) => a.lib.createPrompt({
+        title: `Tagged ${index}`, content: `version ${index}`, tagIds: [tag.id],
+      }));
+      a.db.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)").run(prompts[2]!.id, target.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      const before = prompts.map((prompt) => searchRows(b, prompt.id).filter((row) => row.version_id !== null));
+      const observed = observeSearchWrites(b);
+      try {
+        if (change === "delete") {
+          // Exercise the parent-only deletion; no junction tombstone can mask lost owners.
+          const remote = fixedOp("tag-delete", 1, "tags", tag.id, null, Date.now() + 100_000, "delete");
+          b.engine.applyRemote([remote]);
+        } else if (change === "merge") {
+          const remote = fixedOp("tag-merge", 1, "tags", "!canonical-tag", {
+            id: "!canonical-tag", name: tag.name, color: null,
+          }, Date.now() + 100_000);
+          b.engine.applyRemote([remote]);
+        } else {
+          a.db.prepare("UPDATE tags SET name = 'newtagword' WHERE id = ?").run(tag.id);
+          a.engine.refineDirty();
+          drain(a.engine, b.engine);
+        }
+        expect(observed.writes).toHaveLength(prompts.length);
+        expect(observed.writes.every((write) => /^\s*UPDATE search_index\b/i.test(write.sql) &&
+          /WHERE rowid = \?/i.test(write.sql))).toBe(true);
+        prompts.forEach((prompt, index) => {
+          expect(searchRows(b, prompt.id).filter((row) => row.version_id !== null)).toEqual(before[index]);
+          const tags = searchRows(b, prompt.id).find((row) => row.version_id === null)!.tags;
+          if (change !== "merge") expect(tags).not.toContain("oldtagword");
+          if (change !== "delete") expect(tags).toContain(change === "merge" ? "oldtagword" : "newtagword");
+        });
+        expectSearchMappingsConsistent(b);
+      } finally {
+        observed.restore();
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
+  it("incremental FTS removes a remote note from metadata without rewriting versions", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Notes", content: "retained version" });
+    const note = a.lib.addNote({ promptId: prompt.id, body: "removednoteword" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const versions = searchRows(b, prompt.id).filter((row) => row.version_id !== null);
+    const observed = observeSearchWrites(b);
+    try {
+      a.lib.deleteNote(note.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/^\s*UPDATE search_index\b/);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== null)).toEqual(versions);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === null)!.notes).toBe("");
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS changes only the remotely amended version row", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Versions", content: "first" });
+    const second = a.lib.createVersion({ promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "second" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id).filter((row) => row.version_id !== second.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.db.prepare("UPDATE versions SET content = 'amendedword' WHERE id = ?").run(second.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/^\s*UPDATE search_index\b/);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== second.id)).toEqual(unchanged);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === second.id)!.content).toBe("amendedword");
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS removes every version of a remotely deleted branch", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Branches", content: "main survives" });
+    const { branch } = a.lib.createBranch({ promptId: prompt.id, name: "removed", fromVersionId: prompt.current_version_id! });
+    a.lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "removed second" });
+    a.lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "removed third" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const deleted = a.lib.listVersions(prompt.id).filter((version) => version.branch_id === branch.id);
+    const surviving = searchRows(b, prompt.id).filter((row) => !deleted.some((version) => version.id === row.version_id));
+    const observed = observeSearchWrites(b);
+    try {
+      b.engine.applyRemote([fixedOp("branch-delete", 1, "branches", branch.id, null, Date.now() + 100_000, "delete")]);
+      expect(searchRows(b, prompt.id)).toEqual(surviving);
+      expect(observed.writes).toHaveLength(deleted.length);
+      expect(observed.writes.every((write) => /DELETE FROM search_index WHERE rowid = \?/i.test(write.sql))).toBe(true);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS inserts and deletes only the remote active version, keeping suggestions absent", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Lifecycle", content: "existing" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      const active = a.lib.createVersion({
+        promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "newactiveword",
+      });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== active.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+      observed.writes.length = 0;
+
+      const { version: suggestion } = a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: active.id, newContent: "suggestionword",
+        rationale: "test suggestion", branchName: "suggestion",
+      });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toEqual([]);
+      expectSearchMappingsConsistent(b);
+
+      a.lib.approveSuggestion(suggestion.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(searchRows(b, prompt.id).find((row) => row.version_id === suggestion.id)?.content).toBe("suggestionword");
+      expectSearchMappingsConsistent(b);
+      observed.writes.length = 0;
+
+      const { version: rejected } = a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: active.id, newContent: "rejectedword",
+        rationale: "test rejected", branchName: "rejected",
+      });
+      a.lib.rejectSuggestion(rejected.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toEqual([]);
+      expectSearchMappingsConsistent(b);
+
+      a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+      a.lib.deleteVersion(active.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(1);
+      expect(observed.writes[0]!.sql).toMatch(/DELETE FROM search_index WHERE rowid = \?/i);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== suggestion.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS ignores remote collection membership, rename, merge, and deletion", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Collection", content: "unchanged" });
+    const collection = a.lib.createCollection({ name: "original" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const before = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.db.prepare("INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, 0)")
+        .run(collection.id, prompt.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      a.db.prepare("UPDATE collections SET name = 'renamed' WHERE id = ?").run(collection.id);
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      b.engine.applyRemote([fixedOp("collection-merge", 1, "collections", "!canonical-collection", {
+        id: "!canonical-collection", name: "renamed", sort_order: 0,
+      }, Date.now() + 100_000)]);
+      b.engine.applyRemote([fixedOp("collection-delete", 1, "collections", collection.id, null, Date.now() + 200_000, "delete")]);
+      expect(observed.writes).toEqual([]);
+      expect(searchRows(b, prompt.id)).toEqual(before);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS inserts sibling versions from one remote batch without rebuilding their prompt", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Batched versions", content: "originalword" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+      const first = a.lib.createVersion({ promptId: prompt.id, branchId, content: "firstword" });
+      const second = a.lib.createVersion({ promptId: prompt.id, branchId, content: "secondword" });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(2);
+      expect(observed.writes.every((write) => /^\s*INSERT INTO search_index\b/.test(write.sql))).toBe(true);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== first.id && row.version_id !== second.id))
+        .toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS keeps a mixed remote version delete/create batch narrow", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Mixed versions", content: "originalword" });
+    const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+    const removed = a.lib.createVersion({ promptId: prompt.id, branchId, content: "removedword" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id).filter((row) => row.version_id !== removed.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.lib.deleteVersion(removed.id);
+      const added = a.lib.createVersion({ promptId: prompt.id, branchId, content: "addedword" });
+      a.engine.refineDirty();
+      const { ops } = a.engine.opsSince(b.engine.haveVector());
+      // Same-rank source order is stable: exercise deletion reconciliation first.
+      const deletionFirst = [...ops.filter((op) => op.kind === "delete"), ...ops.filter((op) => op.kind !== "delete")];
+      b.engine.applyRemote(deletionFirst);
+      expect(observed.ownershipScans).toEqual([]);
+      expect(observed.writes).toHaveLength(2);
+      expect(observed.writes.filter((write) => /^\s*DELETE FROM search_index WHERE rowid = \?/.test(write.sql)))
+        .toHaveLength(1);
+      expect(observed.writes.filter((write) => /^\s*INSERT INTO search_index\b/.test(write.sql)))
+        .toHaveLength(1);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== added.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it.each(["create", "update", "reject"] as const)(
+    "incremental FTS avoids ownership scans for a healthy remote pending version %s",
+    (operation) => {
+      const a = rig();
+      const b = rig();
+      const prompt = a.lib.createPrompt({ title: "Pending versions", content: "originalword" });
+      const createSuggestion = () => a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: prompt.current_version_id!, newContent: "pendingword",
+        rationale: "Pending suggestion", branchName: "pending",
+      }).version;
+      const existing = operation === "create" ? null : createSuggestion();
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      const unchanged = searchRows(b, prompt.id);
+      const observed = observeSearchWrites(b);
+      try {
+        if (operation === "create") createSuggestion();
+        else if (operation === "update") {
+          a.db.prepare("UPDATE versions SET content = 'updatedpendingword' WHERE id = ?").run(existing!.id);
+        } else a.lib.rejectSuggestion(existing!.id);
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        expect(observed.ownershipScans).toEqual([]);
+        expect(observed.writes).toEqual([]);
+        expect(searchRows(b, prompt.id)).toEqual(unchanged);
+        expectSearchMappingsConsistent(b);
+      } finally {
+        observed.restore();
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
+  it("cleans an initially active unmapped legacy version after repeated inactive upserts in one batch", () => {
+    const r = rig();
+    try {
+      const prompt = r.lib.createPrompt({ title: "Legacy active", content: "originalword" });
+      const branchId = r.lib.listBranches(prompt.id)[0]!.id;
+      r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+        VALUES ('legacy-active', ?, ?, 2, 'legacyactiveword', '2026-09-17T00:00:00.000Z')`)
+        .run(prompt.id, branchId);
+      // An old CLI append rebuilds FTS while leaving the v15 companion untouched.
+      r.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(prompt.id);
+      r.db.prepare(`INSERT INTO search_index
+        (prompt_id, version_id, title, description, tags, notes, content)
+        VALUES (?, NULL, 'Legacy active', '', '', '', '')`).run(prompt.id);
+      r.db.prepare(`INSERT INTO search_index
+        (prompt_id, version_id, title, description, tags, notes, content)
+        SELECT prompt_id, id, '', '', '', '', content FROM versions
+        WHERE prompt_id = ? AND status = 'active' ORDER BY number`).run(prompt.id);
+      expect(r.db.prepare("SELECT rowid FROM search_index_rows WHERE version_id = 'legacy-active'").get())
+        .toBeUndefined();
+      r.engine.refineDirty();
+      const payload = r.db.prepare("SELECT * FROM versions WHERE id = 'legacy-active'").get() as Record<string, unknown>;
+      const timestamp = Date.now() + 100_000;
+      r.engine.applyRemote([
+        fixedOp("remote", 1, "versions", "legacy-active", { ...payload, status: "rejected" }, timestamp),
+        fixedOp("remote", 2, "versions", "legacy-active", {
+          ...payload, status: "rejected", content: "secondrejectedword",
+        }, timestamp + 1),
+      ]);
+      expect(r.lib.getVersion("legacy-active")?.status).toBe("rejected");
+      expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-active'").all()).toEqual([]);
+      expectSearchMappingsConsistent(r);
+    } finally {
+      r.db.close();
+    }
+  });
+
+  it("incremental FTS hard-delete leaves no remote search rows or mappings", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Deleted", content: "deletedword" });
+    a.lib.createVersion({ promptId: prompt.id, branchId: a.lib.listBranches(prompt.id)[0]!.id, content: "another" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const observed = observeSearchWrites(b);
+    try {
+      b.engine.applyRemote([fixedOp("prompt-delete", 1, "prompts", prompt.id, null, Date.now() + 100_000, "delete")]);
+      expect(searchRows(b, prompt.id)).toEqual([]);
+      expect(b.db.prepare("SELECT * FROM search_index_rows WHERE prompt_id = ?").all(prompt.id)).toEqual([]);
+      expect(observed.writes.every((write) => /DELETE FROM search_index WHERE rowid = \?/i.test(write.sql))).toBe(true);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it.each(["version", "prompt"] as const)(
+    "recovers sparse legacy FTS mappings before a remote new %s allocates an occupied mapping rowid",
+    (kind) => {
+      const a = rig();
+      const b = rig();
+      try {
+        const untouched = a.lib.createPrompt({ title: "Untouched", content: "untouchedword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const untouchedRows = searchRows(b, untouched.id);
+        const prompt = a.lib.createPrompt({ title: "Legacy owner", content: "originalword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+        const removed = a.lib.createVersion({ promptId: prompt.id, branchId, content: "removedword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const surviving = a.lib.createVersion({ promptId: prompt.id, branchId, content: "survivingword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        a.lib.deleteVersion(removed.id);
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+
+        const beforeRewrite = searchRows(b, prompt.id);
+        expect(beforeRewrite.map((row) => row.rowid)).toEqual([3, 4, 6]);
+        // Released shared-DB clients rebuild only FTS, unaware of the v15 map.
+        // The metadata row keeps its rowid while the last version fills the gap.
+        b.db.transaction(() => {
+          b.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(prompt.id);
+          const insert = b.db.prepare(`INSERT INTO search_index
+            (prompt_id, version_id, title, description, tags, notes, content)
+            VALUES (?, ?, ?, '', ?, ?, ?)`);
+          for (const row of beforeRewrite) {
+            insert.run(prompt.id, row.version_id, row.version_id === null ? prompt.title : "",
+              row.tags, row.notes, row.content);
+          }
+        })();
+        expect(searchRows(b, prompt.id).map((row) => row.rowid)).toEqual([3, 4, 5]);
+        expect(b.db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? ORDER BY rowid")
+          .all(prompt.id)).toEqual([{ rowid: 3 }, { rowid: 4 }, { rowid: 6 }]);
+
+        const incomingVersion = kind === "version"
+          ? a.lib.createVersion({ promptId: prompt.id, branchId, content: "incomingword" }).id
+          : a.lib.createPrompt({ title: "Incoming prompt", content: "incomingword" }).current_version_id!;
+        a.engine.refineDirty();
+        const { ops } = a.engine.opsSince(b.engine.haveVector());
+        expect(() => b.engine.applyRemote(ops)).not.toThrow();
+        expect(searchRows(b, untouched.id)).toEqual(untouchedRows);
+        expect(b.db.prepare("SELECT content FROM search_index WHERE version_id = ?").get(surviving.id))
+          .toEqual({ content: "survivingword" });
+        expect(b.db.prepare("SELECT content FROM search_index WHERE version_id = ?").get(incomingVersion))
+          .toEqual({ content: "incomingword" });
+        expectSearchMappingsConsistent(b);
+      } finally {
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
+  it.each((["created", "appended"] as const).flatMap((legacyWrite) =>
+    (["metadata", "amend", "delete version", "hard delete"] as const)
+      .map((mutation) => ({ legacyWrite, mutation }))))(
+    "recovers missing legacy mappings from $legacyWrite prompt before remote $mutation",
+    ({ legacyWrite, mutation }) => {
+        const r = rig();
+        try {
+          const untouched = r.lib.createPrompt({ title: "Untouched", content: "untouchedword" });
+          const untouchedRows = searchRows(r, untouched.id);
+          const timestamp = "2026-09-17T00:00:00.000Z";
+          let promptId: string;
+          let branchId: string;
+          if (legacyWrite === "created") {
+            promptId = "legacy-prompt";
+            branchId = "legacy-branch";
+            // Model an old CLI creation without invoking any v15 index helper.
+            r.db.prepare("INSERT INTO prompts (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+              .run(promptId, "Legacy prompt", timestamp, timestamp);
+            r.db.prepare("INSERT INTO branches (id, prompt_id, name, created_at) VALUES (?, ?, 'main', ?)")
+              .run(branchId, promptId, timestamp);
+            r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+              VALUES ('legacy-original', ?, ?, 1, 'originalword', ?)`)
+              .run(promptId, branchId, timestamp);
+            r.db.prepare("UPDATE prompts SET current_version_id = 'legacy-original' WHERE id = ?").run(promptId);
+          } else {
+            const prompt = r.lib.createPrompt({ title: "Legacy prompt", content: "originalword" });
+            promptId = prompt.id;
+            branchId = r.lib.listBranches(prompt.id)[0]!.id;
+          }
+          r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+            VALUES ('legacy-appended', ?, ?, 2, 'legacyappendword', ?)`)
+            .run(promptId, branchId, timestamp);
+          r.db.transaction(() => {
+            r.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(promptId);
+            r.db.prepare(`INSERT INTO search_index
+              (prompt_id, version_id, title, description, tags, notes, content)
+              VALUES (?, NULL, 'Legacy prompt', '', '', '', '')`).run(promptId);
+            r.db.prepare(`INSERT INTO search_index
+              (prompt_id, version_id, title, description, tags, notes, content)
+              SELECT prompt_id, id, '', '', '', '', content FROM versions
+              WHERE prompt_id = ? AND status = 'active' ORDER BY number`).run(promptId);
+          })();
+          expect(r.db.prepare("SELECT 1 FROM search_index_rows WHERE version_id = 'legacy-appended'").get())
+            .toBeUndefined();
+          if (legacyWrite === "appended") {
+            const metadata = r.db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? AND version_id IS NULL")
+              .get(promptId);
+            expect(r.db.prepare("SELECT rowid FROM search_index WHERE prompt_id = ? AND version_id IS NULL").get(promptId))
+              .toEqual(metadata);
+          }
+          r.engine.refineDirty();
+          const op = mutation === "metadata"
+            ? fixedOp("remote", 1, "prompts", promptId, {
+                ...r.db.prepare("SELECT * FROM prompts WHERE id = ?").get(promptId) as Record<string, unknown>,
+                title: "Remote title",
+              }, Date.now() + 100_000)
+            : mutation === "amend"
+              ? fixedOp("remote", 1, "versions", "legacy-appended", {
+                  ...r.db.prepare("SELECT * FROM versions WHERE id = 'legacy-appended'").get() as Record<string, unknown>,
+                  content: "amendedword",
+                }, Date.now() + 100_000)
+              : fixedOp("remote", 1, mutation === "hard delete" ? "prompts" : "versions",
+                  mutation === "hard delete" ? promptId : "legacy-appended", null, Date.now() + 100_000, "delete");
+          expect(() => r.engine.applyRemote([op]), `${legacyWrite}: ${mutation}`).not.toThrow();
+          expect(searchRows(r, untouched.id), `${legacyWrite}: ${mutation}`).toEqual(untouchedRows);
+          if (mutation === "hard delete") {
+            expect(searchRows(r, promptId)).toEqual([]);
+          } else if (mutation === "delete version") {
+            expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-appended'").all())
+              .toEqual([]);
+          } else {
+            expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-appended'").all())
+              .toEqual([{ content: mutation === "amend" ? "amendedword" : "legacyappendword" }]);
+            if (mutation === "metadata") {
+              expect(r.db.prepare("SELECT title FROM search_index WHERE prompt_id = ? AND version_id IS NULL").all(promptId))
+                .toEqual([{ title: "Remote title" }]);
+            }
+          }
+          expectSearchMappingsConsistent(r);
+        } finally {
+          r.db.close();
+        }
+    },
+  );
+
+  it.each(["tags", "collections"] as const)("uses the bound natural-name index for %s", (table) => {
+    const r = rig();
+    const observed = observeHistoryQueries(r);
+    try {
+      r.engine.applyRemote([fixedOp("source", 1, table, "named", table === "tags"
+        ? { id: "named", name: "prod", color: null }
+        : { id: "named", name: "prod", sort_order: 0 }, 100)]);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups).toHaveLength(1);
+      expect(lookups[0]!.parameters).toEqual([table, "prod"]);
+      expect(lookups[0]!.plan).toContain("idx_sync_ops_natural_name_lookup");
+      expect(lookups[0]!.plan).toContain("table_name=? AND <expr>=?");
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it("looks up main branches by the full indexed prompt key across thousands of unrelated prompts", () => {
+    const r = rig();
+    const ops: SyncOp[] = [];
+    r.db.transaction(() => {
+      for (let index = 0; index < 2_400; index += 1) {
+        const promptId = `prompt-${index}`;
+        seedPrompt(r, promptId);
+        ops.push(fixedOp("history", index + 1, "branches", `branch-${index}`, {
+          id: `branch-${index}`, prompt_id: promptId, name: "main", description: null,
+          created_at: "2026-09-03T00:00:00.000Z",
+        }, 100));
+      }
+    })();
+    storeHistory(r, ops);
+    const observed = observeHistoryQueries(r);
+    try {
+      const started = performance.now();
+      r.engine.applyRemote(ops.slice(0, 20).map((op, index) => fixedOp("incoming", index + 1,
+        "branches", `new-${index}`, { ...op.payload, id: `new-${index}` }, 200)));
+      console.info(`indexed branch lookup: ${(performance.now() - started).toFixed(1)}ms`);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups).toHaveLength(20);
+      for (const query of lookups) {
+        expect(query.rows).toBe(1);
+        expect(query.parameters).toHaveLength(3);
+        expect(query.sql).toContain("json_extract(payload_json, '$.prompt_id') IN (");
+        expect(query.plan).toContain("idx_sync_ops_natural_name_lookup");
+        expect(query.plan).toContain("table_name=? AND <expr>=? AND <expr>=?");
+      }
+      expect(r.db.prepare("SELECT count(*) AS n FROM branches").get()).toEqual({ n: 20 });
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it("finds same-name branch history under every raw prompt alias with bounded IN chunks", () => {
+    const r = rig();
+    seedPrompt(r, "prompt-a");
+    const aliases = Array.from({ length: 1_100 }, (_, i) => `prompt-z-${i}`);
+    const insertRemap = r.db.prepare(
+      "INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES ('prompts', ?, ?)",
+    );
+    r.db.transaction(() => {
+      for (let i = 0; i < aliases.length; i += 1) insertRemap.run(aliases[i], i === 0 ? "prompt-a" : aliases[0]);
+    })();
+    const branch = (id: string, promptId: string, seq: number) => fixedOp("history", seq, "branches", id, {
+      id, prompt_id: promptId, name: "main", description: null, created_at: "2026-09-03T00:00:00.000Z",
+    }, 100 + seq);
+    storeHistory(r, [branch("branch-a", aliases[0]!, 1), branch("branch-b", aliases[1099]!, 2)]);
+    const observed = observeHistoryQueries(r);
+    try {
+      r.engine.applyRemote([branch("branch-c", "prompt-a", 3)]);
+      expect(r.db.prepare("SELECT id, prompt_id, name FROM branches").all())
+        .toEqual([{ id: "branch-a", prompt_id: "prompt-a", name: "main" }]);
+      const lookups = observed.queries.filter((query) => query.sql.includes("$.name"));
+      expect(lookups.length).toBeGreaterThan(1);
+      const queriedIds = lookups.flatMap((query) => query.parameters.slice(2));
+      expect(new Set(queriedIds)).toEqual(new Set(["prompt-a", ...aliases]));
+      expect(lookups.reduce((total, query) => total + query.rows, 0)).toBe(2);
+      for (const query of lookups) {
+        expect(query.parameters.length).toBeLessThan(999);
+        expect(query.plan).toContain("table_name=? AND <expr>=? AND <expr>=?");
+      }
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  });
+
+  it.each([false, true])("reuses fixed statements only within one live apply batch (FK fallback: %s)", (orphan) => {
+    const r = rig();
+    const ops = Array.from({ length: 32 }, (_, i) => fixedOp("source", i + 1, "tags", `tag-${i}`,
+      { id: `tag-${i}`, name: `tag-${i}`, color: `#${i}` }, 100 + i));
+    const child = fixedOp("source", 33, "prompt_tags", "prompt-1:tag-0",
+      { prompt_id: "prompt-1", tag_id: "tag-0" }, 200);
+    if (orphan) ops.push(child);
+    const prepare = vi.spyOn(r.db, "prepare");
+    const reusedSql = [
+      "SELECT value FROM sync_meta WHERE key = ?",
+      "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?",
+      "SELECT hlc, device_id FROM sync_heads WHERE table_name = ? AND record_id = ?",
+      "SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?",
+      "SELECT id FROM tags WHERE name = ?",
+      "SELECT last_seq FROM sync_cursors WHERE source_device_id = ?",
+      "DELETE FROM sync_meta WHERE key = 'applying'",
+    ];
+    try {
+      expect(r.engine.applyRemote(ops)).toEqual({ applied: 32, skipped: 0, stale: 0,
+        deferred: orphan ? 1 : 0 });
+      const firstBatch = prepare.mock.calls.map(([sql]) => sql);
+      for (const sql of reusedSql) expect(firstBatch.filter((prepared) => prepared === sql), sql)
+        .toHaveLength(1);
+      expect(firstBatch.filter((sql) => sql.startsWith("INSERT INTO tags ("))).toHaveLength(1);
+      expect(r.db.prepare("SELECT id, color FROM tags ORDER BY id").all()).toEqual(
+        ops.slice(0, 32).map((op) => ({ id: op.recordId, color: op.payload!["color"] }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(r.engine.opsSince({}).ops).toEqual(ops.slice(0, 32));
+      expect(r.engine.haveVector()).toEqual({ source: 32 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      expect(r.engine.getMeta("applying")).toBeNull();
+
+      prepare.mockClear();
+      r.engine.getMeta("hlc_millis");
+      r.engine.getMeta("hlc_counter");
+      expect(prepare.mock.calls).toHaveLength(2);
+
+      seedPrompt(r, "prompt-1");
+      prepare.mockClear();
+      expect(r.engine.applyRemote([...ops.slice(0, 32), child]))
+        .toEqual({ applied: 1, skipped: 32, stale: 0, deferred: 0 });
+      const secondBatch = prepare.mock.calls.map(([sql]) => sql);
+      for (const sql of reusedSql.filter((sql) => !sql.includes("sync_id_remaps") &&
+        !sql.includes("FROM tags")))
+        expect(secondBatch.filter((prepared) => prepared === sql), sql).toHaveLength(1);
+      expect(r.engine.opsSince({}).ops).toEqual([...ops.slice(0, 32), child]);
+      expect(r.engine.haveVector()).toEqual({ source: 33 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      prepare.mockRestore();
+      r.db.close();
+    }
+  });
+
+  it("releases batch statements after a non-FK apply failure and rolls back all gossip", () => {
+    const r = rig();
+    const good = fixedOp("source", 1, "tags", "tag-1",
+      { id: "tag-1", name: "Good", color: null }, 100);
+    const bad = fixedOp("source", 2, "tags", "tag-2",
+      { id: "tag-2", name: null, color: null }, 200);
+    const prepare = vi.spyOn(r.db, "prepare");
+    try {
+      expect(() => r.engine.applyRemote([good, bad])).toThrow(/NOT NULL constraint failed: tags.name/);
+      expect(r.db.prepare("SELECT * FROM tags").all()).toEqual([]);
+      expect(r.db.prepare("SELECT * FROM sync_heads").all()).toEqual([]);
+      expect(r.engine.opsSince({}).ops).toEqual([]);
+      expect(r.engine.haveVector()).toEqual({});
+      expect(r.engine.getMeta("applying")).toBeNull();
+
+      prepare.mockClear();
+      r.engine.getMeta("hlc_millis");
+      r.engine.getMeta("hlc_counter");
+      expect(prepare.mock.calls).toHaveLength(2);
+
+      prepare.mockClear();
+      expect(r.engine.applyRemote([good])).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+      expect(prepare.mock.calls.filter(([sql]) =>
+        sql === "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?")).toHaveLength(1);
+      expect(r.engine.opsSince({}).ops).toEqual([good]);
+      expect(r.engine.haveVector()).toEqual({ source: 1 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      prepare.mockRestore();
+      r.db.close();
+    }
+  });
+
+  it.each([false, true])("loads child history once for 4,000 live ops (FK fallback: %s)", (orphan) => {
+    const r = rig();
+    r.db.transaction(() => {
+      for (let i = 0; i < 1_000; i += 1) seedPrompt(r, `prompt-${i}`);
+    })();
+    const ops: SyncOp[] = [];
+    for (let i = 0; i < 1_000; i += 1) {
+      const tagId = `tag-${i}`;
+      const collectionId = `collection-${i}`;
+      const promptId = `prompt-${i}`;
+      const collectionPromptId = orphan && i === 999 ? "missing-prompt" : promptId;
+      ops.push(
+        fixedOp("source", i * 4 + 1, "tags", tagId, { id: tagId, name: tagId, color: null }, 100),
+        fixedOp("source", i * 4 + 2, "collections", collectionId,
+          { id: collectionId, name: collectionId, sort_order: 0 }, 100),
+        fixedOp("source", i * 4 + 3, "prompt_tags", `${promptId}:${tagId}`,
+          { prompt_id: promptId, tag_id: tagId }, 200),
+        fixedOp("source", i * 4 + 4, "collection_prompts", `${collectionId}:${collectionPromptId}`,
+          { collection_id: collectionId, prompt_id: collectionPromptId, sort_order: i }, 200),
+      );
+    }
+    const observed = observeHistoryQueries(r);
+    try {
+      const started = performance.now();
+      expect(r.engine.applyRemote(ops)).toEqual({ applied: orphan ? 3_999 : 4_000,
+        skipped: 0, stale: 0, deferred: orphan ? 1 : 0 });
+      console.info(`4,000 live ops, fallback=${orphan}: ${(performance.now() - started).toFixed(1)}ms`);
+      for (const table of ["prompt_tags", "collection_prompts"]) {
+        const loads = observed.queries.filter((query) => query.parameters[0] === table &&
+          !query.sql.includes("record_id IN"));
+        expect(loads, table).toHaveLength(1);
+      }
+      expect(r.db.prepare("SELECT count(*) AS n FROM prompt_tags").get()).toEqual({ n: 1_000 });
+      expect(r.db.prepare("SELECT count(*) AS n FROM collection_prompts").get())
+        .toEqual({ n: orphan ? 999 : 1_000 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      expect(r.engine.opsSince({}, 10_000_000).ops).toHaveLength(orphan ? 3_999 : 4_000);
+      if (orphan) {
+        seedPrompt(r, "missing-prompt");
+        expect(r.engine.applyRemote(ops)).toEqual({ applied: 1, skipped: 3_999, stale: 0, deferred: 0 });
+      }
+      expect(r.engine.haveVector()).toMatchObject({ source: 4_000 });
+    } finally {
+      observed.restore();
+      r.db.close();
+    }
+  }, 60_000);
+
+  it.each(["forward", "reverse", "split"])("keeps stale child gossip and tombstones convergent (%s)", (delivery) => {
+    const receiver = rig();
+    const relay = rig();
+    const third = rig();
+    for (const r of [receiver, relay, third]) seedPrompt(r, "prompt-1");
+    const ops: SyncOp[] = [];
+    for (const table of ["tags", "collections"] as const) {
+      const parent = (id: string, millis: number) => fixedOp(`${table}-${id}`, millis, table, id,
+        table === "tags" ? { id, name: "prod", color: `#${millis}` }
+          : { id, name: "prod", sort_order: millis }, millis);
+      const child = (id: string, millis: number, deleted = false) => fixedOp(`child-${table}-${millis}`, 1,
+        table === "tags" ? "prompt_tags" : "collection_prompts",
+        table === "tags" ? `prompt-1:${id}` : `${id}:prompt-1`, deleted ? null
+          : table === "tags" ? { prompt_id: "prompt-1", tag_id: id }
+            : { collection_id: id, prompt_id: "prompt-1", sort_order: millis }, millis,
+        deleted ? "delete" : "upsert");
+      ops.push(parent("parent-b", 100), child("parent-b", 110), child("parent-b", 300, true),
+        fixedOp(`delete-${table}`, 1, table, "parent-b", null, 400, "delete"),
+        parent("parent-a", 200), child("parent-a", 250), parent("parent-a", 500));
+    }
+    try {
+      if (delivery === "split") {
+        for (const op of ops) receiver.engine.applyRemote([op]);
+      } else {
+        receiver.engine.applyRemote(delivery === "reverse" ? [...ops].reverse() : ops);
+      }
+      relay.engine.applyRemote([...ops].reverse());
+      // Force another reduction after the losing child upsert has been stored.
+      const later = fixedOp("later", 1, "tags", "parent-a",
+        { id: "parent-a", name: "prod", color: "#latest" }, 550);
+      receiver.engine.applyRemote([later]);
+      relay.engine.applyRemote([later]);
+      const gossip = relay.engine.opsSince({}, 10_000_000).ops;
+      third.engine.applyRemote(gossip);
+      expect(normalizedExport(receiver)).toEqual(normalizedExport(relay));
+      expect(normalizedExport(third)).toEqual(normalizedExport(relay));
+      for (const r of [receiver, relay, third]) {
+        expect(r.db.prepare("SELECT * FROM prompt_tags").all()).toEqual([]);
+        expect(r.db.prepare("SELECT * FROM collection_prompts").all()).toEqual([]);
+        expect(r.db.prepare("SELECT id FROM tags").all()).toEqual([{ id: "parent-a" }]);
+        expect(r.db.prepare("SELECT id FROM collections").all()).toEqual([{ id: "parent-a" }]);
+        expect(r.engine.applyRemote(ops)).toEqual({ applied: 0, skipped: 14, stale: 0, deferred: 0 });
+        const stored = r.engine.opsSince({}, 10_000_000).ops;
+        for (const op of ops) expect(stored).toContainEqual(op);
+        expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      }
+      // Terminal prompt deletion still wins over a later membership upsert.
+      const terminal = fixedOp("terminal", 1, "prompts", "prompt-1", null, 600, "delete");
+      const lateChild = fixedOp("late-child", 1, "prompt_tags", "prompt-1:parent-b",
+        { prompt_id: "prompt-1", tag_id: "parent-b" }, 700);
+      receiver.engine.applyRemote([terminal, lateChild]);
+      relay.engine.applyRemote([terminal]);
+      relay.engine.applyRemote([lateChild]);
+      third.engine.applyRemote([lateChild, terminal]);
+      expect(normalizedExport(receiver)).toEqual(normalizedExport(relay));
+      expect(normalizedExport(third)).toEqual(normalizedExport(relay));
+      expect(receiver.db.prepare("SELECT * FROM prompt_tags").all()).toEqual([]);
+    } finally {
+      for (const r of [receiver, relay, third]) r.db.close();
+    }
+  });
+
+  it("relays and applies stored schema-12 prompt ops with legacy-null draft bases", () => {
+    const origin = rig();
+    const relay = rig();
+    const receiver = rig();
+    const payload = {
+      id: "v0.5.0-prompt",
+      title: "Legacy draft",
+      description: null,
+      icon: null,
+      draft_content: "draft created before schema 13",
+      current_version_id: null,
+      is_starred: 0,
+      created_at: "2026-09-12T00:00:00.000Z",
+      updated_at: "2026-09-12T00:00:00.000Z",
+      deleted_at: null,
+    };
+    origin.db.prepare(
+      `INSERT INTO sync_ops
+       (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "v0.5.0-device",
+      1,
+      "v0.5.0-device-1-prompts-v0.5.0-prompt-upsert",
+      "prompts",
+      payload.id,
+      "upsert",
+      JSON.stringify(payload),
+      formatHlc({ millis: 1_000, counter: 0 }),
+      "2026-09-12T00:00:00.000Z",
+    );
+
+    const historical = origin.engine.opsSince({}, 1_000_000).ops;
+    expect(historical).toHaveLength(1);
+    expect(historical[0]?.payload).not.toHaveProperty("draft_base_version_id");
+    expect(relay.engine.applyRemote(historical).applied).toBe(1);
+    expect(relay.lib.getPrompt(payload.id)).toMatchObject({
+      draft_content: payload.draft_content,
+      draft_base_version_id: null,
+    });
+
+    const relayed = relay.engine.opsSince({}, 1_000_000).ops;
+    expect(relayed[0]?.payload).toEqual(payload);
+    expect(receiver.engine.applyRemote(relayed).applied).toBe(1);
+    expect(receiver.lib.getPrompt(payload.id)).toMatchObject({
+      draft_content: payload.draft_content,
+      draft_base_version_id: null,
+    });
+  });
+
   it("gives each device a stable distinct id", () => {
     const a = rig();
     const b = rig();

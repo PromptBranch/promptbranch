@@ -11,6 +11,7 @@ import {
   SyncEngine,
 } from "../src/index.js";
 import { SCHEMA_SQL } from "../src/schema.js";
+import { runMigrationsThrough } from "../src/migrations.js";
 
 const tmpDirs: string[] = [];
 
@@ -20,11 +21,68 @@ function tmpDbPath(): string {
   return path.join(dir, "library.db");
 }
 
-/** Rewinds a latest-schema fixture so migrations v9 and later run again. */
-function rewindBeforeV9(db: Database.Database): void {
-  db.prepare("DROP TRIGGER IF EXISTS sync_prompt_tombstone_del").run();
-  db.prepare("DROP TABLE IF EXISTS sync_prompt_tombstones").run();
-  db.pragma("user_version = 8");
+/** Apply the shipped migration list, leaving later columns/triggers/indexes absent. */
+function physicalDatabase(dbPath: string, version: number): { db: Database.Database } {
+  const db = new Database(dbPath);
+  db.pragma("foreign_keys = ON");
+  runMigrationsThrough(db, version);
+  expect(db.pragma("user_version", { simple: true })).toBe(version);
+  return { db };
+}
+
+/** Keep old physical fixtures independent of the current derived-index writers. */
+function seedLegacyPrompt(
+  db: Database.Database,
+  input: { id: string; title: string; content: string },
+): { id: string; branch_id: string; current_version_id: string } {
+  const branchId = `${input.id}-main`;
+  const versionId = `${input.id}-v1`;
+  const createdAt = "2026-09-03T00:00:00.000Z";
+  db.prepare("INSERT INTO prompts (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .run(input.id, input.title, createdAt, createdAt);
+  db.prepare("INSERT INTO branches (id, prompt_id, name, created_at) VALUES (?, ?, 'main', ?)")
+    .run(branchId, input.id, createdAt);
+  db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+    VALUES (?, ?, ?, 1, ?, ?)`).run(versionId, input.id, branchId, input.content, createdAt);
+  db.prepare("UPDATE prompts SET current_version_id = ? WHERE id = ?").run(versionId, input.id);
+  db.prepare(`INSERT INTO search_index
+    (prompt_id, version_id, title, description, tags, notes, content)
+    VALUES (?, NULL, ?, '', '', '', ''), (?, ?, '', '', '', '', ?)`)
+    .run(input.id, input.title, input.id, versionId, input.content);
+  return { id: input.id, branch_id: branchId, current_version_id: versionId };
+}
+
+function seedLegacySearchIndex(db: Database.Database): void {
+  const stellar = seedLegacyPrompt(db, {
+    id: "stellar", title: "Stellar manual", content: "Map a nebula precisely",
+  });
+  seedLegacyPrompt(db, { id: "aurora", title: "Aurora guide", content: "Observe the aurora" });
+  db.prepare("UPDATE prompts SET description = 'Meteor observation' WHERE id = 'stellar'").run();
+  db.prepare("INSERT INTO tags (id, name) VALUES ('cosmic-tag', 'cosmic')").run();
+  db.prepare("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES ('stellar', 'cosmic-tag')").run();
+  db.prepare(`INSERT INTO notes (id, prompt_id, body, created_at)
+    VALUES ('orbit-note', 'stellar', 'Track the orbit', '2026-09-03T00:00:00.000Z')`).run();
+  const insertVersion = db.prepare(`INSERT INTO versions
+    (id, prompt_id, branch_id, number, content, status, created_at)
+    VALUES (?, 'stellar', ?, ?, ?, ?, '2026-09-03T00:00:00.000Z')`);
+  insertVersion.run("stellar-v2", stellar.branch_id, 2, "A second nebula map", "active");
+  insertVersion.run("stellar-pending", stellar.branch_id, 3, "pendingmarker", "pending");
+  insertVersion.run("stellar-rejected", stellar.branch_id, 4, "rejectedmarker", "rejected");
+  // Sparse rowids catch a backfill that numbers rows anew or joins the wrong version.
+  db.prepare("DELETE FROM search_index").run();
+  db.prepare(`INSERT INTO search_index
+    (rowid, prompt_id, version_id, title, description, tags, notes, content) VALUES
+    (7, 'stellar', NULL, 'Stellar manual', 'Meteor observation', 'cosmic', 'Track the orbit', ''),
+    (21, 'stellar', 'stellar-v1', '', '', '', '', 'Map a nebula precisely'),
+    (96, 'stellar', 'stellar-v2', '', '', '', '', 'A second nebula map'),
+    (103, 'aurora', NULL, 'Aurora guide', '', '', '', ''),
+    (211, 'aurora', 'aurora-v1', '', '', '', '', 'Observe the aurora')`).run();
+  new SyncEngine(db).refineDirty(100);
+  db.prepare(`INSERT INTO sync_ops
+    (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+    VALUES ('legacy', 1, 'legacy-fts-op', 'tags', 'legacy-tag', 'upsert', ?,
+            '0000000000100:000000', '2026-09-03T00:00:00.000Z')`)
+    .run('{ "id": "legacy-tag", "name": "archive", "color": null }');
 }
 
 afterEach(() => {
@@ -68,16 +126,15 @@ describe("migrations", () => {
 
   it("migration 13 adds a nullable draft base without changing existing drafts", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
-    const lib = new PromptLibrary(seeded);
-    const prompt = lib.createPrompt({ title: "Legacy draft", content: "saved" });
-    lib.setDraft(prompt.id, "legacy draft");
-    seeded.prepare("UPDATE prompts SET draft_base_version_id = NULL WHERE id = ?").run(prompt.id);
-    seeded.pragma("user_version = 12");
+    const seeded = physicalDatabase(dbPath, 12).db;
+    const prompt = seedLegacyPrompt(seeded, { id: "legacy-draft", title: "Legacy draft", content: "saved" });
+    seeded.prepare("UPDATE prompts SET draft_content = 'legacy draft' WHERE id = ?").run(prompt.id);
+    expect((seeded.pragma("table_info(prompts)") as Array<{ name: string }>).map((c) => c.name))
+      .not.toContain("draft_base_version_id");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(13);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(
       migrated.db
         .prepare("SELECT draft_content, draft_base_version_id FROM prompts WHERE id = ?")
@@ -85,6 +142,202 @@ describe("migrations", () => {
     ).toEqual({ draft_content: "legacy draft", draft_base_version_id: null });
     migrated.db.close();
   });
+
+  it.each([13, 14, 15])(
+    "repairs a missing draft base column when the database is already marked v%i",
+    (markedVersion) => {
+      const dbPath = tmpDbPath();
+      const seeded = physicalDatabase(dbPath, 12).db;
+      const prompt = seedLegacyPrompt(seeded, {
+        id: `drifted-draft-${markedVersion}`,
+        title: "Drifted draft",
+        content: "saved",
+      });
+      seeded.prepare("UPDATE prompts SET draft_content = 'legacy draft' WHERE id = ?").run(prompt.id);
+      // Simulate a prior binary that advanced the version marker without
+      // physically adding the version-13 draft-base column.
+      seeded.pragma(`user_version = ${markedVersion}`);
+      expect((seeded.pragma("table_info(prompts)") as Array<{ name: string }>).map((c) => c.name))
+        .not.toContain("draft_base_version_id");
+      seeded.close();
+
+      const migrated = openDatabase(dbPath);
+      try {
+        expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+        expect(
+          migrated.db
+            .prepare("SELECT draft_content, draft_base_version_id FROM prompts WHERE id = ?")
+            .get(prompt.id),
+        ).toEqual({ draft_content: "legacy draft", draft_base_version_id: null });
+        const library = new PromptLibrary(migrated.db);
+        expect(() => library.setDraft(prompt.id, "updated draft", prompt.current_version_id)).not.toThrow();
+      } finally {
+        migrated.db.close();
+      }
+    },
+  );
+
+  it("migration 14 adds lookup indexes without changing v13 rows or immutable sync state", () => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, 13).db;
+    const lib = new PromptLibrary(seeded);
+    const prompt = seedLegacyPrompt(seeded, { id: "indexed-history", title: "Indexed history", content: "saved" });
+    lib.setDraft(prompt.id, "draft");
+    lib.addRating({ targetType: "prompt", targetId: prompt.id, clarity: 4 });
+    const engine = new SyncEngine(seeded);
+    engine.refineDirty(100);
+    // Keep pending dirty rows as well as already refined gossip and heads.
+    lib.createTag({ name: "unrefined" });
+    seeded.prepare("INSERT INTO sync_cursors (source_device_id, last_seq) VALUES ('peer', 7)").run();
+    seeded.prepare(`INSERT INTO sync_ops
+      (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+      VALUES ('legacy', 1, 'legacy', 'tags', 'old-tag', 'upsert', ?,
+              '0000000000100:000000', '2026-09-03T00:00:00.000Z')`)
+      .run('{ "id": "old-tag", "name": "old", "color": null }');
+    const indexes = ["idx_sync_ops_natural_name_lookup", "idx_versions_prompt", "idx_ratings_target"];
+    const indexNames = (db: Database.Database) => db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+    ).all().map((row) => (row as { name: string }).name);
+    for (const index of indexes) expect(indexNames(seeded)).not.toContain(index);
+    const tables = (seeded.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string }>).map((row) => row.name);
+    const snapshot = (db: Database.Database) => Object.fromEntries(
+      tables.map((table) => [table, db.prepare(`SELECT * FROM "${table}"`).all()
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]),
+    );
+    const before = snapshot(seeded);
+    seeded.close();
+
+    const migrated = physicalDatabase(dbPath, 14);
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(14);
+    expect(indexNames(migrated.db)).toEqual(expect.arrayContaining(indexes));
+    const ratingSummaryPlan = migrated.db.prepare(`EXPLAIN QUERY PLAN
+      SELECT v.id AS version_id,
+             AVG(r.effectiveness) AS effectiveness,
+             AVG(r.clarity) AS clarity,
+             AVG(r.completeness) AS completeness,
+             AVG(r.actionability) AS actionability,
+             COUNT(*) AS count,
+             (TOTAL(r.effectiveness) + TOTAL(r.clarity) + TOTAL(r.completeness) +
+              TOTAL(r.actionability)) /
+             NULLIF(COUNT(r.effectiveness) + COUNT(r.clarity) + COUNT(r.completeness) +
+                    COUNT(r.actionability), 0) AS overall
+      FROM versions AS v
+      JOIN ratings AS r ON r.target_type = 'version' AND r.target_id = v.id
+      WHERE v.prompt_id = ?
+      GROUP BY v.id`).all(prompt.id) as Array<{ detail: string }>;
+    expect(ratingSummaryPlan.some((row) => row.detail.includes("idx_versions_prompt"))).toBe(true);
+    expect(ratingSummaryPlan.some((row) => row.detail.includes("idx_ratings_target"))).toBe(true);
+    expect(snapshot(migrated.db)).toEqual(before);
+    expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
+    migrated.db.close();
+  });
+
+  it.each([13, 14])("migration 15 creates an empty rowid mapping from physical v%i", (version) => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, version).db;
+    expect(seeded.prepare("SELECT name FROM sqlite_master WHERE name = 'search_index_rows'").get())
+      .toBeUndefined();
+    expect(seeded.prepare("SELECT rowid FROM search_index").all()).toEqual([]);
+    seeded.close();
+
+    const migrated = openDatabase(dbPath);
+    try {
+      expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+      expect(migrated.backupPath).not.toBeNull();
+      expect(migrated.db.prepare("SELECT * FROM search_index_rows").all()).toEqual([]);
+      const columns = migrated.db.pragma("table_info(search_index_rows)") as Array<{
+        name: string; type: string; notnull: number; pk: number;
+      }>;
+      expect(columns.map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })))
+        .toEqual([
+          { name: "rowid", type: "INTEGER", notnull: 0, pk: 1 },
+          { name: "prompt_id", type: "TEXT", notnull: 1, pk: 0 },
+          { name: "version_id", type: "TEXT", notnull: 0, pk: 0 },
+        ]);
+      const indexes = migrated.db.pragma("index_list(search_index_rows)") as Array<{
+        name: string; unique: number; partial: number;
+      }>;
+      expect(indexes.map(({ name, unique, partial }) => ({ name, unique, partial })))
+        .toEqual(expect.arrayContaining([
+          { name: "idx_search_index_rows_prompt", unique: 0, partial: 0 },
+          { name: "idx_search_index_rows_prompt_metadata", unique: 1, partial: 1 },
+          { name: "idx_search_index_rows_version", unique: 1, partial: 1 },
+        ]));
+    } finally {
+      migrated.db.close();
+    }
+  });
+
+  it.each([13, 14])(
+    "migration 15 backfills exact FTS mappings from physical v%i without changing search or sync ops",
+    (version) => {
+      const dbPath = tmpDbPath();
+      const seeded = physicalDatabase(dbPath, version).db;
+      seedLegacySearchIndex(seeded);
+      const ftsRows = (db: Database.Database) => db.prepare("SELECT rowid, * FROM search_index ORDER BY rowid").all();
+      const syncOps = (db: Database.Database) => db.prepare(
+        "SELECT * FROM sync_ops ORDER BY source_device_id, seq",
+      ).all();
+      const queries = ["stellar", "nebula", "meteor", "cosmic", "orbit", "aurora"];
+      const searchResults = (db: Database.Database) => {
+        const library = new PromptLibrary(db);
+        return queries.map((query) => library.search(query));
+      };
+      const beforeFts = ftsRows(seeded);
+      const beforeOps = syncOps(seeded);
+      const beforeSearch = searchResults(seeded);
+      expect(beforeSearch.every((results) => results.length > 0)).toBe(true);
+      seeded.close();
+
+      const migrated = openDatabase(dbPath);
+      try {
+        expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+        expect(migrated.backupPath).not.toBeNull();
+        expect(migrated.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual([
+          { rowid: 7, prompt_id: "stellar", version_id: null },
+          { rowid: 21, prompt_id: "stellar", version_id: "stellar-v1" },
+          { rowid: 96, prompt_id: "stellar", version_id: "stellar-v2" },
+          { rowid: 103, prompt_id: "aurora", version_id: null },
+          { rowid: 211, prompt_id: "aurora", version_id: "aurora-v1" },
+        ]);
+        expect(ftsRows(migrated.db)).toEqual(beforeFts);
+        expect(searchResults(migrated.db)).toEqual(beforeSearch);
+        expect(syncOps(migrated.db)).toEqual(beforeOps);
+        const library = new PromptLibrary(migrated.db);
+        expect(library.search("pendingmarker")).toEqual([]);
+        expect(library.search("rejectedmarker")).toEqual([]);
+        const lookupPlan = migrated.db.prepare(
+          "EXPLAIN QUERY PLAN SELECT rowid FROM search_index_rows WHERE prompt_id = ?",
+        ).all("stellar") as Array<{ detail: string }>;
+        expect(lookupPlan.some((row) => row.detail.includes("idx_search_index_rows_prompt")))
+          .toBe(true);
+        expect(() => migrated.db.prepare(
+          "INSERT INTO search_index_rows (rowid, prompt_id, version_id) VALUES (300, 'stellar', NULL)",
+        ).run()).toThrow(/UNIQUE constraint failed/);
+        expect(() => migrated.db.prepare(
+          "INSERT INTO search_index_rows (rowid, prompt_id, version_id) VALUES (301, 'aurora', 'stellar-v1')",
+        ).run()).toThrow(/UNIQUE constraint failed/);
+        expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
+      } finally {
+        migrated.db.close();
+      }
+
+      const reopened = openDatabase(dbPath);
+      try {
+        expect(reopened.backupPath).toBeNull();
+        expect(reopened.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+        expect(reopened.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual(
+          reopened.db.prepare("SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid").all(),
+        );
+        expect(ftsRows(reopened.db)).toEqual(beforeFts);
+        expect(searchResults(reopened.db)).toEqual(beforeSearch);
+        expect(syncOps(reopened.db)).toEqual(beforeOps);
+      } finally {
+        reopened.db.close();
+      }
+    },
+  );
 
   it("migrating a fresh file DB creates no backup and uses WAL", () => {
     const dbPath = tmpDbPath();
@@ -107,7 +360,7 @@ describe("migrations", () => {
 
   it("migration 12 preserves offline catalog data but revokes old credential provenance", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 11).db;
     seeded
       .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog', 'offline-cache')")
       .run();
@@ -115,7 +368,6 @@ describe("migrations", () => {
       .prepare("INSERT INTO settings (key, value) VALUES ('model_catalog_credential_trusted', '1')")
       .run();
     seeded.prepare("INSERT INTO settings (key, value) VALUES ('portable', 'keep-me')").run();
-    seeded.pragma("user_version = 11");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
@@ -184,7 +436,7 @@ describe("migrations", () => {
 
   it("repairs pending provider-model keys written by delimiter-based sync triggers", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     const lib = new PromptLibrary(first.db);
     const provider = lib.createProvider({
       type: "ollama",
@@ -213,9 +465,6 @@ describe("migrations", () => {
          WHERE table_name = 'provider_models' AND record_id = json_array('tenant:one', 'llama')`,
       )
       .run();
-    // Re-run only migrations newer than the last shipped sync schema. Once
-    // the repair migration exists this models opening its immediate predecessor.
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -237,7 +486,7 @@ describe("migrations", () => {
 
   it("repairs JSON-looking legacy composite tombstones without changing their tuple", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     first.db
       .prepare(
         `INSERT INTO providers (id, type, driver, name, created_at)
@@ -261,7 +510,6 @@ describe("migrations", () => {
          WHERE table_name = 'provider_models' AND kind = 'delete'`,
       )
       .run(legacyRecordId);
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -279,7 +527,7 @@ describe("migrations", () => {
 
   it("canonicalizes already-refined legacy composite history before serving it", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 8);
     first.db
       .prepare(
         `INSERT INTO providers (id, type, driver, name, created_at)
@@ -304,7 +552,6 @@ describe("migrations", () => {
     first.db
       .prepare("UPDATE sync_heads SET record_id = ? WHERE table_name = 'provider_models'")
       .run(legacyRecordId);
-    rewindBeforeV9(first.db);
     first.db.close();
 
     const migrated = openDatabase(dbPath);
@@ -357,7 +604,7 @@ describe("migrations", () => {
 
   it("migration 10 backfills prompt tombstones and removes already-resurrected aggregates", () => {
     const dbPath = tmpDbPath();
-    const first = openDatabase(dbPath);
+    const first = physicalDatabase(dbPath, 9);
     const lib = new PromptLibrary(first.db);
     const historical = lib.createPrompt({ title: "Historical delete", content: "v1" });
     const pending = lib.createPrompt({ title: "Pending delete", content: "v1" });
@@ -393,9 +640,6 @@ describe("migrations", () => {
       publishedAt: "2026-09-02T00:00:00.000Z",
     });
     first.db.prepare("DELETE FROM sync_dirty").run();
-    first.db.prepare("DROP TRIGGER IF EXISTS sync_prompt_tombstone_del").run();
-    first.db.prepare("DROP TABLE IF EXISTS sync_prompt_tombstones").run();
-    first.db.pragma("user_version = 9");
     first.db
       .prepare(
         `INSERT INTO sync_ops
@@ -524,7 +768,7 @@ describe("migrations", () => {
     ];
 
     const seedReleasedV10 = (dbPath: string, localTagId: "tag-a" | "tag-b") => {
-      const seeded = openDatabase(dbPath).db;
+      const seeded = physicalDatabase(dbPath, 10).db;
       seeded
         .prepare(
           `INSERT INTO prompts (id, title, created_at, updated_at)
@@ -559,7 +803,6 @@ describe("migrations", () => {
       // not yet refined before the upgrade. It must become a normal immutable
       // op before repair reduces the historical tag component.
       seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('pending-tag', 'pending', '#00cc00')").run();
-      seeded.pragma("user_version = 10");
       const verbatimOps = seeded
         .prepare(
           `SELECT source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at
@@ -654,7 +897,7 @@ describe("migrations", () => {
 
   it("compresses v10 tag remap chains and reciprocal edges directly to the minimum id", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 10).db;
     seeded.prepare("INSERT INTO tags (id, name, color) VALUES ('tag-a', 'prod', '#112233')").run();
     seeded
       .prepare(
@@ -665,7 +908,6 @@ describe("migrations", () => {
       )
       .run();
     seeded.prepare("DELETE FROM sync_dirty").run();
-    seeded.pragma("user_version = 10");
     seeded.close();
 
     const migrated = openDatabase(dbPath);
@@ -689,7 +931,7 @@ describe("migrations", () => {
 
   it("keeps terminally deleted prompt aggregates absent while repairing v10 history", () => {
     const dbPath = tmpDbPath();
-    const seeded = openDatabase(dbPath).db;
+    const seeded = physicalDatabase(dbPath, 10).db;
     const library = new PromptLibrary(seeded);
     const prompt = library.createPrompt({ title: "Terminal history", content: "v1" });
     const tag = library.createTag({ name: "Terminal tag" });
@@ -732,7 +974,6 @@ describe("migrations", () => {
          ORDER BY table_name, record_id`,
       )
       .all();
-    seeded.pragma("user_version = 10");
     seeded.close();
 
     const migrated = openDatabase(dbPath);

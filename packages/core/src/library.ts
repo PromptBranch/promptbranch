@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { reindexPrompt as reindexPromptRows } from "./reindex.js";
+import {
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+  deleteVersionSearchRow,
+  deletePromptSearchRows,
+  rebuildPromptSearchIndex,
+} from "./reindex.js";
+import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
 import type BetterSqlite3 from "better-sqlite3";
 import type {
   BranchRow,
@@ -20,6 +27,8 @@ import type {
   VersionRow,
   VersionSource,
 } from "./types.js";
+
+export type { LibraryExport } from "./import-validation.js";
 
 const now = () => new Date().toISOString();
 
@@ -176,31 +185,6 @@ export interface AverageRatings {
   count: number;
 }
 
-export interface LibraryExport {
-  meta: { formatVersion: 1; exportedAt: string };
-  tables: {
-    prompts: PromptRow[];
-    branches: BranchRow[];
-    versions: VersionRow[];
-    notes: NoteRow[];
-    tags: TagRow[];
-    prompt_tags: PromptTagRow[];
-    collections: CollectionRow[];
-    collection_prompts: CollectionPromptRow[];
-    ratings: RatingRow[];
-    runs: RunRow[];
-    settings: SettingRow[];
-    /**
-     * AI provider configuration. api_key_enc is always null in exports by
-     * design: the blob is encrypted with the exporting device's OS keychain
-     * and would not decrypt anywhere else. Absent in pre-v3 bundles.
-     */
-    providers?: ProviderRow[];
-    /** Per-provider model visibility; absent in pre-v3 bundles. */
-    provider_models?: ProviderModelRow[];
-  };
-}
-
 export interface ImportTableSummary {
   inserted: number;
   /** Rows merged into an existing row (tags/collections by unique name). */
@@ -338,7 +322,8 @@ export class PromptLibrary {
         );
       }
 
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId, { newRow: true });
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return this.mustGetPrompt(promptId);
     })();
   }
@@ -396,7 +381,9 @@ export class PromptLibrary {
         this.run("UPDATE prompts SET description = ? WHERE id = ?", patch.description, promptId);
       if (patch.icon !== undefined) this.run("UPDATE prompts SET icon = ? WHERE id = ?", patch.icon, promptId);
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), promptId);
-      this.reindexPrompt(promptId);
+      if (patch.title !== undefined || patch.description !== undefined) {
+        refreshPromptSearchMetadata(this.db, promptId);
+      }
       return this.mustGetPrompt(promptId);
     })();
   }
@@ -491,7 +478,7 @@ export class PromptLibrary {
   hardDeletePrompt(promptId: string): void {
     this.mustGetPrompt(promptId);
     this.db.transaction(() => {
-      this.run("DELETE FROM search_index WHERE prompt_id = ?", promptId);
+      deletePromptSearchRows(this.db, promptId);
       this.run("DELETE FROM runs WHERE prompt_id = ?", promptId);
       this.run("DELETE FROM notes WHERE prompt_id = ?", promptId);
       // Ratings targeting versions have no FK — delete them explicitly, before
@@ -583,7 +570,7 @@ export class PromptLibrary {
           // A title-only prompt starts with an empty v1 placeholder. Its first
           // real save establishes v1; later save-as-new operations append.
           this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", committedAt, input.promptId);
-          this.reindexPrompt(input.promptId);
+          refreshVersionSearchRow(this.db, head.id);
           return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", head.id)!;
         }
         // Another process may have initialized the placeholder after our read.
@@ -615,9 +602,9 @@ export class PromptLibrary {
       } else {
         this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), input.promptId);
       }
-      this.reindexPrompt(input.promptId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
-    })();
+    }).immediate();
   }
 
   getVersion(versionId: string): VersionRow | null {
@@ -644,7 +631,7 @@ export class PromptLibrary {
       );
       this.run("UPDATE versions SET content = ? WHERE id = ?", content, versionId);
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
-      this.reindexPrompt(version.prompt_id);
+      refreshVersionSearchRow(this.db, versionId);
       return this.getVersion(versionId)!;
     }).immediate();
   }
@@ -693,7 +680,7 @@ export class PromptLibrary {
       }
 
       this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
-      this.reindexPrompt(version.prompt_id);
+      deleteVersionSearchRow(this.db, versionId);
     }).immediate();
   }
 
@@ -804,7 +791,7 @@ export class PromptLibrary {
         `Branched from version ${source.number}`,
         ts,
       );
-      this.reindexPrompt(input.promptId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return {
         branch: this.get<BranchRow>("SELECT * FROM branches WHERE id = ?", branchId)!,
         version: this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!,
@@ -915,14 +902,14 @@ export class PromptLibrary {
    * version.
    */
   approveSuggestion(versionId: string, options: { setAsCurrent?: boolean } = {}): VersionRow {
-    const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
-    if (!version) throw new Error(`Version not found: ${versionId}`);
-    if (version.status !== "pending") {
-      throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be approved`);
-    }
     return this.db.transaction((): VersionRow => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be approved`);
+      }
       this.run("UPDATE versions SET status = 'active' WHERE id = ?", versionId);
-      this.reindexPrompt(version.prompt_id);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       if (options.setAsCurrent) {
         this.run(
           "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
@@ -932,18 +919,21 @@ export class PromptLibrary {
         );
       }
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
-    })();
+    }).immediate();
   }
 
   /** Rejects a pending suggestion: kept for history but permanently inactive. */
   rejectSuggestion(versionId: string): VersionRow {
-    const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
-    if (!version) throw new Error(`Version not found: ${versionId}`);
-    if (version.status !== "pending") {
-      throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
-    }
-    this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
-    return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    return this.db.transaction(() => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
+      }
+      this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
+      deleteVersionSearchRow(this.db, versionId, { newRow: true });
+      return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    }).immediate();
   }
 
   // ------------------------------------------------------------------ draft
@@ -1005,7 +995,7 @@ export class PromptLibrary {
         input.body,
         now(),
       );
-      this.reindexPrompt(input.promptId);
+      refreshPromptSearchMetadata(this.db, input.promptId);
       return this.get<NoteRow>("SELECT * FROM notes WHERE id = ?", id)!;
     })();
   }
@@ -1030,7 +1020,7 @@ export class PromptLibrary {
     if (!note) throw new Error(`Note not found: ${noteId}`);
     this.db.transaction(() => {
       this.run("DELETE FROM notes WHERE id = ?", noteId);
-      this.reindexPrompt(note.prompt_id);
+      refreshPromptSearchMetadata(this.db, note.prompt_id);
     })();
   }
 
@@ -1054,7 +1044,7 @@ export class PromptLibrary {
     this.mustGetPrompt(promptId);
     this.db.transaction(() => {
       this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1070,7 +1060,7 @@ export class PromptLibrary {
   removeTagFromPrompt(promptId: string, tagId: string): void {
     this.db.transaction(() => {
       this.run("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?", promptId, tagId);
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1082,7 +1072,7 @@ export class PromptLibrary {
       for (const tagId of tagIds) {
         this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
       }
-      this.reindexPrompt(promptId);
+      refreshPromptSearchMetadata(this.db, promptId);
     })();
   }
 
@@ -1334,16 +1324,23 @@ export class PromptLibrary {
 
   /** Average ratings per version of a prompt, for versions that have ratings. */
   getVersionRatingSummaries(promptId: string): Array<AverageRatings & { version_id: string }> {
-    const ids = this.all<{ target_id: string }>(
-      `SELECT DISTINCT target_id FROM ratings
-       WHERE target_type = 'version'
-         AND target_id IN (SELECT id FROM versions WHERE prompt_id = ?)`,
+    return this.all<AverageRatings & { version_id: string }>(
+      `SELECT v.id AS version_id,
+              AVG(r.effectiveness) AS effectiveness,
+              AVG(r.clarity) AS clarity,
+              AVG(r.completeness) AS completeness,
+              AVG(r.actionability) AS actionability,
+              COUNT(*) AS count,
+              (TOTAL(r.effectiveness) + TOTAL(r.clarity) + TOTAL(r.completeness) +
+               TOTAL(r.actionability)) /
+              NULLIF(COUNT(r.effectiveness) + COUNT(r.clarity) + COUNT(r.completeness) +
+                     COUNT(r.actionability), 0) AS overall
+       FROM versions AS v
+       JOIN ratings AS r ON r.target_type = 'version' AND r.target_id = v.id
+       WHERE v.prompt_id = ?
+       GROUP BY v.id`,
       promptId,
     );
-    return ids.map(({ target_id }) => ({
-      version_id: target_id,
-      ...this.getAverageRatings("version", target_id),
-    }));
   }
 
   // ------------------------------------------------------------------- runs
@@ -1377,6 +1374,7 @@ export class PromptLibrary {
       input.promptId,
     );
     if (!version) throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    if (version.status !== "active") throw new Error(`Version ${input.versionId} must be active to record a run`);
     const id = randomUUID();
     this.run(
       `INSERT INTO runs
@@ -1770,11 +1768,6 @@ export class PromptLibrary {
     }));
   }
 
-  /** Rebuilds all search_index rows for one prompt. Call inside the mutating transaction. */
-  private reindexPrompt(promptId: string): void {
-    reindexPromptRows(this.db, promptId);
-  }
-
   // ----------------------------------------------------------- export/import
 
   /**
@@ -1819,7 +1812,8 @@ export class PromptLibrary {
    * their UNIQUE name are merged into the existing row. Returns per-table
    * counts.
    */
-  importLibrary(data: LibraryExport): ImportSummary {
+  importLibrary(input: unknown): ImportSummary {
+    const data = preflightLibraryImport(input);
     const summary: ImportSummary = {};
     const bump = (table: string, field: keyof ImportTableSummary) => {
       const entry = (summary[table] ??= { inserted: 0, merged: 0, remapped: 0, skipped: 0 });
@@ -1886,20 +1880,20 @@ export class PromptLibrary {
       // -- AI provider configuration (pre-v3 bundles have no such tables).
       // Keys are never exported — api_key_enc stays null and the user
       // re-enters keys after import.
-      for (const provider of data.tables.providers ?? []) {
+      for (const provider of data.tables.providers) {
         const id = claimId("providers", provider.id, "SELECT id FROM providers WHERE id = ?");
         this.run(
           "INSERT INTO providers (id, type, driver, name, api_key_enc, base_url, enabled, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
           id,
           provider.type,
-          provider.driver ?? provider.type,
+          provider.driver,
           provider.name,
-          provider.base_url ?? null,
-          provider.enabled ?? 1,
-          provider.created_at ?? now(),
+          provider.base_url,
+          provider.enabled,
+          provider.created_at,
         );
       }
-      for (const pm of data.tables.provider_models ?? []) {
+      for (const pm of data.tables.provider_models) {
         const result = this.db
           .prepare(
             "INSERT OR IGNORE INTO provider_models (provider_id, model_id, display_name, enabled) VALUES (?, ?, ?, ?)",
@@ -1992,9 +1986,8 @@ export class PromptLibrary {
           version.content_format,
           version.change_note,
           version.author,
-          // Bundles exported before schema v2 lack these fields; default them.
-          version.status ?? "active",
-          version.source ?? "user",
+          version.status,
+          version.source,
           version.created_at,
         );
       }
@@ -2085,16 +2078,15 @@ export class PromptLibrary {
           remap("versions", run.version_id),
           run.tool,
           run.model,
-          // Bundles exported before schema v3 lack these fields; default them.
           // Provider references are remapped like other foreign keys (deleted
           // providers pass through unresolved, as in live data).
-          remap("providers", run.provider ?? null),
-          run.status ?? "completed",
-          run.output ?? null,
-          run.prompt_content ?? null,
-          run.error ?? null,
-          run.latency_ms ?? null,
-          run.run_group_id ?? null,
+          remap("providers", run.provider),
+          run.status,
+          run.output,
+          run.prompt_content,
+          run.error,
+          run.latency_ms,
+          run.run_group_id,
           run.outcome_rating,
           run.result_summary,
           run.metrics_json,
@@ -2111,7 +2103,7 @@ export class PromptLibrary {
 
       // Rebuild search rows for every prompt we touched.
       const touched = new Set<string>(idMaps.prompts.values());
-      for (const promptId of touched) this.reindexPrompt(promptId);
+      for (const promptId of touched) rebuildPromptSearchIndex(this.db, promptId);
     })();
 
     return summary;

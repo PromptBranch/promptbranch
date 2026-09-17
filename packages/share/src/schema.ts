@@ -4,6 +4,11 @@ import { SNAPSHOT_ID_PATTERN } from "./ids.js";
 /** Hard request cap enforced by the portal before parsing (spec: 256 KB). */
 export const MAX_PAYLOAD_BYTES = 256 * 1024;
 
+/** Decoded response limits; Content-Length is only an early rejection hint. */
+export const MAX_SNAPSHOT_RESPONSE_BYTES = 512 * 1024;
+export const MAX_CONTROL_RESPONSE_BYTES = 64 * 1024;
+export const MAX_ERROR_BODY_BYTES = 4 * 1024;
+
 export const snapshotIdSchema = z.string().regex(SNAPSHOT_ID_PATTERN);
 
 export const historyEntrySchema = z.object({

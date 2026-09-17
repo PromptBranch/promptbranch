@@ -23,6 +23,8 @@ import {
   type KeyCipher,
 } from "./ai.js";
 
+const RUN_REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000";
+
 /** Trivial stand-in for safeStorage: reversibly "encrypts" via base64. */
 const stubCipher: KeyCipher = {
   encrypt: (plain) => `enc:${Buffer.from(plain, "utf8").toString("base64")}`,
@@ -396,7 +398,7 @@ describe("runFailureMessage", () => {
 });
 
 describe("aiRunSchema", () => {
-  const base = { promptId: "p", content: "hi" };
+  const base = { requestId: RUN_REQUEST_ID, promptId: "p", content: "hi" };
   const ref = (modelId: string) => ({ providerId: "prov", modelId });
 
   it("rejects duplicate provider/model pairs", () => {
@@ -467,6 +469,7 @@ describe("catalog get/refresh", () => {
     const prompt = deps.lib.createPrompt({ title: "Offline catalog", content: "Hello" });
 
     const group = await runModelGroup(deps, {
+      requestId: RUN_REQUEST_ID,
       promptId: prompt.id,
       content: "Hello",
       variables: {},
@@ -669,11 +672,64 @@ describe("test model selection", () => {
 });
 
 describe("runModelGroup", () => {
+  it.each([
+    ["count", "plain", Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`v${i}`, ""])), "too-many-variables"],
+    ["template count", Array.from({ length: 101 }, (_, i) => `{{v${i}}}`).join(""), {}, "too-many-variables"],
+    ["value", "{{a}}", { a: "x".repeat(100_001) }, "variable-input-too-large"],
+    ["aggregate", "plain", Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(100_000)])), "variable-input-too-large"],
+    ["output", "{{a}}".repeat(11), { a: "x".repeat(100_000) }, "rendered-content-too-large"],
+  ] as const)("rejects variable %s before provider preparation or network traffic", async (_label, content, variables, code) => {
+    const deps = makeDeps();
+    const prompt = deps.lib.createPrompt({ title: "Bounded", content: "saved" });
+    const requests = seenUrls.length;
+    // An unknown provider fails during preparation, so the variable error proves ordering.
+    await expect(runModelGroup(deps, { requestId: RUN_REQUEST_ID, promptId: prompt.id, content, variables,
+      modelRefs: [{ providerId: "must-not-be-prepared", modelId: "model-a" }],
+    })).rejects.toMatchObject({ code });
+    expect(seenUrls).toHaveLength(requests);
+    expect(deps.lib.listRuns(prompt.id)).toEqual([]);
+  });
+
+  it.each([
+    Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`v${i}`, ""])),
+    Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(100_000)])),
+  ])("rejects count and aggregate overflow at the IPC boundary", (variables) => {
+    expect(aiRunSchema.safeParse({ requestId: RUN_REQUEST_ID, promptId: "prompt", content: "plain", variables,
+      modelRefs: [{ providerId: "provider", modelId: "model" }],
+    }).success).toBe(false);
+  });
+
+  it("accepts exact variable count and aggregate input limits at IPC", () => {
+    const parse = (variables: Record<string, string>) => aiRunSchema.safeParse({
+      requestId: RUN_REQUEST_ID,
+      promptId: "prompt", content: "plain", variables,
+      modelRefs: [{ providerId: "provider", modelId: "model" }],
+    }).success;
+    expect(parse(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`v${i}`, ""])))).toBe(true);
+    expect(parse(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`v${i}`, "x".repeat(99_998)])))).toBe(true);
+  });
+  it.each(["pending", "rejected"])("rejects a legacy %s version before provider traffic", async (status) => {
+    const db = openMemoryDatabase();
+    const lib = new PromptLibrary(db);
+    const deps: AiServiceDeps = { lib, cipher: stubCipher };
+    try {
+      const providerId = addStubProvider(deps);
+      const prompt = lib.createPrompt({ title: "Legacy", content: "private" });
+      db.prepare("UPDATE versions SET status = ? WHERE id = ?").run(status, prompt.current_version_id);
+      const requests = seenUrls.length;
+      await expect(runModelGroup(deps, { requestId: RUN_REQUEST_ID, promptId: prompt.id, content: "private", variables: {},
+        modelRefs: [{ providerId, modelId: "model-a" }] })).rejects.toThrow(/active/i);
+      expect(seenUrls).toHaveLength(requests);
+      expect(lib.listRuns(prompt.id)).toEqual([]);
+    } finally { db.close(); }
+  });
+
   it("runs two models concurrently and writes a two-row run group", async () => {
     const deps = makeDeps();
     const providerId = addStubProvider(deps, ["model-a", "model-b"]);
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi {{name}}" });
     const group = await runModelGroup(deps, {
+      requestId: RUN_REQUEST_ID,
       promptId: prompt.id,
       content: prompt.current_version_id
         ? "Say hello to {{name}}"
@@ -715,7 +771,7 @@ describe("runModelGroup", () => {
     const deps = makeDeps();
     const providerId = addStubProvider(deps);
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
-    const base = { promptId: prompt.id, content: "Hi", variables: {} };
+    const base = { requestId: RUN_REQUEST_ID, promptId: prompt.id, content: "Hi", variables: {} };
 
     await expect(
       runModelGroup(deps, { ...base, modelRefs: [{ providerId: "nope", modelId: "model-a" }] }),
@@ -741,6 +797,27 @@ describe("runModelGroup", () => {
 });
 
 describe("judgeRunGroup", () => {
+  it("rejects a foreign run version before reading legacy fallback content", async () => {
+    const db = openMemoryDatabase();
+    const lib = new PromptLibrary(db);
+    const deps: AiServiceDeps = { lib, cipher: stubCipher };
+    try {
+      const providerId = addStubProvider(deps, ["model-judge"]);
+      const prompt = lib.createPrompt({ title: "Owner", content: "owner content" });
+      const foreign = lib.createPrompt({ title: "Foreign", content: "private foreign content" });
+      const run = lib.recordModelRun({ promptId: prompt.id, versionId: prompt.current_version_id!,
+        provider: providerId, model: "model-a", status: "completed", output: "answer", runGroupId: "corrupt" });
+      db.prepare("UPDATE runs SET version_id = ? WHERE id = ?").run(foreign.current_version_id, run.id);
+      judgeRequestPrompts.length = 0;
+      const result = await judgeRunGroup(deps, {
+        runGroupId: "corrupt", judge: { providerId, modelId: "model-judge" },
+      });
+      expect(result.results).toEqual([]);
+      expect(result.failures).toEqual([expect.objectContaining({ runId: run.id })]);
+      expect(judgeRequestPrompts).toEqual([]);
+    } finally { db.close(); }
+  });
+
   /** Two completed runs + one error run under a shared run group. */
   function seedRunGroup(deps: AiServiceDeps & { lib: PromptLibrary }, providerId: string) {
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Say hi politely" });
@@ -796,6 +873,7 @@ describe("judgeRunGroup", () => {
       content: "Saved template for {{name}}",
     });
     const group = await runModelGroup(deps, {
+      requestId: RUN_REQUEST_ID,
       promptId: prompt.id,
       content: "Executed draft for {{name}}",
       variables: { name: "Ada" },
@@ -954,9 +1032,11 @@ describe("runModelGroup progress + cancel", () => {
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
     const events: AiRunProgressEvent[] = [];
     const statusesAtCompleted: string[] = [];
+    const requestId = "550e8400-e29b-41d4-a716-446655440001";
     const group = await runModelGroup(
       deps,
       {
+        requestId,
         promptId: prompt.id,
         content: "Hi",
         variables: {},
@@ -978,6 +1058,13 @@ describe("runModelGroup progress + cancel", () => {
         }
       },
     );
+
+    expect(new Set(events.map((event) => event.phase))).toEqual(
+      new Set(["queued", "started", "delta", "completed", "error"]),
+    );
+    expect(events.every((event) => event.requestId === requestId)).toBe(true);
+    expect(group.runGroupId).not.toBe(requestId);
+    expect(JSON.stringify(deps.lib.listRuns(prompt.id))).not.toContain(requestId);
 
     // Per model: queued first (request time), started on the first token,
     // terminal event last.
@@ -1021,6 +1108,7 @@ describe("runModelGroup progress + cancel", () => {
     const group = await runModelGroup(
       deps,
       {
+        requestId: RUN_REQUEST_ID,
         promptId: prompt.id,
         content: "Hi",
         variables: {},
@@ -1057,6 +1145,7 @@ describe("runModelGroup progress + cancel", () => {
     const group = await runModelGroup(
       deps,
       {
+        requestId: RUN_REQUEST_ID,
         promptId: prompt.id,
         content: "Hi",
         variables: {},
@@ -1088,6 +1177,7 @@ describe("runModelGroup progress + cancel", () => {
     const run = runModelGroup(
       deps,
       {
+        requestId: RUN_REQUEST_ID,
         promptId: prompt.id,
         versionId: historicalVersionId,
         content: "v1",
@@ -1124,6 +1214,7 @@ describe("runModelGroup progress + cancel", () => {
     const run = runModelGroup(
       deps,
       {
+        requestId: RUN_REQUEST_ID,
         promptId: prompt.id,
         versionId: historicalVersionId,
         content: "v1",
@@ -1211,6 +1302,7 @@ describe("catalog-backed model availability", () => {
     const providerId = await addCatalogProvider(deps);
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
     const group = await runModelGroup(deps, {
+      requestId: RUN_REQUEST_ID,
       promptId: prompt.id,
       content: "Hi",
       variables: {},
@@ -1224,7 +1316,7 @@ describe("catalog-backed model availability", () => {
     const deps = makeDeps();
     const providerId = await addCatalogProvider(deps);
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
-    const base = { promptId: prompt.id, content: "Hi", variables: {} };
+    const base = { requestId: RUN_REQUEST_ID, promptId: prompt.id, content: "Hi", variables: {} };
 
     await expect(
       runModelGroup(deps, { ...base, modelRefs: [{ providerId, modelId: "gpt-9000" }] }),
@@ -1253,6 +1345,7 @@ describe("catalog-backed model availability", () => {
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
     await expect(
       runModelGroup(deps, {
+        requestId: RUN_REQUEST_ID,
         promptId: prompt.id,
         content: "Hi",
         variables: {},
@@ -1567,6 +1660,7 @@ describe("generic catalog providers (long tail via openai-compatible driver)", (
 
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
     const group = await runModelGroup(deps, {
+      requestId: RUN_REQUEST_ID,
       promptId: prompt.id,
       content: "Hi",
       variables: {},
@@ -1611,7 +1705,7 @@ describe("generic catalog providers (long tail via openai-compatible driver)", (
     const deps = await depsWithCatalog();
     const provider = createProvider(deps, { type: "groq", name: "Groq", apiKey: "gsk", baseUrl });
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Hi" });
-    const base = { promptId: prompt.id, content: "Hi", variables: {} };
+    const base = { requestId: RUN_REQUEST_ID, promptId: prompt.id, content: "Hi", variables: {} };
 
     setModelHidden(deps, { providerId: provider.id, modelId: "model-a", hidden: true });
     await expect(

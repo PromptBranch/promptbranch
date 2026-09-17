@@ -1,16 +1,125 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { performance } from "node:perf_hooks";
-import { openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { openDatabase, openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
 
 let db: Database;
 let lib: PromptLibrary;
+
+function waitForOutput(
+  child: ReturnType<typeof spawn>,
+  expected: string,
+  timeoutMs: number,
+): Promise<void> {
+  const stdout = child.stdout;
+  if (!stdout) throw new Error("Child stdout is unavailable");
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for child output ${JSON.stringify(expected)}: ${output}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString();
+      if (output.split("\n").includes(expected)) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      reject(new Error(`Child exited with code ${code} before writing ${JSON.stringify(expected)}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      stdout.off("data", onData);
+      child.off("exit", onExit);
+    };
+    stdout.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+function waitForSuccessfulExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
+  const stderr = child.stderr;
+  if (!stderr) throw new Error("Child stderr is unavailable");
+  return new Promise((resolve, reject) => {
+    let errorOutput = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for child exit: ${errorOutput}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      errorOutput += chunk.toString();
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      if (code === 0) resolve();
+      else reject(new Error(`Child exited with code ${code}: ${errorOutput}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      stderr.off("data", onData);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    stderr.on("data", onData);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+function observeExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const settle = (): void => {
+      child.off("exit", settle);
+      child.off("close", settle);
+      child.off("error", settle);
+      resolve();
+    };
+    child.once("exit", settle);
+    child.once("close", settle);
+    child.once("error", settle);
+  });
+}
 
 beforeEach(() => {
   db = openMemoryDatabase();
   lib = new PromptLibrary(db);
 });
 
+describe("test process cleanup", () => {
+  it("settles observation when a child fails before emitting exit", async () => {
+    const scratchDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "promptbranch-spawn-failure-"));
+    const child = spawn(path.join(scratchDirectory, "missing-executable"), [], { stdio: "ignore" });
+
+    try {
+      await observeExit(child);
+    } finally {
+      fs.rmSync(scratchDirectory, { recursive: true, force: true });
+    }
+  }, 1_000);
+});
+
 describe("prompts", () => {
+  it.each(["pending", "rejected"])("rejects manual and model runs of a %s version", (status) => {
+    const prompt = lib.createPrompt({ title: "Legacy corrupt pointer", content: "private" });
+    db.prepare("UPDATE versions SET status = ? WHERE id = ?").run(status, prompt.current_version_id);
+    expect(() => lib.addRun({ promptId: prompt.id, versionId: prompt.current_version_id! }))
+      .toThrow(/active/i);
+    expect(() => lib.recordModelRun({ promptId: prompt.id, versionId: prompt.current_version_id!,
+      provider: "test", model: "test", status: "completed", output: "result" }))
+      .toThrow(/active/i);
+    expect(lib.listRuns(prompt.id)).toEqual([]);
+  });
+
   it("creates a prompt with main branch, version 1 and current pointer set", () => {
     const prompt = lib.createPrompt({ title: "Hello", description: "Greeting", content: "Say hi" });
 
@@ -454,6 +563,146 @@ describe("versions", () => {
     expect(lib.getBranchHead(main.id)!.id).toBe(v3.id);
   });
 
+  it("waits for a concurrent writer before creating a version from a fresh snapshot", async () => {
+    const scratchDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "promptbranch-version-lock-"));
+    const databasePath = path.join(scratchDirectory, "library.db");
+    const releasePath = path.join(scratchDirectory, "release.command");
+    const diskDatabase = openDatabase(databasePath).db;
+    const diskLibrary = new PromptLibrary(diskDatabase);
+    const prompt = diskLibrary.createPrompt({ title: "Concurrent", content: "v1" });
+    const main = diskLibrary.listBranches(prompt.id)[0]!;
+    const helper = spawn(
+      process.execPath,
+      [
+        path.join(import.meta.dirname, "fixtures", "hold-write-lock.mjs"),
+        databasePath,
+        prompt.id,
+        main.id,
+        prompt.current_version_id!,
+        releasePath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const helperExit = waitForSuccessfulExit(helper, 2_500);
+    const helperClosed = observeExit(helper);
+    let helperReleased: Promise<void> | null = null;
+
+    try {
+      await waitForOutput(helper, "locked", 2_000);
+      helperReleased = waitForOutput(helper, "released", 2_500);
+      let transactionMode: "deferred" | "immediate" | null = null;
+      let releaseSent = false;
+      const releaseWriter = (): void => {
+        if (releaseSent) return;
+        releaseSent = true;
+        fs.writeFileSync(releasePath, "release\n", { flag: "wx" });
+      };
+      const originalTransaction = diskDatabase.transaction.bind(diskDatabase);
+      diskDatabase.transaction = ((fn) => {
+        const transaction = originalTransaction(fn);
+        const wrapped = (...args: unknown[]) => {
+          transactionMode = "deferred";
+          return Reflect.apply(transaction, transaction, args);
+        };
+        Object.defineProperties(wrapped, {
+          default: { value: wrapped },
+          deferred: { value: wrapped },
+          immediate: {
+            value: (...args: unknown[]) => {
+              transactionMode = "immediate";
+              releaseWriter();
+              return Reflect.apply(transaction.immediate, transaction, args);
+            },
+          },
+          exclusive: {
+            value: (...args: unknown[]) => Reflect.apply(transaction.exclusive, transaction, args),
+          },
+        });
+        return wrapped;
+      }) as Database["transaction"];
+      const originalPrepare = diskDatabase.prepare.bind(diskDatabase);
+      diskDatabase.prepare = ((source) => {
+        const statement = originalPrepare(source);
+        if (
+          typeof source !== "string" ||
+          !source.includes("SELECT * FROM versions WHERE branch_id = ?")
+        ) {
+          return statement;
+        }
+        return new Proxy(statement, {
+          get(target, property, receiver) {
+            if (property !== "get") return Reflect.get(target, property, receiver);
+            return (...args: unknown[]) => {
+              const row = Reflect.apply(target.get, target, args);
+              if (transactionMode === "deferred") releaseWriter();
+              return row;
+            };
+          },
+        });
+      }) as Database["prepare"];
+      let saved: ReturnType<PromptLibrary["createVersion"]> | undefined;
+      let createError: unknown;
+      try {
+        saved = diskLibrary.createVersion({
+          promptId: prompt.id,
+          branchId: main.id,
+          content: "v3 after concurrent writer",
+        });
+      } catch (error) {
+        createError = error;
+      }
+      if (createError && transactionMode === null) throw createError;
+      expect(fs.readFileSync(releasePath, "utf8")).toBe("release\n");
+      await helperReleased;
+      await helperExit;
+
+      if (createError) {
+        expect(transactionMode).toBe("deferred");
+        expect(createError).toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) });
+        expect(diskLibrary.listVersions(prompt.id).map(({ id, number }) => ({ id, number })))
+          .toEqual([
+            { id: prompt.current_version_id, number: 1 },
+            { id: "concurrent-writer-version", number: 2 },
+          ]);
+        expect(diskLibrary.getPrompt(prompt.id)?.current_version_id)
+          .toBe("concurrent-writer-version");
+        throw createError;
+      }
+
+      expect(transactionMode).toBe("immediate");
+      expect(saved).toMatchObject({
+        number: 3,
+        parent_version_id: "concurrent-writer-version",
+        content: "v3 after concurrent writer",
+      });
+      expect(diskLibrary.listVersions(prompt.id).map(({ id, number, parent_version_id }) => ({
+        id,
+        number,
+        parent_version_id,
+      }))).toEqual([
+        { id: prompt.current_version_id, number: 1, parent_version_id: null },
+        {
+          id: "concurrent-writer-version",
+          number: 2,
+          parent_version_id: prompt.current_version_id,
+        },
+        { id: saved!.id, number: 3, parent_version_id: "concurrent-writer-version" },
+      ]);
+      expect(diskLibrary.getPrompt(prompt.id)?.current_version_id).toBe(saved!.id);
+    } finally {
+      if (helper.exitCode === null) {
+        if (!fs.existsSync(releasePath)) fs.writeFileSync(releasePath, "release\n");
+      }
+      await helperExit.catch(() => {
+        if (helper.exitCode === null) helper.kill();
+      });
+      await helperReleased?.catch(() => undefined);
+      await helperClosed;
+      diskDatabase.close();
+      fs.rmSync(scratchDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("appends from an explicit historical base without changing the preferred version", () => {
     const prompt = lib.createPrompt({ title: "P", content: "v1" });
     const main = lib.listBranches(prompt.id)[0]!;
@@ -725,24 +974,61 @@ describe("ratings", () => {
     const main = lib.listBranches(prompt.id)[0]!;
     const v1Id = prompt.current_version_id!;
     const v2 = lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" });
+    const unrated = lib.createVersion({
+      promptId: prompt.id,
+      branchId: main.id,
+      content: "unrated",
+    });
 
     lib.addRating({ targetType: "version", targetId: v1Id, effectiveness: 4, clarity: 2 });
     lib.addRating({ targetType: "version", targetId: v1Id, effectiveness: 2 });
     lib.addRating({ targetType: "version", targetId: v2.id, completeness: 5 });
+    const other = lib.createPrompt({ title: "Q", content: "y" });
+    lib.addRating({ targetType: "version", targetId: other.current_version_id!, clarity: 1 });
 
     const summaries = lib.getVersionRatingSummaries(prompt.id);
     expect(summaries).toHaveLength(2);
     const s1 = summaries.find((s) => s.version_id === v1Id)!;
     expect(s1.count).toBe(2);
     expect(s1.effectiveness).toBeCloseTo(3);
+    expect(s1.clarity).toBeCloseTo(2);
+    expect(s1.completeness).toBeNull();
+    expect(s1.actionability).toBeNull();
     expect(s1.overall).toBeCloseTo((4 + 2 + 2) / 3);
     const s2 = summaries.find((s) => s.version_id === v2.id)!;
+    expect(s2.effectiveness).toBeNull();
+    expect(s2.clarity).toBeNull();
+    expect(s2.completeness).toBeCloseTo(5);
+    expect(s2.actionability).toBeNull();
     expect(s2.overall).toBeCloseTo(5);
+    expect(summaries.find((s) => s.version_id === unrated.id)).toBeUndefined();
+    expect(summaries.find((s) => s.version_id === other.current_version_id)).toBeUndefined();
+  });
 
-    // Ratings on other prompts' versions don't leak in.
-    const other = lib.createPrompt({ title: "Q", content: "y" });
-    lib.addRating({ targetType: "version", targetId: other.current_version_id!, clarity: 1 });
-    expect(lib.getVersionRatingSummaries(prompt.id)).toHaveLength(2);
+  it("summarizes every rated version with one select", () => {
+    const prompt = lib.createPrompt({ title: "P", content: "x" });
+    const main = lib.listBranches(prompt.id)[0]!;
+    const versionIds = [
+      prompt.current_version_id!,
+      lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v2" }).id,
+      lib.createVersion({ promptId: prompt.id, branchId: main.id, content: "v3" }).id,
+    ];
+    for (const [index, versionId] of versionIds.entries()) {
+      lib.addRating({ targetType: "version", targetId: versionId, effectiveness: index + 1 });
+    }
+
+    const prepare = db.prepare.bind(db);
+    const selects: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (/^\s*SELECT\b/i.test(sql)) selects.push(sql);
+      return prepare(sql);
+    });
+    try {
+      expect(lib.getVersionRatingSummaries(prompt.id)).toHaveLength(versionIds.length);
+      expect(selects).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("sorts and filters prompts by average prompt-level rating", () => {

@@ -53,6 +53,25 @@ const publishOk: PublishResponse = {
 };
 
 describe("previewShare", () => {
+  it.each(["pending", "rejected", "foreign"])("rejects a legacy %s current pointer", (kind) => {
+    const { db, lib, prompt } = setup();
+    try {
+      if (kind === "foreign") {
+        const foreign = lib.createPrompt({ title: "Other", content: "private" });
+        db.prepare("UPDATE prompts SET current_version_id = ? WHERE id = ?")
+          .run(foreign.current_version_id, prompt.id);
+      } else {
+        db.prepare("UPDATE versions SET status = ? WHERE id = ?")
+          .run(kind, lib.getPrompt(prompt.id)!.current_version_id);
+      }
+      expect(() => previewShare(makeDeps(lib), { promptId: prompt.id, includeHistory: false }))
+        .toThrow(/active.*prompt|prompt.*active/i);
+      expect(() => previewShare(makeDeps(lib), {
+        promptId: prompt.id, includeHistory: true, content: "renderer override",
+      })).toThrow(/active.*prompt|prompt.*active/i);
+    } finally { db.close(); }
+  });
+
   it("uses the current editor content when the saved version is empty", () => {
     const lib = new PromptLibrary(openMemoryDatabase());
     const prompt = lib.createPrompt({ title: "Draft prompt", content: "" });
@@ -198,6 +217,22 @@ describe("publishShare", () => {
         includeHistory: false,
       }),
     ).rejects.toThrow(/30s/);
+    expect(lib.listSharedSnapshots()).toEqual([]);
+  });
+
+  it("describes an oversized portal response without blaming the local snapshot", async () => {
+    const { lib, prompt } = setup();
+    const publishImpl: ShareServiceDeps["publishImpl"] = async () => ({
+      ok: false,
+      error: { kind: "response-too-large", actualBytes: 65_537, maxBytes: 65_536 },
+    });
+
+    await expect(
+      publishShare(makeDeps(lib, { publishImpl }), {
+        promptId: prompt.id,
+        includeHistory: false,
+      }),
+    ).rejects.toThrow(/portal response.*too large/i);
     expect(lib.listSharedSnapshots()).toEqual([]);
   });
 

@@ -2,6 +2,12 @@ import type BetterSqlite3 from "better-sqlite3";
 export type Database = BetterSqlite3.Database;
 export { backupDatabase, latestBackup, listBackups, type BackupFile } from "./backup.js";
 export { openDatabase, openMemoryDatabase, type OpenDatabaseResult } from "./db.js";
+export {
+  preflightLibraryImport,
+  LibraryImportValidationError,
+  type LibraryImportIssue,
+  type NormalizedLibraryExport,
+} from "./import-validation.js";
 export { LATEST_SCHEMA_VERSION, pendingMigrationCount, runMigrations } from "./migrations.js";
 export {
   parseRunMetrics,
@@ -22,7 +28,14 @@ export {
   type VersionWithBranch,
 } from "./library.js";
 export { DB_ENV_VAR, DB_FILENAME, resolveDatabasePath } from "./paths.js";
-export { reindexPrompt } from "./reindex.js";
+export {
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+  deleteVersionSearchRow,
+  deletePromptSearchRows,
+  rebuildPromptSearchIndex,
+  reindexPrompt,
+} from "./reindex.js";
 export { compareHlc, formatHlc, parseHlc, type HlcStamp } from "./sync/hlc.js";
 export { SyncEngine, type ApplySummary, type RefineSummary, type SyncOp, type SyncPeerRow } from "./sync/engine.js";
 export { tableDef, SYNCED_TABLES, type SyncedTableDef, type SyncedTableName } from "./sync/tables.js";
@@ -31,6 +44,14 @@ export {
   extractPromptVariables,
   missingPromptVariables,
   substitutePromptVariables,
+  renderPromptVariablesBounded,
+  PromptVariableError,
+  MAX_PROMPT_VARIABLES,
+  MAX_PROMPT_VARIABLE_VALUE_LENGTH,
+  MAX_PROMPT_VARIABLE_INPUT_LENGTH,
+  MAX_RENDERED_PROMPT_LENGTH,
+  type PromptVariableErrorCode,
+  type PromptVariableLimits,
   type PromptVariableValue,
 } from "./variables.js";
 export type {

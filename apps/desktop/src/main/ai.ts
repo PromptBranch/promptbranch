@@ -32,6 +32,7 @@ import {
   type TokenUsage,
 } from "@promptbranch/ai";
 import type { PromptLibrary, ProviderRow, RunRow } from "@promptbranch/core";
+import { renderPromptVariablesBounded } from "@promptbranch/core";
 import type {
   AiAssistInput,
   AiAssistResult,
@@ -539,9 +540,7 @@ export function runFailureMessage(reason: { message: string }): string {
 
 /** Substitutes {{variable}} placeholders; unknown variables are left as-is. */
 export function substituteVariables(content: string, variables: Record<string, string>): string {
-  return content.replace(/\{\{\s*([\p{L}\p{N}_.-]+)\s*\}\}/gu, (raw, name: string) =>
-    Object.hasOwn(variables, name) ? variables[name]! : raw,
-  );
+  return renderPromptVariablesBounded(content, variables);
 }
 
 /**
@@ -663,6 +662,7 @@ export async function runModelGroup(
   if (!version || version.prompt_id !== prompt.id) {
     throw new Error(`Version ${versionId} not found on prompt ${input.promptId}`);
   }
+  if (version.status !== "active") throw new Error(`Version ${versionId} must be active to run`);
 
   const content = substituteVariables(input.content, input.variables);
   if (!content.trim()) throw new Error("Prompt content is empty after variable substitution");
@@ -689,13 +689,24 @@ export async function runModelGroup(
   // runGroupId immediately, so Cancel works in the window before the first
   // token ("started" keeps its first-token meaning).
   for (const p of prepared) {
-    emit({ runGroupId, providerId: p.provider.id, modelId: p.modelId, phase: "queued" });
+    emit({
+      requestId: input.requestId,
+      runGroupId,
+      providerId: p.provider.id,
+      modelId: p.modelId,
+      phase: "queued",
+    });
   }
 
   try {
     const runs: AiRunResultDto[] = await Promise.all(
       prepared.map(async (p): Promise<AiRunResultDto> => {
-        const base = { runGroupId, providerId: p.provider.id, modelId: p.modelId };
+        const base = {
+          requestId: input.requestId,
+          runGroupId,
+          providerId: p.provider.id,
+          modelId: p.modelId,
+        };
         // "started" fires on the first token (not at request time — that is
         // the "queued" event above): before that, the model is effectively
         // waiting on the provider, and a fast-failing request yields just the
@@ -883,7 +894,9 @@ export async function judgeRunGroup(deps: AiServiceDeps, input: AiJudgeInput): P
       const row = judgeable[index]!;
       try {
         const version = lib.getVersion(row.version_id);
-        if (!version) throw new Error(`Version not found: ${row.version_id}`);
+        if (!version || version.prompt_id !== row.prompt_id) {
+          throw new Error(`Version ${row.version_id} not found on prompt ${row.prompt_id}`);
+        }
         let promptContent = row.prompt_content;
         if (promptContent === null) {
           let capturedElsewhere = false;

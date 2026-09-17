@@ -2,7 +2,7 @@ import { once } from "node:events";
 import type { Duplex } from "node:stream";
 import type { SyncEngine, SyncedTableName, SyncOp } from "@promptbranch/core";
 import { createFrameReader, encodeFrame } from "./frames.js";
-import { parseMessage, PROTOCOL_VERSION } from "./messages.js";
+import { parseMessage, PROTOCOL_VERSION, SYNC_SCHEMA_VERSION } from "./messages.js";
 
 /**
  * One anti-entropy conversation over an established (pairing-verified)
@@ -42,6 +42,7 @@ export class SyncSession {
   private serveChain: Promise<void> = Promise.resolve();
   private serveDepth = 0;
   private expectingMore = false;
+  private compatible = false;
   private closed = false;
 
   constructor(
@@ -69,6 +70,7 @@ export class SyncSession {
 
   /** Called by the connection owner (PeerService, tests) for each frame. */
   handleMessageFrame(message: unknown): void {
+    if (this.closed) return;
     try {
       this.handleMessage(message);
     } catch (err) {
@@ -100,6 +102,7 @@ export class SyncSession {
       encodeFrame({
         t: "hello",
         v: PROTOCOL_VERSION,
+        schemaVersion: SYNC_SCHEMA_VERSION,
         deviceId: this.deps.engine.deviceId(),
         name: this.deps.deviceName,
         cursors,
@@ -110,11 +113,11 @@ export class SyncSession {
   private handleMessage(message: unknown): void {
     const parsed = parseMessage(message);
     if (!parsed) {
-      this.deps.log?.("dropping non-protocol frame");
-      return;
+      throw new Error("Invalid sync protocol frame");
     }
     switch (parsed.t) {
       case "hello": {
+        this.compatible = true;
         const first = this.peer === null;
         this.peer = { deviceId: parsed.deviceId, name: parsed.name };
         if (first) this.deps.onPeerInfo?.(this.peer);
@@ -123,11 +126,13 @@ export class SyncSession {
         return;
       }
       case "notify": {
+        this.requireCompatible(parsed.t);
         // Peer has new ops — re-request by sending our cursors.
         this.sendHello();
         return;
       }
       case "ops": {
+        this.requireCompatible(parsed.t);
         const ops = parsed.ops.map((op) => ({ ...op, table: op.table as SyncedTableName }) satisfies SyncOp);
         const summary = this.deps.engine.applyRemote(ops);
         if (summary.applied > 0) this.deps.onApplied?.(summary.applied);
@@ -141,6 +146,7 @@ export class SyncSession {
         return;
       }
       case "flush": {
+        this.requireCompatible(parsed.t);
         this.expectingMore = false;
         this.maybeSteady();
         return;
@@ -156,6 +162,12 @@ export class SyncSession {
   }
 
   /** Serializes serves; each serve drains everything the peer is missing. */
+  private requireCompatible(messageType: "notify" | "ops" | "flush"): void {
+    if (!this.compatible) {
+      throw new Error(`Received ${messageType} before a compatible hello`);
+    }
+  }
+
   private enqueueServe(peerCursors: Record<string, number>): void {
     this.serveChain = this.serveChain
       .then(() => this.serve(peerCursors))

@@ -4,6 +4,8 @@ import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/cor
 import { MAX_FRAME_BYTES, createFrameReader, encodeFrame } from "./frames.js";
 import { attachSession, SyncSession } from "./session.js";
 
+const CURRENT_COMPATIBILITY = { v: 4, schemaVersion: 13 } as const;
+
 describe("frames", () => {
   it("round-trips a message", () => {
     const frames: unknown[] = [];
@@ -83,11 +85,12 @@ function sessionPair(a: Rig, b: Rig, byteBudget?: number): [SyncSession, SyncSes
 }
 
 describe("sync session", () => {
-  it("fails the session immediately when a peer uses an incompatible protocol", () => {
+  it("fails an incompatible hello without mutating remote sync state", () => {
     const local = rig();
     const [socket] = streamPair();
     socket.on("error", () => undefined);
     const log = vi.fn();
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
     const session = new SyncSession(socket, {
       engine: local.engine,
       deviceName: "Current device",
@@ -101,11 +104,163 @@ describe("sync session", () => {
       name: "Old device",
       cursors: {},
     });
+    session.handleMessageFrame({
+      t: "ops",
+      ops: [{
+        source: "old-device",
+        seq: 1,
+        opId: "old-device-1",
+        table: "prompts",
+        recordId: "remote-prompt",
+        kind: "delete",
+        payload: null,
+        hlc: "0000000000001000:000000:old-device",
+        createdAt: "2026-09-12T00:00:00.000Z",
+      }],
+      more: false,
+    });
 
     expect(session.currentState).toBe("error");
     expect(socket.destroyed).toBe(true);
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/protocol version 1/i));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(/received protocol 1, schema missing; expected protocol 4, schema 13/i),
+    );
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_ops").get()).toEqual({ n: 0 });
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_heads").get()).toEqual({ n: 0 });
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_cursors").get()).toEqual({ n: 0 });
     local.db.close();
+  });
+
+  it("fails closed when ops arrive before a compatible hello", () => {
+    const local = rig();
+    const [socket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+
+    session.handleMessageFrame({ t: "ops", ops: [], more: false });
+
+    expect(session.currentState).toBe("error");
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    local.db.close();
+  });
+
+  it("ignores later frames in a chunk after an incompatible hello closes the session", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "Must not apply", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        v: 3,
+        deviceId: "v0.5.0-device",
+        name: "PromptBranch 0.5.0",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
+  });
+
+  it("rejects a shape-invalid hello and ignores later valid frames in the same chunk", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "After invalid hello", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "",
+        cursors: {},
+      }),
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "Remote device",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(session.peerInfo).toBeNull();
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
+  });
+
+  it("rejects shape-invalid ops after hello and ignores later valid ops", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "After invalid ops", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const malformed = { ...ops[0] } as Record<string, unknown>;
+    delete malformed["hlc"];
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "Remote device",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops: [malformed], more: false }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
   });
 
   it("converges both directions over an in-memory stream pair", async () => {
@@ -190,12 +345,48 @@ describe("sync session", () => {
     a.engine.refineDirty();
     expect(a.engine.opsSince({}, 10_000_000).ops.length).toBeGreaterThan(5_000);
 
-    const [sessionA, sessionB] = sessionPair(a, b);
-    await vi.waitFor(() => expect(sessionA.currentState).toBe("steady"), { timeout: 15_000 });
-    await vi.waitFor(() => expect(sessionB.currentState).toBe("steady"), { timeout: 15_000 });
+    const historyLoads = { prompt_tags: 0, collection_prompts: 0 };
+    const batchLoads: Array<typeof historyLoads> = [];
+    const prepare = b.db.prepare.bind(b.db);
+    const prepareSpy = vi.spyOn(b.db, "prepare").mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (/SELECT \* FROM sync_ops\s+WHERE table_name = \?\s*$/.test(sql)) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...parameters: unknown[]) => {
+          const table = parameters[0];
+          if (table === "prompt_tags" || table === "collection_prompts") historyLoads[table] += 1;
+          return all(...parameters);
+        });
+      }
+      return statement;
+    });
+    const applyRemote = b.engine.applyRemote.bind(b.engine);
+    const applySpy = vi.spyOn(b.engine, "applyRemote").mockImplementation((ops) => {
+      historyLoads.prompt_tags = 0;
+      historyLoads.collection_prompts = 0;
+      const result = applyRemote(ops);
+      batchLoads.push({ ...historyLoads });
+      return result;
+    });
 
-    expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(2_600);
-    sessionA.close();
-    sessionB.close();
+    const [sessionA, sessionB] = sessionPair(a, b);
+    try {
+      await vi.waitFor(() => expect(sessionA.currentState).toBe("steady"), { timeout: 15_000 });
+      await vi.waitFor(() => expect(sessionB.currentState).toBe("steady"), { timeout: 15_000 });
+
+      expect(b.lib.listTagsForPrompt(prompt.id).length).toBe(2_600);
+      expect(batchLoads.length).toBeGreaterThan(0);
+      for (const batch of batchLoads) {
+        expect(batch.prompt_tags).toBeLessThanOrEqual(1);
+        expect(batch.collection_prompts).toBeLessThanOrEqual(1);
+      }
+    } finally {
+      applySpy.mockRestore();
+      prepareSpy.mockRestore();
+      sessionA.close();
+      sessionB.close();
+      a.db.close();
+      b.db.close();
+    }
   }, 20_000);
 });

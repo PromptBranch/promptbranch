@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import { encodeFrame } from "./frames.js";
-import { parseMessage, PROTOCOL_VERSION } from "./messages.js";
+import { parseMessage, PROTOCOL_VERSION, SYNC_SCHEMA_VERSION } from "./messages.js";
 
 /**
  * Pairing handshake over an established TLS connection. The connection owner
@@ -33,6 +33,7 @@ export class PairingInitiator {
       encodeFrame({
         t: "pair-introduce-v2",
         v: PROTOCOL_VERSION,
+        schemaVersion: SYNC_SCHEMA_VERSION,
         name: this.deps.deviceName,
       }),
     );
@@ -40,8 +41,14 @@ export class PairingInitiator {
 
   handleMessage(message: unknown): void {
     if (this.settled) return;
-    const parsed = parseMessage(message);
-    if (!parsed) return;
+    let parsed: ReturnType<typeof parseMessage>;
+    try {
+      parsed = parseMessage(message);
+      if (!parsed) throw new Error("Invalid pairing protocol frame");
+    } catch (err) {
+      this.settled = true;
+      throw err;
+    }
     switch (parsed.t) {
       case "pair-confirmed-v2":
         this.settled = true;
@@ -82,9 +89,20 @@ export class PairingAcceptor {
   ) {}
 
   handleMessage(message: unknown, peerFingerprint: string): void {
-    if (this.settled) return;
-    const parsed = parseMessage(message);
-    if (!parsed) return;
+    if (this.settled && this.confirmation === null) return;
+    let parsed: ReturnType<typeof parseMessage>;
+    try {
+      parsed = parseMessage(message);
+      if (!parsed) throw new Error("Invalid pairing protocol frame");
+    } catch (err) {
+      this.settled = true;
+      this.confirmation?.abort();
+      throw err;
+    }
+    if (this.confirmation !== null) {
+      this.deps.log?.(`unexpected frame while awaiting pairing confirmation: ${parsed.t}`);
+      return;
+    }
     if (parsed.t !== "pair-introduce-v2") {
       this.deps.log?.(`unexpected frame while pairing: ${parsed.t}`);
       return;

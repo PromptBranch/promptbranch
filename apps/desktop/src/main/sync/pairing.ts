@@ -89,14 +89,19 @@ export class PairingAcceptor {
   ) {}
 
   handleMessage(message: unknown, peerFingerprint: string): void {
-    if (this.settled) return;
+    if (this.settled && this.confirmation === null) return;
     let parsed: ReturnType<typeof parseMessage>;
     try {
       parsed = parseMessage(message);
       if (!parsed) throw new Error("Invalid pairing protocol frame");
     } catch (err) {
       this.settled = true;
+      this.confirmation?.abort();
       throw err;
+    }
+    if (this.confirmation !== null) {
+      this.deps.log?.(`unexpected frame while awaiting pairing confirmation: ${parsed.t}`);
+      return;
     }
     if (parsed.t !== "pair-introduce-v2") {
       this.deps.log?.(`unexpected frame while pairing: ${parsed.t}`);

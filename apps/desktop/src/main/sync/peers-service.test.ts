@@ -264,6 +264,49 @@ describe("peer service over real TLS (loopback)", () => {
     expect(local.confirm.state.decisions).toEqual([]);
     expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
   });
+  it("aborts pending confirmation when a malformed frame precedes buffered valid input", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    let resolveConfirmation!: (accepted: boolean) => void;
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    const local = await rig("Local", {
+      confirmPairing: async (_fingerprint, _name, candidateSignal) => {
+        signal = candidateSignal;
+        return confirmation;
+      },
+    });
+    const port = await start(local);
+    local.service.beginPairing();
+    const remote = await connectWithIdentity(port, remoteIdentity);
+    remote.write(encodeFrame({
+      t: "pair-introduce-v2",
+      ...CURRENT_COMPATIBILITY,
+      name: "Remote",
+    }));
+    await vi.waitFor(() => expect(signal).toBeDefined());
+
+    remote.write(Buffer.concat([
+      encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "",
+      }),
+      encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "Must not replace pending confirmation",
+      }),
+    ]));
+
+    await vi.waitFor(() => expect(remote.destroyed).toBe(true));
+    expect(signal?.aborted).toBe(true);
+    resolveConfirmation(true);
+    await confirmation;
+    await Promise.resolve();
+    expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+  });
   it("fully closes a live session before stop returns", async () => {
     const remoteIdentity = await loadOrCreateIdentity(tempDir());
     const controlled = controlledTlsSocket(remoteIdentity.fingerprint);

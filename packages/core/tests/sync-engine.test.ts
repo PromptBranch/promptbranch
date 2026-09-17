@@ -748,6 +748,94 @@ describe("sync engine", () => {
     }
   });
 
+  it.each([false, true])("reuses fixed statements only within one live apply batch (FK fallback: %s)", (orphan) => {
+    const r = rig();
+    const ops = Array.from({ length: 32 }, (_, i) => fixedOp("source", i + 1, "tags", `tag-${i}`,
+      { id: `tag-${i}`, name: `tag-${i}`, color: `#${i}` }, 100 + i));
+    const child = fixedOp("source", 33, "prompt_tags", "prompt-1:tag-0",
+      { prompt_id: "prompt-1", tag_id: "tag-0" }, 200);
+    if (orphan) ops.push(child);
+    const prepare = vi.spyOn(r.db, "prepare");
+    const reusedSql = [
+      "SELECT value FROM sync_meta WHERE key = ?",
+      "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?",
+      "SELECT hlc, device_id FROM sync_heads WHERE table_name = ? AND record_id = ?",
+      "SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?",
+      "SELECT id FROM tags WHERE name = ?",
+      "SELECT last_seq FROM sync_cursors WHERE source_device_id = ?",
+      "DELETE FROM sync_meta WHERE key = 'applying'",
+    ];
+    try {
+      expect(r.engine.applyRemote(ops)).toEqual({ applied: 32, skipped: 0, stale: 0,
+        deferred: orphan ? 1 : 0 });
+      const firstBatch = prepare.mock.calls.map(([sql]) => sql);
+      for (const sql of reusedSql) expect(firstBatch.filter((prepared) => prepared === sql), sql)
+        .toHaveLength(1);
+      expect(firstBatch.filter((sql) => sql.startsWith("INSERT INTO tags ("))).toHaveLength(1);
+      expect(r.db.prepare("SELECT id, color FROM tags ORDER BY id").all()).toEqual(
+        ops.slice(0, 32).map((op) => ({ id: op.recordId, color: op.payload!["color"] }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(r.engine.opsSince({}).ops).toEqual(ops.slice(0, 32));
+      expect(r.engine.haveVector()).toEqual({ source: 32 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+      expect(r.engine.getMeta("applying")).toBeNull();
+
+      prepare.mockClear();
+      r.engine.getMeta("hlc_millis");
+      r.engine.getMeta("hlc_counter");
+      expect(prepare.mock.calls).toHaveLength(2);
+
+      seedPrompt(r, "prompt-1");
+      prepare.mockClear();
+      expect(r.engine.applyRemote([...ops.slice(0, 32), child]))
+        .toEqual({ applied: 1, skipped: 32, stale: 0, deferred: 0 });
+      const secondBatch = prepare.mock.calls.map(([sql]) => sql);
+      for (const sql of reusedSql.filter((sql) => !sql.includes("sync_id_remaps") &&
+        !sql.includes("FROM tags")))
+        expect(secondBatch.filter((prepared) => prepared === sql), sql).toHaveLength(1);
+      expect(r.engine.opsSince({}).ops).toEqual([...ops.slice(0, 32), child]);
+      expect(r.engine.haveVector()).toEqual({ source: 33 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      prepare.mockRestore();
+      r.db.close();
+    }
+  });
+
+  it("releases batch statements after a non-FK apply failure and rolls back all gossip", () => {
+    const r = rig();
+    const good = fixedOp("source", 1, "tags", "tag-1",
+      { id: "tag-1", name: "Good", color: null }, 100);
+    const bad = fixedOp("source", 2, "tags", "tag-2",
+      { id: "tag-2", name: null, color: null }, 200);
+    const prepare = vi.spyOn(r.db, "prepare");
+    try {
+      expect(() => r.engine.applyRemote([good, bad])).toThrow(/NOT NULL constraint failed: tags.name/);
+      expect(r.db.prepare("SELECT * FROM tags").all()).toEqual([]);
+      expect(r.db.prepare("SELECT * FROM sync_heads").all()).toEqual([]);
+      expect(r.engine.opsSince({}).ops).toEqual([]);
+      expect(r.engine.haveVector()).toEqual({});
+      expect(r.engine.getMeta("applying")).toBeNull();
+
+      prepare.mockClear();
+      r.engine.getMeta("hlc_millis");
+      r.engine.getMeta("hlc_counter");
+      expect(prepare.mock.calls).toHaveLength(2);
+
+      prepare.mockClear();
+      expect(r.engine.applyRemote([good])).toEqual({ applied: 1, skipped: 0, stale: 0, deferred: 0 });
+      expect(prepare.mock.calls.filter(([sql]) =>
+        sql === "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?")).toHaveLength(1);
+      expect(r.engine.opsSince({}).ops).toEqual([good]);
+      expect(r.engine.haveVector()).toEqual({ source: 1 });
+      expect(r.db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      prepare.mockRestore();
+      r.db.close();
+    }
+  });
+
   it.each([false, true])("loads child history once for 4,000 live ops (FK fallback: %s)", (orphan) => {
     const r = rig();
     r.db.transaction(() => {

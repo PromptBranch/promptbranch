@@ -208,8 +208,23 @@ const MERGE_TABLES = new Set<SyncedTableName>(["tags", "collections", "branches"
  */
 export class SyncEngine {
   private deviceIdCache: string | null = null;
+  private batchStatements: Map<string, BetterSqlite3.Statement> | null = null;
 
   constructor(private readonly db: BetterSqlite3.Database) {}
+
+  /**
+   * Only fixed SQL or finite SYNCED_TABLES shapes belong here; varying IN lists
+   * stay uncached. Eager get/all/run calls rebind every parameter on each use.
+   */
+  private prepareFixed(sql: string): BetterSqlite3.Statement {
+    if (this.batchStatements === null) return this.db.prepare(sql);
+    let statement = this.batchStatements.get(sql);
+    if (statement === undefined) {
+      statement = this.db.prepare(sql);
+      this.batchStatements.set(sql, statement);
+    }
+    return statement;
+  }
 
   // ------------------------------------------------------------------ identity
 
@@ -231,15 +246,14 @@ export class SyncEngine {
   }
 
   getMeta(key: string): string | null {
-    const row = this.db.prepare("SELECT value FROM sync_meta WHERE key = ?").get(key) as
+    const row = this.prepareFixed("SELECT value FROM sync_meta WHERE key = ?").get(key) as
       | { value: string }
       | undefined;
     return row?.value ?? null;
   }
 
   setMeta(key: string, value: string): void {
-    this.db
-      .prepare("INSERT INTO sync_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    this.prepareFixed("INSERT INTO sync_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(key, value);
   }
 
@@ -410,7 +424,7 @@ export class SyncEngine {
   private readRow(def: SyncedTableDef, recordId: string): Record<string, unknown> | null {
     const values = decodeRecordId(def, recordId);
     const where = def.pk.map((c) => `"${c}" = ?`).join(" AND ");
-    const row = this.db.prepare(`SELECT * FROM ${def.name} WHERE ${where}`).get(...values) as
+    const row = this.prepareFixed(`SELECT * FROM ${def.name} WHERE ${where}`).get(...values) as
       | Record<string, unknown>
       | undefined;
     return row ?? null;
@@ -490,6 +504,9 @@ export class SyncEngine {
       if (!tableDef(op.table)) throw new Error(`Unknown synced table in op: ${op.table}`);
     }
 
+    // Fallback retries share compiled statements, never query results. Restrict
+    // their lifetime to this batch so later calls and migration repair stay isolated.
+    this.batchStatements = new Map();
     const historyContext: NaturalKeyRepairContext = { childHistoryByParent: new Map() };
     try {
       return this.applyInTransaction(sorted, historyContext);
@@ -512,6 +529,9 @@ export class SyncEngine {
         }
       }
       return summary;
+    } finally {
+      this.batchStatements.clear();
+      this.batchStatements = null;
     }
   }
 
@@ -612,17 +632,17 @@ export class SyncEngine {
       this.db.pragma("defer_foreign_keys = ON");
       this.setMeta("applying", "1");
       try {
-        const opExists = this.db.prepare(
+        const opExists = this.prepareFixed(
           "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND op_id = ?",
         );
-        const insertOp = this.db.prepare(
+        const insertOp = this.prepareFixed(
           `INSERT OR IGNORE INTO sync_ops (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
-        const head = this.db.prepare(
+        const head = this.prepareFixed(
           "SELECT hlc, device_id FROM sync_heads WHERE table_name = ? AND record_id = ?",
         );
-        const upsertHead = this.db.prepare(
+        const upsertHead = this.prepareFixed(
           `INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)
            ON CONFLICT(table_name, record_id) DO UPDATE SET hlc = excluded.hlc, device_id = excluded.device_id`,
         );
@@ -718,8 +738,7 @@ export class SyncEngine {
           if (op.kind === "upsert" && payload !== null) {
             if (table === "shared_snapshots") {
               payload = this.normalizeSharedSnapshot(payload);
-              const local = this.db
-                .prepare("SELECT deleted_at FROM shared_snapshots WHERE snapshot_id = ?")
+              const local = this.prepareFixed("SELECT deleted_at FROM shared_snapshots WHERE snapshot_id = ?")
                 .get(recordId) as { deleted_at: string | null } | undefined;
               const incomingDeletedAt =
                 typeof payload["deleted_at"] === "string" ? payload["deleted_at"] : null;
@@ -733,8 +752,7 @@ export class SyncEngine {
                 // replace newer share metadata, but it must still revoke the
                 // locally retained token. Keep the earliest timestamp so the
                 // merge is independent of delivery order.
-                this.db
-                  .prepare("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
+                this.prepareFixed("UPDATE shared_snapshots SET deleted_at = ? WHERE snapshot_id = ?")
                   .run(deletedAt, recordId);
                 summary.applied += 1;
                 continue;
@@ -748,8 +766,7 @@ export class SyncEngine {
                   // A polymorphic rating has no SQLite FK. It may have arrived
                   // before ownership of this version was known, so remove it
                   // when the terminally owned version is finally identified.
-                  this.db
-                    .prepare("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?")
+                  this.prepareFixed("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?")
                     .run(recordId);
                 }
                 if (wins) upsertHead.run(table, recordId, op.hlc, op.source);
@@ -834,7 +851,7 @@ export class SyncEngine {
 
         for (const source of new Set(sorted.map((o) => o.source))) this.advanceCursor(source);
       } finally {
-        this.db.prepare("DELETE FROM sync_meta WHERE key = 'applying'").run();
+        this.prepareFixed("DELETE FROM sync_meta WHERE key = 'applying'").run();
       }
     })();
     // A failed transaction never reaches this merge. Unloaded tables will
@@ -864,7 +881,7 @@ export class SyncEngine {
   }
 
   private touchTagOwners(tagId: string, changes: SearchChanges): void {
-    const owners = this.db.prepare("SELECT prompt_id FROM prompt_tags WHERE tag_id = ?")
+    const owners = this.prepareFixed("SELECT prompt_id FROM prompt_tags WHERE tag_id = ?")
       .all(tagId) as Array<{ prompt_id: string }>;
     for (const owner of owners) changes.metadata.add(owner.prompt_id);
   }
@@ -880,8 +897,7 @@ export class SyncEngine {
     table: SyncedTableName,
     ids: readonly string[],
   ): { canonical: string; members: string[]; changed: boolean } {
-    const mappings = this.db
-      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+    const mappings = this.prepareFixed("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
       .all(table) as Array<{ remote_id: string; local_id: string }>;
     const neighbors = new Map<string, Set<string>>();
     const connect = (left: string, right: string) => {
@@ -927,7 +943,7 @@ export class SyncEngine {
         )
         .run(table, ...affected, ...affected);
     }
-    const insert = this.db.prepare(
+    const insert = this.prepareFixed(
       "INSERT INTO sync_id_remaps (table_name, remote_id, local_id) VALUES (?, ?, ?)",
     );
     for (const alias of aliases) insert.run(table, alias, canonical);
@@ -950,8 +966,7 @@ export class SyncEngine {
    */
   private historicalMergeComponents(def: SyncedTableDef): string[][] {
     const components = new IdComponents();
-    const remaps = this.db
-      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+    const remaps = this.prepareFixed("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
       .all(def.name) as RemapRow[];
     for (const { remote_id, local_id } of remaps) components.connect(remote_id, local_id);
     const canonicalPromptId = this.canonicalPromptIdResolver();
@@ -977,7 +992,7 @@ export class SyncEngine {
       if (typeof id === "string") addNaturalKey(id, row);
     }
 
-    const historical = this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(def.name) as OpRow[];
+    const historical = this.prepareFixed("SELECT * FROM sync_ops WHERE table_name = ?").all(def.name) as OpRow[];
     for (const row of historical) {
       components.add(row.record_id);
       const op = opFromRow(row);
@@ -1010,8 +1025,7 @@ export class SyncEngine {
     components.add(incomingId);
     const localId = this.naturalKeyLookup(def, payload);
     if (localId !== null) components.connect(incomingId, localId);
-    const remaps = this.db
-      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
+    const remaps = this.prepareFixed("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = ?")
       .all(def.name) as RemapRow[];
     for (const { remote_id, local_id } of remaps) components.connect(remote_id, local_id);
 
@@ -1060,8 +1074,7 @@ export class SyncEngine {
 
   /** Includes raw historical ids on both sides of chained or inverse remaps. */
   private promptIdComponentResolver(): (promptId: string) => readonly string[] {
-    const mappings = this.db
-      .prepare("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'prompts'")
+    const mappings = this.prepareFixed("SELECT remote_id, local_id FROM sync_id_remaps WHERE table_name = 'prompts'")
       .all() as RemapRow[];
     const neighbors = new Map<string, Set<string>>();
     const connect = (left: string, right: string) => {
@@ -1151,8 +1164,7 @@ export class SyncEngine {
       .prepare(`DELETE FROM sync_heads WHERE table_name = ? AND record_id IN (${placeholders})`)
       .run(table, ...unique);
     if (newest !== null) {
-      this.db
-        .prepare("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
+      this.prepareFixed("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
         .run(table, canonicalRecordId, newest.hlc, newest.device_id);
     }
     return newest;
@@ -1172,8 +1184,7 @@ export class SyncEngine {
         .prepare(`DELETE FROM sync_heads WHERE table_name = ? AND record_id IN (${placeholders})`)
         .run(table, ...unique);
     }
-    this.db
-      .prepare("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
+    this.prepareFixed("INSERT INTO sync_heads (table_name, record_id, hlc, device_id) VALUES (?, ?, ?, ?)")
       .run(table, canonicalRecordId, winner.hlc, winner.source);
   }
 
@@ -1285,7 +1296,7 @@ export class SyncEngine {
     if (byParent === undefined) {
       repairContext.onChildHistoryLoad?.(table);
       byParent = new Map();
-      const rows = this.db.prepare("SELECT * FROM sync_ops WHERE table_name = ?").all(table) as OpRow[];
+      const rows = this.prepareFixed("SELECT * FROM sync_ops WHERE table_name = ?").all(table) as OpRow[];
       for (const row of rows) {
         if (repairContext.delta?.opKeys.has(JSON.stringify([row.source_device_id, row.op_id]))) continue;
         const values = decodeRecordId(childDef, row.record_id);
@@ -1305,16 +1316,14 @@ export class SyncEngine {
   /** Repoints a tag's junction rows before retiring an alias row. */
   private rekeyTagChildren(fromId: string, toId: string, touchedSearch: SearchChanges): void {
     const def = tableDef("prompt_tags")!;
-    const rows = this.db
-      .prepare("SELECT prompt_id, tag_id FROM prompt_tags WHERE tag_id = ?")
+    const rows = this.prepareFixed("SELECT prompt_id, tag_id FROM prompt_tags WHERE tag_id = ?")
       .all(fromId) as Array<{ prompt_id: string; tag_id: string }>;
     for (const row of rows) {
       const oldRecordId = encodeRecordId(def, [row.prompt_id, fromId]);
       const canonicalRecordId = encodeRecordId(def, [row.prompt_id, toId]);
-      this.db
-        .prepare("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)")
+      this.prepareFixed("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)")
         .run(row.prompt_id, toId);
-      this.db.prepare("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?").run(row.prompt_id, fromId);
+      this.prepareFixed("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?").run(row.prompt_id, fromId);
       this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
       touchedSearch.metadata.add(row.prompt_id);
     }
@@ -1323,20 +1332,17 @@ export class SyncEngine {
   /** Rekeys a collection's junction rows without letting PK conflicts drop membership. */
   private rekeyCollectionChildren(fromId: string, toId: string): void {
     const def = tableDef("collection_prompts")!;
-    const rows = this.db
-      .prepare("SELECT collection_id, prompt_id, sort_order FROM collection_prompts WHERE collection_id = ?")
+    const rows = this.prepareFixed("SELECT collection_id, prompt_id, sort_order FROM collection_prompts WHERE collection_id = ?")
       .all(fromId) as Array<{ collection_id: string; prompt_id: string; sort_order: number }>;
     for (const row of rows) {
       const oldRecordId = encodeRecordId(def, [fromId, row.prompt_id]);
       const canonicalRecordId = encodeRecordId(def, [toId, row.prompt_id]);
-      const target = this.db
-        .prepare("SELECT 1 FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
+      const target = this.prepareFixed("SELECT 1 FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
         .get(toId, row.prompt_id);
       if (target === undefined || this.sourceRecordWins(def.name, oldRecordId, canonicalRecordId)) {
         this.upsertRow(def, { ...row, collection_id: toId }, []);
       }
-      this.db
-        .prepare("DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
+      this.prepareFixed("DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?")
         .run(fromId, row.prompt_id);
       this.normalizeHeads(def.name, [oldRecordId, canonicalRecordId], canonicalRecordId);
     }
@@ -1348,7 +1354,7 @@ export class SyncEngine {
     toId: string,
     touchedBranches: Set<string>,
   ): void {
-    this.db.prepare("UPDATE versions SET branch_id = ? WHERE branch_id = ?").run(toId, fromId);
+    this.prepareFixed("UPDATE versions SET branch_id = ? WHERE branch_id = ?").run(toId, fromId);
     touchedBranches.add(toId);
   }
 
@@ -1365,12 +1371,10 @@ export class SyncEngine {
     touchedBranches: Set<string>,
   ): boolean {
     if (fromId === toId) return false;
-    const source = this.db
-      .prepare(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
+    const source = this.prepareFixed(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
       .get(fromId) as Record<string, unknown> | undefined;
     if (source === undefined) return false;
-    const target = this.db
-      .prepare(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
+    const target = this.prepareFixed(`SELECT ${def.columns.map((column) => `"${column}"`).join(", ")} FROM ${def.name} WHERE id = ?`)
       .get(toId) as Record<string, unknown> | undefined;
     const sourceRecordId = encodeRecordId(def, [fromId]);
     const targetRecordId = encodeRecordId(def, [toId]);
@@ -1393,10 +1397,10 @@ export class SyncEngine {
     }
 
     if (target === undefined) {
-      this.db.prepare(`UPDATE ${def.name} SET id = ? WHERE id = ?`).run(toId, fromId);
+      this.prepareFixed(`UPDATE ${def.name} SET id = ? WHERE id = ?`).run(toId, fromId);
     } else {
       if (sourceWins) this.updateColumns(def, toId, source, def.columns.filter((column) => column !== "id"));
-      this.db.prepare(`DELETE FROM ${def.name} WHERE id = ?`).run(fromId);
+      this.prepareFixed(`DELETE FROM ${def.name} WHERE id = ?`).run(fromId);
     }
     this.normalizeHeads(def.name, [sourceRecordId, targetRecordId], targetRecordId);
     return true;
@@ -1444,16 +1448,14 @@ export class SyncEngine {
   }
 
   private isPromptTombstoned(promptId: string): boolean {
-    return this.db
-      .prepare("SELECT 1 FROM sync_prompt_tombstones WHERE prompt_id = ?")
+    return this.prepareFixed("SELECT 1 FROM sync_prompt_tombstones WHERE prompt_id = ?")
       .get(promptId) !== undefined;
   }
 
   private recordPromptTombstone(promptId: string): void {
-    this.db
-      .prepare("INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id) VALUES (?)")
+    this.prepareFixed("INSERT OR IGNORE INTO sync_prompt_tombstones (prompt_id) VALUES (?)")
       .run(promptId);
-    this.db.prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ?").run(promptId);
+    this.prepareFixed("DELETE FROM sync_pending_pointers WHERE prompt_id = ?").run(promptId);
   }
 
   /** Returns the terminally deleted prompt that owns this incoming row. */
@@ -1484,12 +1486,12 @@ export class SyncEngine {
       return this.isPromptTombstoned(targetId) ? targetId : null;
     }
     if (payload["target_type"] !== "version") return null;
-    const current = this.db.prepare("SELECT prompt_id FROM versions WHERE id = ?").get(targetId) as
+    const current = this.prepareFixed("SELECT prompt_id FROM versions WHERE id = ?").get(targetId) as
       | { prompt_id: string }
       | undefined;
     if (current && this.isPromptTombstoned(current.prompt_id)) return current.prompt_id;
-    const historical = this.db
-      .prepare(
+    const historical = this
+      .prepareFixed(
         `SELECT json_extract(payload_json, '$.prompt_id') AS prompt_id
          FROM sync_ops
          WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
@@ -1573,9 +1575,9 @@ export class SyncEngine {
   }
 
   private knowsVersion(versionId: string): boolean {
-    if (this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(versionId)) return true;
-    return this.db
-      .prepare(
+    if (this.prepareFixed("SELECT 1 FROM versions WHERE id = ?").get(versionId)) return true;
+    return this
+      .prepareFixed(
         `SELECT 1 FROM sync_ops
          WHERE table_name = 'versions' AND record_id = ? AND payload_json IS NOT NULL
          LIMIT 1`,
@@ -1584,8 +1586,8 @@ export class SyncEngine {
   }
 
   private hasVersionTombstone(versionId: string): boolean {
-    return this.db
-      .prepare(
+    return this
+      .prepareFixed(
         `SELECT 1
          FROM sync_ops
          WHERE table_name = 'versions' AND record_id = ? AND kind = 'delete'
@@ -1609,7 +1611,7 @@ export class SyncEngine {
 
   /** Removes an empty branch whose last known version has a terminal tombstone. */
   private pruneDerivedEmptyBranch(branchId: string): void {
-    if (this.db.prepare("SELECT 1 FROM versions WHERE branch_id = ?").get(branchId)) return;
+    if (this.prepareFixed("SELECT 1 FROM versions WHERE branch_id = ?").get(branchId)) return;
     const { members } = this.canonicalRemapComponent("branches", [branchId]);
     const placeholders = members.map(() => "?").join(", ");
     const deletedVersion = this.db
@@ -1626,12 +1628,12 @@ export class SyncEngine {
          LIMIT 1`,
       )
       .get(...members);
-    if (deletedVersion) this.db.prepare("DELETE FROM branches WHERE id = ?").run(branchId);
+    if (deletedVersion) this.prepareFixed("DELETE FROM branches WHERE id = ?").run(branchId);
   }
 
   private stashPendingPointer(promptId: string, versionId: string, hlc: string): void {
-    this.db
-      .prepare(
+    this
+      .prepareFixed(
         `INSERT INTO sync_pending_pointers (prompt_id, version_id, hlc) VALUES (?, ?, ?)
          ON CONFLICT(prompt_id) DO UPDATE SET version_id = excluded.version_id, hlc = excluded.hlc
          WHERE excluded.hlc >= sync_pending_pointers.hlc`,
@@ -1644,8 +1646,8 @@ export class SyncEngine {
     excluded: ReadonlySet<string>,
     pendingHlc: string,
   ): string | null {
-    const historical = this.db
-      .prepare(
+    const historical = this
+      .prepareFixed(
         `SELECT payload_json
          FROM sync_ops
          WHERE table_name = 'prompts' AND record_id = ? AND kind = 'upsert'
@@ -1663,15 +1665,14 @@ export class SyncEngine {
       ) {
         continue;
       }
-      const version = this.db
-        .prepare("SELECT 1 FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'")
+      const version = this.prepareFixed("SELECT 1 FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'")
         .get(pointer, promptId);
       if (version) return pointer;
       this.stashPendingPointer(promptId, pointer, pendingHlc);
       return null;
     }
-    const fallback = this.db
-      .prepare(
+    const fallback = this
+      .prepareFixed(
         `SELECT id FROM versions
          WHERE prompt_id = ? AND status = 'active'
          ORDER BY created_at DESC, id DESC`,
@@ -1745,8 +1746,7 @@ export class SyncEngine {
         return;
       }
       case "providers": {
-        const local = this.db
-          .prepare("SELECT type, driver, base_url FROM providers WHERE id = ?")
+        const local = this.prepareFixed("SELECT type, driver, base_url FROM providers WHERE id = ?")
           .get(String(payload["id"])) as
           | { type: string; driver: string; base_url: string | null }
           | undefined;
@@ -1760,14 +1760,13 @@ export class SyncEngine {
         // credential cannot be silently sent to a new destination.
         this.upsertRow(def, payload, ["api_key_enc"]);
         if (routeChanged) {
-          this.db
-            .prepare("UPDATE providers SET api_key_enc = NULL WHERE id = ?")
+          this.prepareFixed("UPDATE providers SET api_key_enc = NULL WHERE id = ?")
             .run(String(payload["id"]));
         }
         return;
       }
       case "prompts": {
-        const previous = this.db.prepare("SELECT title, description FROM prompts WHERE id = ?")
+        const previous = this.prepareFixed("SELECT title, description FROM prompts WHERE id = ?")
           .get(String(payload["id"])) as { title: string; description: string | null } | undefined;
         let pointer = payload["current_version_id"];
         let draftContent = payload["draft_content"];
@@ -1780,10 +1779,9 @@ export class SyncEngine {
           draftBaseVersionId = null;
         }
         if (typeof pointer === "string") {
-          const present = this.db.prepare("SELECT 1 FROM versions WHERE id = ?").get(pointer);
+          const present = this.prepareFixed("SELECT 1 FROM versions WHERE id = ?").get(pointer);
           if (this.hasVersionTombstone(pointer)) {
-            this.db
-              .prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ? OR version_id = ?")
+            this.prepareFixed("DELETE FROM sync_pending_pointers WHERE prompt_id = ? OR version_id = ?")
               .run(String(payload["id"]), pointer);
             pointer = this.survivingCurrentVersion(
               String(payload["id"]),
@@ -1793,15 +1791,13 @@ export class SyncEngine {
           } else if (!present) {
             // Version not received yet — stash the pointer, keep the local one.
             this.stashPendingPointer(String(payload["id"]), pointer, opHlc);
-            const current = this.db
-              .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
+            const current = this.prepareFixed("SELECT current_version_id FROM prompts WHERE id = ?")
               .get(String(payload["id"])) as { current_version_id: string | null } | undefined;
             pointer = current?.current_version_id ?? null;
           } else {
             // This winning op set the pointer directly: any older stash for
             // the prompt is superseded and must not resurrect later.
-            this.db
-              .prepare("DELETE FROM sync_pending_pointers WHERE prompt_id = ?")
+            this.prepareFixed("DELETE FROM sync_pending_pointers WHERE prompt_id = ?")
               .run(String(payload["id"]));
           }
         }
@@ -1831,8 +1827,7 @@ export class SyncEngine {
             ? { ...payload, parent_version_id: null }
             : payload;
         const versionId = String(normalized["id"]);
-        const local = this.db
-          .prepare("SELECT content, prompt_id, status FROM versions WHERE id = ?")
+        const local = this.prepareFixed("SELECT content, prompt_id, status FROM versions WHERE id = ?")
           .get(versionId) as { content: string; prompt_id: string; status: string } | undefined;
         if (
           local !== undefined &&
@@ -1842,8 +1837,8 @@ export class SyncEngine {
           // Exact run inputs stay device-local because substituted variables
           // may contain secrets. Preserve the old version fallback locally
           // before a winning remote amendment replaces that content.
-          this.db
-            .prepare(
+          this
+            .prepareFixed(
               "UPDATE runs SET prompt_content = ? WHERE version_id = ? AND prompt_content IS NULL",
             )
             .run(local.content, versionId);
@@ -1868,7 +1863,7 @@ export class SyncEngine {
         return;
       }
       case "notes": {
-        const previous = this.db.prepare("SELECT prompt_id, body FROM notes WHERE id = ?")
+        const previous = this.prepareFixed("SELECT prompt_id, body FROM notes WHERE id = ?")
           .get(String(payload["id"])) as { prompt_id: string; body: string } | undefined;
         this.upsertRow(def, payload, []);
         if (
@@ -1899,14 +1894,12 @@ export class SyncEngine {
   /** Natural-key lookup for the unique-name merge tables. */
   private naturalKeyLookup(def: SyncedTableDef, payload: Record<string, unknown>): string | null {
     if (def.name === "tags" || def.name === "collections") {
-      const row = this.db
-        .prepare(`SELECT id FROM ${def.name} WHERE name = ?`)
+      const row = this.prepareFixed(`SELECT id FROM ${def.name} WHERE name = ?`)
         .get(String(payload["name"])) as { id: string } | undefined;
       return row?.id ?? null;
     }
     // branches: UNIQUE (prompt_id, name)
-    const row = this.db
-      .prepare("SELECT id FROM branches WHERE prompt_id = ? AND name = ?")
+    const row = this.prepareFixed("SELECT id FROM branches WHERE prompt_id = ? AND name = ?")
       .get(String(payload["prompt_id"]), String(payload["name"])) as { id: string } | undefined;
     return row?.id ?? null;
   }
@@ -1921,8 +1914,8 @@ export class SyncEngine {
     const placeholders = columns.map(() => "?").join(", ");
     const updateColumns = columns.filter((c) => !preserve.includes(c));
     const updates = updateColumns.map((c) => `"${c}" = excluded."${c}"`).join(", ");
-    this.db
-      .prepare(
+    this
+      .prepareFixed(
         `INSERT INTO ${def.name} (${columns.map((c) => `"${c}"`).join(", ")})
          VALUES (${placeholders})
          ON CONFLICT(${def.pk.map((c) => `"${c}"`).join(", ")}) DO UPDATE SET ${updates}`,
@@ -1938,8 +1931,7 @@ export class SyncEngine {
   ): void {
     if (columns.length === 0) return;
     const sets = columns.map((c) => `"${c}" = ?`).join(", ");
-    this.db
-      .prepare(`UPDATE ${def.name} SET ${sets} WHERE id = ?`)
+    this.prepareFixed(`UPDATE ${def.name} SET ${sets} WHERE id = ?`)
       .run(...columns.map((c) => payload[c] ?? null), id);
   }
 
@@ -1985,17 +1977,15 @@ export class SyncEngine {
         return;
       case "branches": {
         const promptId = (
-          this.db.prepare("SELECT prompt_id FROM branches WHERE id = ?").get(id) as
+          this.prepareFixed("SELECT prompt_id FROM branches WHERE id = ?").get(id) as
             | { prompt_id: string }
             | undefined
           )?.prompt_id;
-        const versionIds = this.db
-          .prepare("SELECT id FROM versions WHERE branch_id = ?")
+        const versionIds = this.prepareFixed("SELECT id FROM versions WHERE branch_id = ?")
           .all(id) as Array<{ id: string }>;
         const deletedVersionIds = new Set(versionIds.map((version) => version.id));
         if (promptId !== undefined) {
-          const current = this.db
-            .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
+          const current = this.prepareFixed("SELECT current_version_id FROM prompts WHERE id = ?")
             .get(promptId) as { current_version_id: string | null } | undefined;
           if (current?.current_version_id && deletedVersionIds.has(current.current_version_id)) {
             run(
@@ -2035,16 +2025,14 @@ export class SyncEngine {
         return;
       }
       case "versions": {
-        const row = this.db.prepare("SELECT prompt_id, branch_id FROM versions WHERE id = ?").get(id) as
+        const row = this.prepareFixed("SELECT prompt_id, branch_id FROM versions WHERE id = ?").get(id) as
           | { prompt_id: string; branch_id: string }
           | undefined;
-        const pendingOwner = this.db
-          .prepare("SELECT prompt_id FROM sync_pending_pointers WHERE version_id = ?")
+        const pendingOwner = this.prepareFixed("SELECT prompt_id FROM sync_pending_pointers WHERE version_id = ?")
           .get(id) as { prompt_id: string } | undefined;
         const promptId = row?.prompt_id ?? pendingOwner?.prompt_id;
         if (promptId) {
-          const current = this.db
-            .prepare("SELECT current_version_id FROM prompts WHERE id = ?")
+          const current = this.prepareFixed("SELECT current_version_id FROM prompts WHERE id = ?")
             .get(promptId) as { current_version_id: string | null } | undefined;
           if (current?.current_version_id === id || pendingOwner !== undefined) {
             run(
@@ -2078,7 +2066,7 @@ export class SyncEngine {
         return;
       }
       case "notes": {
-        const row = this.db.prepare("SELECT prompt_id FROM notes WHERE id = ?").get(id) as
+        const row = this.prepareFixed("SELECT prompt_id FROM notes WHERE id = ?").get(id) as
           | { prompt_id: string }
           | undefined;
         run("DELETE FROM notes WHERE id = ?", id);
@@ -2119,33 +2107,30 @@ export class SyncEngine {
 
   /** Sets a prompt pointer whose version finally arrived; clears the stash. */
   private fulfillPendingPointer(versionId: string): void {
-    const stash = this.db
-      .prepare("SELECT prompt_id, hlc FROM sync_pending_pointers WHERE version_id = ?")
+    const stash = this.prepareFixed("SELECT prompt_id, hlc FROM sync_pending_pointers WHERE version_id = ?")
       .get(versionId) as { prompt_id: string; hlc: string } | undefined;
     if (!stash) return;
     if (this.isPromptTombstoned(stash.prompt_id)) {
-      this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
+      this.prepareFixed("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
       return;
     }
     // Belt and braces: never let a stash older than the prompt row's winning
     // revision resurrect a stale pointer.
-    const head = this.db
-      .prepare("SELECT hlc FROM sync_heads WHERE table_name = 'prompts' AND record_id = ?")
+    const head = this.prepareFixed("SELECT hlc FROM sync_heads WHERE table_name = 'prompts' AND record_id = ?")
       .get(stash.prompt_id) as { hlc: string } | undefined;
     if (head && compareHlc(stash.hlc, head.hlc) < 0) {
-      this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
+      this.prepareFixed("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
       return;
     }
-    this.db.prepare("UPDATE prompts SET current_version_id = ? WHERE id = ?").run(versionId, stash.prompt_id);
-    this.db.prepare("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
+    this.prepareFixed("UPDATE prompts SET current_version_id = ? WHERE id = ?").run(versionId, stash.prompt_id);
+    this.prepareFixed("DELETE FROM sync_pending_pointers WHERE version_id = ?").run(versionId);
   }
 
   /** Preserves established numbers; timestamp/id deterministically break concurrent number ties. */
   private renumberBranch(branchId: string): void {
-    const rows = this.db
-      .prepare("SELECT id, number FROM versions WHERE branch_id = ? ORDER BY number, created_at, id")
+    const rows = this.prepareFixed("SELECT id, number FROM versions WHERE branch_id = ? ORDER BY number, created_at, id")
       .all(branchId) as Array<{ id: string; number: number }>;
-    const update = this.db.prepare("UPDATE versions SET number = ? WHERE id = ?");
+    const update = this.prepareFixed("UPDATE versions SET number = ? WHERE id = ?");
     let previous = 0;
     for (const row of rows) {
       const number = Math.max(row.number, previous + 1);
@@ -2156,19 +2141,18 @@ export class SyncEngine {
 
   /** Advances a source's cursor across the contiguous stored prefix. */
   private advanceCursor(source: string): void {
-    const current = this.db
-      .prepare("SELECT last_seq FROM sync_cursors WHERE source_device_id = ?")
+    const current = this.prepareFixed("SELECT last_seq FROM sync_cursors WHERE source_device_id = ?")
       .get(source) as { last_seq: number } | undefined;
     let cursor = current?.last_seq ?? 0;
-    const exists = this.db.prepare(
+    const exists = this.prepareFixed(
       "SELECT 1 FROM sync_ops WHERE source_device_id = ? AND seq = ?",
     );
     for (let guard = 0; guard < 1_000_000; guard++) {
       if (exists.get(source, cursor + 1)) cursor += 1;
       else break;
     }
-    this.db
-      .prepare(
+    this
+      .prepareFixed(
         `INSERT INTO sync_cursors (source_device_id, last_seq) VALUES (?, ?)
          ON CONFLICT(source_device_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)`,
       )

@@ -4,6 +4,8 @@ import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/cor
 import { MAX_FRAME_BYTES, createFrameReader, encodeFrame } from "./frames.js";
 import { attachSession, SyncSession } from "./session.js";
 
+const CURRENT_COMPATIBILITY = { v: 4, schemaVersion: 13 } as const;
+
 describe("frames", () => {
   it("round-trips a message", () => {
     const frames: unknown[] = [];
@@ -171,6 +173,85 @@ describe("sync session", () => {
         name: "PromptBranch 0.5.0",
         cursors: {},
       }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
+  });
+
+  it("rejects a shape-invalid hello and ignores later valid frames in the same chunk", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "After invalid hello", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "",
+        cursors: {},
+      }),
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "Remote device",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(session.peerInfo).toBeNull();
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
+  });
+
+  it("rejects shape-invalid ops after hello and ignores later valid ops", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "After invalid ops", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const malformed = { ...ops[0] } as Record<string, unknown>;
+    delete malformed["hlc"];
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        ...CURRENT_COMPATIBILITY,
+        deviceId: "remote-device",
+        name: "Remote device",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops: [malformed], more: false }),
       encodeFrame({ t: "ops", ops, more: false }),
     ]));
 

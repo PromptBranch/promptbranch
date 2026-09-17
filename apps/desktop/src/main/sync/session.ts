@@ -113,8 +113,7 @@ export class SyncSession {
   private handleMessage(message: unknown): void {
     const parsed = parseMessage(message);
     if (!parsed) {
-      this.deps.log?.("dropping non-protocol frame");
-      return;
+      throw new Error("Invalid sync protocol frame");
     }
     switch (parsed.t) {
       case "hello": {

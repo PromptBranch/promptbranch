@@ -240,6 +240,30 @@ describe("peer service over real TLS (loopback)", () => {
     expect(local.confirm.state.decisions).toEqual([]);
     expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
   });
+  it("rejects a malformed pairing frame before a buffered valid introduction", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const local = await rig("Local");
+    const port = await start(local);
+    local.service.beginPairing();
+    const remote = await connectWithIdentity(port, remoteIdentity);
+
+    remote.write(Buffer.concat([
+      encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "",
+      }),
+      encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "Must not confirm",
+      }),
+    ]));
+
+    await vi.waitFor(() => expect(remote.destroyed).toBe(true));
+    expect(local.confirm.state.decisions).toEqual([]);
+    expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+  });
   it("fully closes a live session before stop returns", async () => {
     const remoteIdentity = await loadOrCreateIdentity(tempDir());
     const controlled = controlledTlsSocket(remoteIdentity.fingerprint);

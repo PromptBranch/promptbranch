@@ -2,6 +2,12 @@ import type BetterSqlite3 from "better-sqlite3";
 export type Database = BetterSqlite3.Database;
 export { backupDatabase, latestBackup, listBackups, type BackupFile } from "./backup.js";
 export { openDatabase, openMemoryDatabase, type OpenDatabaseResult } from "./db.js";
+export {
+  preflightLibraryImport,
+  LibraryImportValidationError,
+  type LibraryImportIssue,
+  type NormalizedLibraryExport,
+} from "./import-validation.js";
 export { LATEST_SCHEMA_VERSION, pendingMigrationCount, runMigrations } from "./migrations.js";
 export {
   parseRunMetrics,

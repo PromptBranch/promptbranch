@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { reindexPrompt as reindexPromptRows } from "./reindex.js";
+import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
 import type BetterSqlite3 from "better-sqlite3";
 import type {
   BranchRow,
@@ -20,6 +21,8 @@ import type {
   VersionRow,
   VersionSource,
 } from "./types.js";
+
+export type { LibraryExport } from "./import-validation.js";
 
 const now = () => new Date().toISOString();
 
@@ -174,31 +177,6 @@ export interface AverageRatings {
   actionability: number | null;
   overall: number | null;
   count: number;
-}
-
-export interface LibraryExport {
-  meta: { formatVersion: 1; exportedAt: string };
-  tables: {
-    prompts: PromptRow[];
-    branches: BranchRow[];
-    versions: VersionRow[];
-    notes: NoteRow[];
-    tags: TagRow[];
-    prompt_tags: PromptTagRow[];
-    collections: CollectionRow[];
-    collection_prompts: CollectionPromptRow[];
-    ratings: RatingRow[];
-    runs: RunRow[];
-    settings: SettingRow[];
-    /**
-     * AI provider configuration. api_key_enc is always null in exports by
-     * design: the blob is encrypted with the exporting device's OS keychain
-     * and would not decrypt anywhere else. Absent in pre-v3 bundles.
-     */
-    providers?: ProviderRow[];
-    /** Per-provider model visibility; absent in pre-v3 bundles. */
-    provider_models?: ProviderModelRow[];
-  };
 }
 
 export interface ImportTableSummary {
@@ -1377,6 +1355,7 @@ export class PromptLibrary {
       input.promptId,
     );
     if (!version) throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    if (version.status !== "active") throw new Error(`Version ${input.versionId} must be active to record a run`);
     const id = randomUUID();
     this.run(
       `INSERT INTO runs
@@ -1819,7 +1798,8 @@ export class PromptLibrary {
    * their UNIQUE name are merged into the existing row. Returns per-table
    * counts.
    */
-  importLibrary(data: LibraryExport): ImportSummary {
+  importLibrary(input: unknown): ImportSummary {
+    const data = preflightLibraryImport(input);
     const summary: ImportSummary = {};
     const bump = (table: string, field: keyof ImportTableSummary) => {
       const entry = (summary[table] ??= { inserted: 0, merged: 0, remapped: 0, skipped: 0 });
@@ -1886,20 +1866,20 @@ export class PromptLibrary {
       // -- AI provider configuration (pre-v3 bundles have no such tables).
       // Keys are never exported — api_key_enc stays null and the user
       // re-enters keys after import.
-      for (const provider of data.tables.providers ?? []) {
+      for (const provider of data.tables.providers) {
         const id = claimId("providers", provider.id, "SELECT id FROM providers WHERE id = ?");
         this.run(
           "INSERT INTO providers (id, type, driver, name, api_key_enc, base_url, enabled, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
           id,
           provider.type,
-          provider.driver ?? provider.type,
+          provider.driver,
           provider.name,
-          provider.base_url ?? null,
-          provider.enabled ?? 1,
-          provider.created_at ?? now(),
+          provider.base_url,
+          provider.enabled,
+          provider.created_at,
         );
       }
-      for (const pm of data.tables.provider_models ?? []) {
+      for (const pm of data.tables.provider_models) {
         const result = this.db
           .prepare(
             "INSERT OR IGNORE INTO provider_models (provider_id, model_id, display_name, enabled) VALUES (?, ?, ?, ?)",
@@ -1992,9 +1972,8 @@ export class PromptLibrary {
           version.content_format,
           version.change_note,
           version.author,
-          // Bundles exported before schema v2 lack these fields; default them.
-          version.status ?? "active",
-          version.source ?? "user",
+          version.status,
+          version.source,
           version.created_at,
         );
       }
@@ -2085,16 +2064,15 @@ export class PromptLibrary {
           remap("versions", run.version_id),
           run.tool,
           run.model,
-          // Bundles exported before schema v3 lack these fields; default them.
           // Provider references are remapped like other foreign keys (deleted
           // providers pass through unresolved, as in live data).
-          remap("providers", run.provider ?? null),
-          run.status ?? "completed",
-          run.output ?? null,
-          run.prompt_content ?? null,
-          run.error ?? null,
-          run.latency_ms ?? null,
-          run.run_group_id ?? null,
+          remap("providers", run.provider),
+          run.status,
+          run.output,
+          run.prompt_content,
+          run.error,
+          run.latency_ms,
+          run.run_group_id,
           run.outcome_rating,
           run.result_summary,
           run.metrics_json,

@@ -11,6 +11,17 @@ beforeEach(() => {
 });
 
 describe("prompts", () => {
+  it.each(["pending", "rejected"])("rejects manual and model runs of a %s version", (status) => {
+    const prompt = lib.createPrompt({ title: "Legacy corrupt pointer", content: "private" });
+    db.prepare("UPDATE versions SET status = ? WHERE id = ?").run(status, prompt.current_version_id);
+    expect(() => lib.addRun({ promptId: prompt.id, versionId: prompt.current_version_id! }))
+      .toThrow(/active/i);
+    expect(() => lib.recordModelRun({ promptId: prompt.id, versionId: prompt.current_version_id!,
+      provider: "test", model: "test", status: "completed", output: "result" }))
+      .toThrow(/active/i);
+    expect(lib.listRuns(prompt.id)).toEqual([]);
+  });
+
   it("creates a prompt with main branch, version 1 and current pointer set", () => {
     const prompt = lib.createPrompt({ title: "Hello", description: "Greeting", content: "Say hi" });
 

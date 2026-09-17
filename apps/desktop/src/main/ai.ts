@@ -663,6 +663,7 @@ export async function runModelGroup(
   if (!version || version.prompt_id !== prompt.id) {
     throw new Error(`Version ${versionId} not found on prompt ${input.promptId}`);
   }
+  if (version.status !== "active") throw new Error(`Version ${versionId} must be active to run`);
 
   const content = substituteVariables(input.content, input.variables);
   if (!content.trim()) throw new Error("Prompt content is empty after variable substitution");
@@ -883,7 +884,9 @@ export async function judgeRunGroup(deps: AiServiceDeps, input: AiJudgeInput): P
       const row = judgeable[index]!;
       try {
         const version = lib.getVersion(row.version_id);
-        if (!version) throw new Error(`Version not found: ${row.version_id}`);
+        if (!version || version.prompt_id !== row.prompt_id) {
+          throw new Error(`Version ${row.version_id} not found on prompt ${row.prompt_id}`);
+        }
         let promptContent = row.prompt_content;
         if (promptContent === null) {
           let capturedElsewhere = false;

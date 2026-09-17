@@ -669,6 +669,22 @@ describe("test model selection", () => {
 });
 
 describe("runModelGroup", () => {
+  it.each(["pending", "rejected"])("rejects a legacy %s version before provider traffic", async (status) => {
+    const db = openMemoryDatabase();
+    const lib = new PromptLibrary(db);
+    const deps: AiServiceDeps = { lib, cipher: stubCipher };
+    try {
+      const providerId = addStubProvider(deps);
+      const prompt = lib.createPrompt({ title: "Legacy", content: "private" });
+      db.prepare("UPDATE versions SET status = ? WHERE id = ?").run(status, prompt.current_version_id);
+      const requests = seenUrls.length;
+      await expect(runModelGroup(deps, { promptId: prompt.id, content: "private", variables: {},
+        modelRefs: [{ providerId, modelId: "model-a" }] })).rejects.toThrow(/active/i);
+      expect(seenUrls).toHaveLength(requests);
+      expect(lib.listRuns(prompt.id)).toEqual([]);
+    } finally { db.close(); }
+  });
+
   it("runs two models concurrently and writes a two-row run group", async () => {
     const deps = makeDeps();
     const providerId = addStubProvider(deps, ["model-a", "model-b"]);
@@ -741,6 +757,27 @@ describe("runModelGroup", () => {
 });
 
 describe("judgeRunGroup", () => {
+  it("rejects a foreign run version before reading legacy fallback content", async () => {
+    const db = openMemoryDatabase();
+    const lib = new PromptLibrary(db);
+    const deps: AiServiceDeps = { lib, cipher: stubCipher };
+    try {
+      const providerId = addStubProvider(deps, ["model-judge"]);
+      const prompt = lib.createPrompt({ title: "Owner", content: "owner content" });
+      const foreign = lib.createPrompt({ title: "Foreign", content: "private foreign content" });
+      const run = lib.recordModelRun({ promptId: prompt.id, versionId: prompt.current_version_id!,
+        provider: providerId, model: "model-a", status: "completed", output: "answer", runGroupId: "corrupt" });
+      db.prepare("UPDATE runs SET version_id = ? WHERE id = ?").run(foreign.current_version_id, run.id);
+      judgeRequestPrompts.length = 0;
+      const result = await judgeRunGroup(deps, {
+        runGroupId: "corrupt", judge: { providerId, modelId: "model-judge" },
+      });
+      expect(result.results).toEqual([]);
+      expect(result.failures).toEqual([expect.objectContaining({ runId: run.id })]);
+      expect(judgeRequestPrompts).toEqual([]);
+    } finally { db.close(); }
+  });
+
   /** Two completed runs + one error run under a shared run group. */
   function seedRunGroup(deps: AiServiceDeps & { lib: PromptLibrary }, providerId: string) {
     const prompt = deps.lib.createPrompt({ title: "Greet", content: "Say hi politely" });

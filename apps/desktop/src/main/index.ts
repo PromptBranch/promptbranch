@@ -806,10 +806,7 @@ function registerIpcHandlers(): void {
     const filePath = result.filePaths[0];
     if (result.canceled || !filePath) return { canceled: true };
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    const parsed = z
-      .object({ meta: z.object({ formatVersion: z.literal(1) }), tables: z.record(z.string(), z.array(z.unknown())) })
-      .parse(raw);
-    const summary = lib.importLibrary(parsed as Parameters<typeof lib.importLibrary>[0]);
+    const summary = lib.importLibrary(raw);
     console.log(`[main] library imported from ${filePath}`);
     return { canceled: false, summary };
   });

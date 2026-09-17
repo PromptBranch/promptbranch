@@ -155,11 +155,32 @@ describe("publishSnapshot", () => {
     });
   });
 
-  it("maps a malformed 201 body to invalid-response", async () => {
-    const fetchImpl: typeof fetch = async () => jsonResponse(201, { id: "nope" });
+  it("maps syntactically malformed bounded JSON to invalid-response", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response('{"id":', {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
     const result = await publishSnapshot(BASE, payload, { fetchImpl });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid-response");
+  });
+
+  it("accepts a valid publish response exactly at the control byte cap", async () => {
+    const encoder = new TextEncoder();
+    const empty = JSON.stringify({ id: ID, url: `${BASE}/p/${ID}`, deleteToken: "" });
+    const deleteToken = "x".repeat(MAX_CONTROL_RESPONSE_BYTES - encoder.encode(empty).byteLength);
+    const body = JSON.stringify({ id: ID, url: `${BASE}/p/${ID}`, deleteToken });
+    expect(encoder.encode(body)).toHaveLength(MAX_CONTROL_RESPONSE_BYTES);
+
+    const result = await publishSnapshot(BASE, payload, {
+      fetchImpl: async () => new Response(body, { status: 201 }),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: { id: ID, url: `${BASE}/p/${ID}`, deleteToken },
+    });
   });
 
   it("rejects a declared oversized control response before reading its stream", async () => {

@@ -21,6 +21,9 @@ interface SearchChanges {
   // Sets deduplicate owners changed by both a parent op and its junction ops.
   metadata: Set<string>;
   versions: Set<string>;
+  newPrompts: Set<string>;
+  newVersions: Set<string>;
+  observedVersions: Set<string>;
 }
 
 /** One record-level change, as it travels between devices. */
@@ -523,7 +526,10 @@ export class SyncEngine {
       const alreadyApplying = this.getMeta("applying") !== null;
       if (!alreadyApplying) this.setMeta("applying", "1");
       try {
-        const touchedSearch: SearchChanges = { metadata: new Set(), versions: new Set() };
+        const touchedSearch: SearchChanges = {
+          metadata: new Set(), versions: new Set(), newPrompts: new Set(), newVersions: new Set(),
+          observedVersions: new Set(),
+        };
         const touchedBranches = new Set<string>();
         // Migration v11 reduces every natural-key component in one pass. The
         // junction histories are immutable, so grouping them once avoids an
@@ -621,7 +627,10 @@ export class SyncEngine {
            ON CONFLICT(table_name, record_id) DO UPDATE SET hlc = excluded.hlc, device_id = excluded.device_id`,
         );
 
-        const touchedSearch: SearchChanges = { metadata: new Set(), versions: new Set() };
+        const touchedSearch: SearchChanges = {
+          metadata: new Set(), versions: new Set(), newPrompts: new Set(), newVersions: new Set(),
+          observedVersions: new Set(),
+        };
         const touchedBranches = new Set<string>();
 
         for (const op of sorted) {
@@ -842,8 +851,16 @@ export class SyncEngine {
   // ------------------------------------------------------------------- helpers
 
   private refreshSearchChanges(changes: SearchChanges): void {
-    for (const promptId of changes.metadata) refreshPromptSearchMetadata(this.db, promptId);
-    for (const versionId of changes.versions) refreshVersionSearchRow(this.db, versionId);
+    for (const promptId of changes.metadata) {
+      refreshPromptSearchMetadata(this.db, promptId, {
+        newRow: changes.newPrompts.has(promptId), newVersionIds: changes.newVersions,
+      });
+    }
+    for (const versionId of changes.versions) {
+      refreshVersionSearchRow(this.db, versionId, {
+        newRow: changes.newVersions.has(versionId), newVersionIds: changes.newVersions,
+      });
+    }
   }
 
   private touchTagOwners(tagId: string, changes: SearchChanges): void {
@@ -1804,6 +1821,7 @@ export class SyncEngine {
         ) {
           touchedSearch.metadata.add(String(payload["id"]));
         }
+        if (previous === undefined) touchedSearch.newPrompts.add(String(payload["id"]));
         return;
       }
       case "versions": {
@@ -1836,6 +1854,14 @@ export class SyncEngine {
           local.prompt_id !== normalized["prompt_id"] || local.status !== normalized["status"]
         ) {
           touchedSearch.versions.add(versionId);
+        }
+        // Freeze eligibility at the first applied upsert: an active legacy
+        // row must still be cleaned if later ops observe its inactive state.
+        if (!touchedSearch.observedVersions.has(versionId)) {
+          touchedSearch.observedVersions.add(versionId);
+          if (local === undefined || local.status !== "active") {
+            touchedSearch.newVersions.add(versionId);
+          }
         }
         touchedBranches.add(String(normalized["branch_id"]));
         this.fulfillPendingPointer(versionId);

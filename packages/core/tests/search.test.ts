@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openMemoryDatabase, PromptLibrary, rebuildPromptSearchIndex, type Database } from "../src/index.js";
+import { deletePromptSearchRows, openMemoryDatabase, PromptLibrary, rebuildPromptSearchIndex, type Database } from "../src/index.js";
 
 let db: Database;
 let lib: PromptLibrary;
@@ -62,6 +62,126 @@ function manyVersions() {
 }
 
 describe("incremental search maintenance", () => {
+  it.each(["approve", "reject"] as const)("checks suggestion state inside the %s transaction", (action) => {
+    const prompt = lib.createPrompt({ title: "Suggestion state", content: "originalword" });
+    const suggestion = lib.suggestVariation({
+      promptId: prompt.id, baseVersionId: prompt.current_version_id!, newContent: "pendingword", rationale: "Try this",
+    }).version;
+    const checks: boolean[] = [];
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      if (sql === "SELECT * FROM versions WHERE id = ?") checks.push(db.inTransaction);
+      return prepare(sql);
+    });
+    if (action === "approve") lib.approveSuggestion(suggestion.id);
+    else lib.rejectSuggestion(suggestion.id);
+    expect(checks.length).toBeGreaterThan(0);
+    expect(checks.every(Boolean)).toBe(true);
+    expectConsistentSearch();
+  });
+
+  it("preserves reused FTS rowids when cleaning stale mappings for an already-deleted prompt", () => {
+    const removed = lib.createPrompt({ title: "Removed", content: "removedword" });
+    const survivor = lib.createPrompt({ title: "Survivor", content: "survivorword" });
+    db.transaction(() => {
+      // An older client deletes domain/FTS rows without knowing the v15 map.
+      db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(removed.id);
+      db.prepare("UPDATE prompts SET current_version_id = NULL WHERE id = ?").run(removed.id);
+      db.prepare("DELETE FROM versions WHERE prompt_id = ?").run(removed.id);
+      db.prepare("DELETE FROM branches WHERE prompt_id = ?").run(removed.id);
+      db.prepare("DELETE FROM prompts WHERE id = ?").run(removed.id);
+      // Its next full rewrite reuses the now-empty FTS table's rowids 1/2.
+      db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(survivor.id);
+      db.prepare(`INSERT INTO search_index
+        (prompt_id, version_id, title, description, tags, notes, content)
+        VALUES (?, NULL, ?, '', '', '', ''), (?, ?, '', '', '', '', 'survivorword')`)
+        .run(survivor.id, survivor.title, survivor.id, survivor.current_version_id);
+    })();
+    const before = searchRows();
+    expect(before.map((row) => row.rowid)).toEqual([1, 2]);
+    expect(db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? ORDER BY rowid")
+      .all(removed.id)).toEqual([{ rowid: 1 }, { rowid: 2 }]);
+    db.transaction(() => deletePromptSearchRows(db, removed.id))();
+    expect(searchRows()).toEqual(before);
+    expect(db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ?").all(removed.id))
+      .toEqual([]);
+    expect(lib.search("survivorword").map((hit) => hit.promptId)).toEqual([survivor.id]);
+  });
+
+  it.each(["metadata", "amend", "delete version", "delete prompt", "append"])(
+    "recovers an unmapped legacy-created prompt before %s",
+    (operation) => {
+      const other = lib.createPrompt({ title: "Untouched", content: "unrelatedword" });
+      const survivor = searchRows().filter((row) => row.prompt_id === other.id);
+      const prompt = lib.createPrompt({ title: "Legacy title", content: "legacyword" });
+      const branch = lib.listBranches(prompt.id)[0]!;
+      const version = lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "legacyextra" });
+      lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+      // This is the physical state left by pre-v15 prompt creation/import:
+      // domain + complete FTS rows exist, but no companion rows were written.
+      db.prepare("DELETE FROM search_index_rows WHERE prompt_id = ?").run(prompt.id);
+      if (operation === "metadata") lib.updatePromptMetadata(prompt.id, { title: "Updated title" });
+      if (operation === "amend") lib.updateVersionContent(version.id, "updatedword");
+      if (operation === "delete version") lib.deleteVersion(version.id);
+      if (operation === "delete prompt") lib.hardDeletePrompt(prompt.id);
+      if (operation === "append") lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "newword" });
+      expectConsistentSearch();
+      expect(searchRows().filter((row) => row.prompt_id === other.id)).toEqual(survivor);
+      if (operation === "metadata") expect(lib.search("Legacy title")).toEqual([]);
+      if (operation === "amend" || operation === "delete version") expect(lib.search("legacyextra")).toEqual([]);
+      if (operation === "delete prompt") expect(searchRows().filter((row) => row.prompt_id === prompt.id)).toEqual([]);
+    },
+  );
+
+  it.each(["metadata", "amend", "delete version", "delete prompt", "append"])(
+    "recovers an unmapped legacy-appended version with an unchanged metadata anchor before %s",
+    (operation) => {
+      const other = lib.createPrompt({ title: "Untouched", content: "unrelatedword" });
+      const survivor = searchRows().filter((row) => row.prompt_id === other.id);
+      const prompt = lib.createPrompt({ title: "Legacy title", content: "legacyword" });
+      const branch = lib.listBranches(prompt.id)[0]!;
+      const metadata = searchRows().find((row) => row.prompt_id === prompt.id && row.version_id === null)!;
+      db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+        VALUES ('legacy-append', ?, ?, 2, 'legacyextra', '2026-09-17T00:00:00.000Z')`)
+        .run(prompt.id, branch.id);
+      // A legacy rewrite can retain every prior rowid and append only this
+      // new FTS row; a valid metadata anchor alone cannot detect the mismatch.
+      db.prepare(`INSERT INTO search_index (prompt_id, version_id, title, description, tags, notes, content)
+        VALUES (?, 'legacy-append', '', '', '', '', 'legacyextra')`).run(prompt.id);
+      expect(searchRows().find((row) => row.rowid === metadata.rowid)).toEqual(metadata);
+      if (operation === "metadata") lib.updatePromptMetadata(prompt.id, { title: "Updated title" });
+      if (operation === "amend") lib.updateVersionContent("legacy-append", "updatedword");
+      if (operation === "delete version") lib.deleteVersion("legacy-append");
+      if (operation === "delete prompt") lib.hardDeletePrompt(prompt.id);
+      if (operation === "append") lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "newword" });
+      expectConsistentSearch();
+      expect(searchRows().filter((row) => row.prompt_id === other.id)).toEqual(survivor);
+      if (operation === "amend" || operation === "delete version") expect(lib.search("legacyextra")).toEqual([]);
+      if (operation === "delete prompt") expect(searchRows().filter((row) => row.prompt_id === prompt.id)).toEqual([]);
+    },
+  );
+
+  it("keeps healthy creation, amendment and deletion off FTS ownership scans", () => {
+    const prepared = vi.spyOn(db, "prepare");
+    const prompt = lib.createPrompt({ title: "Indexed paths", content: "first" });
+    const version = lib.createVersion({
+      promptId: prompt.id, branchId: lib.listBranches(prompt.id)[0]!.id, content: "second",
+    });
+    lib.updatePromptMetadata(prompt.id, { title: "Still indexed" });
+    lib.updateVersionContent(version.id, "third");
+    lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    const suggestion = lib.suggestVariation({
+      promptId: prompt.id, baseVersionId: version.id, newContent: "pendingword", rationale: "Try this",
+    });
+    lib.rejectSuggestion(suggestion.version.id);
+    lib.deleteVersion(version.id);
+    lib.hardDeletePrompt(prompt.id);
+    const ownershipScans = prepared.mock.calls.map(([sql]) => sql).filter((sql) =>
+      /FROM search_index\s+WHERE (prompt_id|version_id)/i.test(sql),
+    );
+    expect(ownershipScans).toEqual([]);
+  });
+
   it.each(["version", "prompt"])(
     "reconciles a sparse legacy rewrite when allocating a new %s row",
     (operation) => {

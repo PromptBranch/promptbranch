@@ -4,6 +4,13 @@ import type { PromptRow, VersionRow } from "./types.js";
 type SearchRow = { rowid: number };
 type MappedSearchRow = SearchRow & { prompt_id: string; version_id: string | null };
 
+interface SearchRefreshOptions {
+  /** Callers must know this row was newly created or previously inactive. */
+  newRow?: boolean;
+  /** Other active rows created/approved in the same sync transaction. */
+  newVersionIds?: ReadonlySet<string>;
+}
+
 // Migration v11 repairs natural-key history through the current sync engine.
 // Its physical schema predates the companion table; keep that repair usable
 // without modifying shipped migration SQL or caching a stale schema version.
@@ -31,17 +38,44 @@ function rowMatches(db: BetterSqlite3.Database, row: MappedSearchRow): boolean {
     .get(row.rowid, row.prompt_id, row.version_id) !== undefined;
 }
 
-// Older shared-DB writers rebuild FTS without updating the companion map.
-// Validate the metadata anchor by rowid before a version mutation can trust
-// that prompt's mappings. Healthy writes keep constant, indexed lookups.
-function repairStalePromptMapping(db: BetterSqlite3.Database, table: string, promptId: string): boolean {
+// Legacy writers may keep the metadata rowid while creating unmapped versions.
+// Check completeness through domain/companion indexes and validate FTS by rowid;
+// a healthy prompt never needs an FTS ownership scan or a version-row rewrite.
+function needsPromptSearchRecovery(
+  db: BetterSqlite3.Database,
+  table: string,
+  promptId: string,
+  newVersionId?: string,
+  newVersionIds?: ReadonlySet<string>,
+): boolean {
   if (table !== "search_index_rows") return false;
+  // Check ownership even after a legacy writer has deleted the domain prompt:
+  // another prompt may already own those reused FTS rowids.
+  const invalid = db.prepare(`SELECT r.rowid FROM search_index_rows r
+    LEFT JOIN search_index s ON s.rowid = r.rowid
+    WHERE r.prompt_id = ? AND
+      (s.rowid IS NULL OR s.prompt_id IS NOT r.prompt_id OR s.version_id IS NOT r.version_id)
+    LIMIT 1`).get(promptId);
+  if (invalid) return true;
+  if (!db.prepare("SELECT id FROM prompts WHERE id = ?").get(promptId)) return false;
   const metadata = db.prepare(`SELECT rowid, prompt_id, version_id FROM search_index_rows
     WHERE prompt_id = ? AND version_id IS NULL`).get(promptId) as MappedSearchRow | undefined;
-  const stale = metadata
-    ? !rowMatches(db, metadata)
-    : db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? LIMIT 1").get(promptId) !== undefined;
-  if (!stale) return false;
+  if (!metadata) return true;
+  const missing = db.prepare(`SELECT v.id FROM versions v
+    LEFT JOIN search_index_rows r ON r.version_id = v.id
+    WHERE v.prompt_id = ? AND v.status = 'active' AND r.rowid IS NULL`)
+    .all(promptId) as Array<{ id: string }>;
+  return missing.some(({ id }) => id !== newVersionId && !newVersionIds?.has(id));
+}
+
+function repairStalePromptMapping(
+  db: BetterSqlite3.Database,
+  table: string,
+  promptId: string,
+  newVersionId?: string,
+  newVersionIds?: ReadonlySet<string>,
+): boolean {
+  if (!needsPromptSearchRecovery(db, table, promptId, newVersionId, newVersionIds)) return false;
   rebuildPromptSearchIndex(db, promptId);
   return true;
 }
@@ -118,9 +152,13 @@ function writeRow(
 }
 
 /** Refresh one metadata row inside the caller's mutation transaction. */
-export function refreshPromptSearchMetadata(db: BetterSqlite3.Database, promptId: string): void {
+export function refreshPromptSearchMetadata(
+  db: BetterSqlite3.Database,
+  promptId: string,
+  options: SearchRefreshOptions = {},
+): void {
   const table = rowTable(db);
-  if (repairStalePromptMapping(db, table, promptId)) return;
+  if (!options.newRow && repairStalePromptMapping(db, table, promptId, undefined, options.newVersionIds)) return;
   const row = db.prepare(`SELECT rowid FROM ${table} WHERE prompt_id = ? AND version_id IS NULL`)
     .get(promptId) as SearchRow | undefined;
   const prompt = db.prepare("SELECT * FROM prompts WHERE id = ?").get(promptId) as PromptRow | undefined;
@@ -138,15 +176,20 @@ export function refreshPromptSearchMetadata(db: BetterSqlite3.Database, promptId
 }
 
 /** Pending/rejected versions never receive a search row. */
-export function refreshVersionSearchRow(db: BetterSqlite3.Database, versionId: string): void {
+export function refreshVersionSearchRow(
+  db: BetterSqlite3.Database,
+  versionId: string,
+  options: SearchRefreshOptions = {},
+): void {
   const version = db.prepare("SELECT id, prompt_id, content, status FROM versions WHERE id = ?")
     .get(versionId) as Pick<VersionRow, "id" | "prompt_id" | "content" | "status"> | undefined;
   if (!version || version.status !== "active") {
-    deleteVersionSearchRow(db, versionId);
+    deleteVersionSearchRow(db, versionId, options);
     return;
   }
   const table = rowTable(db);
-  if (repairStalePromptMapping(db, table, version.prompt_id)) return;
+  if (repairStalePromptMapping(db, table, version.prompt_id,
+    options.newRow ? versionId : undefined, options.newVersionIds)) return;
   const row = db.prepare(`SELECT rowid, prompt_id, version_id FROM ${table} WHERE version_id = ?`)
     .get(versionId) as MappedSearchRow | undefined;
   if (row && table === "search_index_rows" && !rowMatches(db, row)) {
@@ -158,19 +201,34 @@ export function refreshVersionSearchRow(db: BetterSqlite3.Database, versionId: s
 }
 
 /** Mapping lookup still works after the materialized version has been deleted. */
-export function deleteVersionSearchRow(db: BetterSqlite3.Database, versionId: string): void {
+export function deleteVersionSearchRow(
+  db: BetterSqlite3.Database,
+  versionId: string,
+  options: SearchRefreshOptions = {},
+): void {
   const table = rowTable(db);
-  const rows = db.prepare(`SELECT rowid, prompt_id, version_id FROM ${table} WHERE version_id = ?`)
+  let rows = db.prepare(`SELECT rowid, prompt_id, version_id FROM ${table} WHERE version_id = ?`)
     .all(versionId) as MappedSearchRow[];
   if (table === "search_index_rows") {
+    if (rows.length === 0) {
+      if (options.newRow) return;
+      // After a domain delete, only legacy FTS may still identify the owner.
+      // This scan is reserved for an absent mapping, never a healthy deletion.
+      const legacyRows = db.prepare("SELECT rowid, prompt_id, version_id FROM search_index WHERE version_id = ?")
+        .all(versionId) as MappedSearchRow[];
+      if (legacyRows.length === 0) return;
+      reconcileAllocatedRowMappings(db, legacyRows.map((row) => row.prompt_id));
+      rows = db.prepare("SELECT rowid, prompt_id, version_id FROM search_index_rows WHERE version_id = ?")
+        .all(versionId) as MappedSearchRow[];
+    }
     for (const row of rows) {
-      if (repairStalePromptMapping(db, table, row.prompt_id)) {
-        deleteVersionSearchRow(db, versionId);
+      if (repairStalePromptMapping(db, table, row.prompt_id, undefined, options.newVersionIds)) {
+        deleteVersionSearchRow(db, versionId, options);
         return;
       }
       if (!rowMatches(db, row)) {
         rebuildPromptSearchIndex(db, row.prompt_id);
-        deleteVersionSearchRow(db, versionId);
+        deleteVersionSearchRow(db, versionId, options);
         return;
       }
     }
@@ -183,7 +241,7 @@ export function deletePromptSearchRows(db: BetterSqlite3.Database, promptId: str
   const table = rowTable(db);
   const rows = db.prepare(`SELECT rowid, prompt_id, version_id FROM ${table} WHERE prompt_id = ?`)
     .all(promptId) as MappedSearchRow[];
-  if (table === "search_index_rows" && rows.some((row) => !rowMatches(db, row))) {
+  if (table === "search_index_rows" && (rows.length === 0 || needsPromptSearchRecovery(db, table, promptId))) {
     discardPromptSearchIndex(db, promptId);
     return;
   }
@@ -193,10 +251,13 @@ export function deletePromptSearchRows(db: BetterSqlite3.Database, promptId: str
 /** Full rebuild reserved for imports and explicit derived-index recovery. */
 export function rebuildPromptSearchIndex(db: BetterSqlite3.Database, promptId: string): void {
   discardPromptSearchIndex(db, promptId);
-  refreshPromptSearchMetadata(db, promptId);
-  const versions = db.prepare("SELECT id FROM versions WHERE prompt_id = ? AND status = 'active'")
-    .all(promptId) as Array<{ id: string }>;
-  for (const version of versions) refreshVersionSearchRow(db, version.id);
+  refreshPromptSearchMetadata(db, promptId, { newRow: true });
+  const table = rowTable(db);
+  const versions = db.prepare("SELECT id, content FROM versions WHERE prompt_id = ? AND status = 'active'")
+    .all(promptId) as Array<{ id: string; content: string }>;
+  for (const version of versions) {
+    writeRow(db, table, undefined, promptId, version.id, "", "", "", "", version.content);
+  }
 }
 
 /** Compatibility name for callers explicitly rebuilding a derived search index. */

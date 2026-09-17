@@ -322,8 +322,8 @@ export class PromptLibrary {
         );
       }
 
-      refreshPromptSearchMetadata(this.db, promptId);
-      refreshVersionSearchRow(this.db, versionId);
+      refreshPromptSearchMetadata(this.db, promptId, { newRow: true });
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return this.mustGetPrompt(promptId);
     })();
   }
@@ -602,7 +602,7 @@ export class PromptLibrary {
       } else {
         this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), input.promptId);
       }
-      refreshVersionSearchRow(this.db, versionId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
     }).immediate();
   }
@@ -791,7 +791,7 @@ export class PromptLibrary {
         `Branched from version ${source.number}`,
         ts,
       );
-      refreshVersionSearchRow(this.db, versionId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       return {
         branch: this.get<BranchRow>("SELECT * FROM branches WHERE id = ?", branchId)!,
         version: this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!,
@@ -902,14 +902,14 @@ export class PromptLibrary {
    * version.
    */
   approveSuggestion(versionId: string, options: { setAsCurrent?: boolean } = {}): VersionRow {
-    const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
-    if (!version) throw new Error(`Version not found: ${versionId}`);
-    if (version.status !== "pending") {
-      throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be approved`);
-    }
     return this.db.transaction((): VersionRow => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be approved`);
+      }
       this.run("UPDATE versions SET status = 'active' WHERE id = ?", versionId);
-      refreshVersionSearchRow(this.db, versionId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
       if (options.setAsCurrent) {
         this.run(
           "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
@@ -919,21 +919,21 @@ export class PromptLibrary {
         );
       }
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
-    })();
+    }).immediate();
   }
 
   /** Rejects a pending suggestion: kept for history but permanently inactive. */
   rejectSuggestion(versionId: string): VersionRow {
-    const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
-    if (!version) throw new Error(`Version not found: ${versionId}`);
-    if (version.status !== "pending") {
-      throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
-    }
     return this.db.transaction(() => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
+      }
       this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
-      deleteVersionSearchRow(this.db, versionId);
+      deleteVersionSearchRow(this.db, versionId, { newRow: true });
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
-    })();
+    }).immediate();
   }
 
   // ------------------------------------------------------------------ draft

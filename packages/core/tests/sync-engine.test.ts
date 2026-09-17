@@ -84,9 +84,13 @@ function observeHistoryQueries(r: Rig) {
 
 function observeSearchWrites(r: Rig) {
   const writes: Array<{ sql: string; parameters: unknown[] }> = [];
+  const ownershipScans: string[] = [];
   const prepare = r.db.prepare.bind(r.db);
   const spy = vi.spyOn(r.db, "prepare").mockImplementation((sql) => {
     const statement = prepare(sql);
+    if (/^\s*SELECT\b[\s\S]*\bFROM search_index\s+WHERE (prompt_id|version_id)\s*=/i.test(sql)) {
+      ownershipScans.push(sql);
+    }
     if (/^\s*(INSERT INTO|DELETE FROM|UPDATE) search_index\b/i.test(sql)) {
       const run = statement.run.bind(statement);
       vi.spyOn(statement, "run").mockImplementation((...parameters: unknown[]) => {
@@ -96,7 +100,7 @@ function observeSearchWrites(r: Rig) {
     }
     return statement;
   });
-  return { writes, restore: () => spy.mockRestore() };
+  return { writes, ownershipScans, restore: () => spy.mockRestore() };
 }
 
 function searchRows(r: Rig, promptId: string) {
@@ -359,6 +363,136 @@ describe("sync engine", () => {
     }
   });
 
+  it("incremental FTS inserts sibling versions from one remote batch without rebuilding their prompt", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Batched versions", content: "originalword" });
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id);
+    const observed = observeSearchWrites(b);
+    try {
+      const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+      const first = a.lib.createVersion({ promptId: prompt.id, branchId, content: "firstword" });
+      const second = a.lib.createVersion({ promptId: prompt.id, branchId, content: "secondword" });
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      expect(observed.writes).toHaveLength(2);
+      expect(observed.writes.every((write) => /^\s*INSERT INTO search_index\b/.test(write.sql))).toBe(true);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== first.id && row.version_id !== second.id))
+        .toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it("incremental FTS keeps a mixed remote version delete/create batch narrow", () => {
+    const a = rig();
+    const b = rig();
+    const prompt = a.lib.createPrompt({ title: "Mixed versions", content: "originalword" });
+    const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+    const removed = a.lib.createVersion({ promptId: prompt.id, branchId, content: "removedword" });
+    a.lib.setCurrentVersion(prompt.id, prompt.current_version_id!);
+    a.engine.refineDirty();
+    drain(a.engine, b.engine);
+    const unchanged = searchRows(b, prompt.id).filter((row) => row.version_id !== removed.id);
+    const observed = observeSearchWrites(b);
+    try {
+      a.lib.deleteVersion(removed.id);
+      const added = a.lib.createVersion({ promptId: prompt.id, branchId, content: "addedword" });
+      a.engine.refineDirty();
+      const { ops } = a.engine.opsSince(b.engine.haveVector());
+      // Same-rank source order is stable: exercise deletion reconciliation first.
+      const deletionFirst = [...ops.filter((op) => op.kind === "delete"), ...ops.filter((op) => op.kind !== "delete")];
+      b.engine.applyRemote(deletionFirst);
+      expect(observed.ownershipScans).toEqual([]);
+      expect(observed.writes).toHaveLength(2);
+      expect(observed.writes.filter((write) => /^\s*DELETE FROM search_index WHERE rowid = \?/.test(write.sql)))
+        .toHaveLength(1);
+      expect(observed.writes.filter((write) => /^\s*INSERT INTO search_index\b/.test(write.sql)))
+        .toHaveLength(1);
+      expect(searchRows(b, prompt.id).filter((row) => row.version_id !== added.id)).toEqual(unchanged);
+      expectSearchMappingsConsistent(b);
+    } finally {
+      observed.restore();
+      a.db.close();
+      b.db.close();
+    }
+  });
+
+  it.each(["create", "update", "reject"] as const)(
+    "incremental FTS avoids ownership scans for a healthy remote pending version %s",
+    (operation) => {
+      const a = rig();
+      const b = rig();
+      const prompt = a.lib.createPrompt({ title: "Pending versions", content: "originalword" });
+      const createSuggestion = () => a.lib.suggestVariation({
+        promptId: prompt.id, baseVersionId: prompt.current_version_id!, newContent: "pendingword",
+        rationale: "Pending suggestion", branchName: "pending",
+      }).version;
+      const existing = operation === "create" ? null : createSuggestion();
+      a.engine.refineDirty();
+      drain(a.engine, b.engine);
+      const unchanged = searchRows(b, prompt.id);
+      const observed = observeSearchWrites(b);
+      try {
+        if (operation === "create") createSuggestion();
+        else if (operation === "update") {
+          a.db.prepare("UPDATE versions SET content = 'updatedpendingword' WHERE id = ?").run(existing!.id);
+        } else a.lib.rejectSuggestion(existing!.id);
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        expect(observed.ownershipScans).toEqual([]);
+        expect(observed.writes).toEqual([]);
+        expect(searchRows(b, prompt.id)).toEqual(unchanged);
+        expectSearchMappingsConsistent(b);
+      } finally {
+        observed.restore();
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
+  it("cleans an initially active unmapped legacy version after repeated inactive upserts in one batch", () => {
+    const r = rig();
+    try {
+      const prompt = r.lib.createPrompt({ title: "Legacy active", content: "originalword" });
+      const branchId = r.lib.listBranches(prompt.id)[0]!.id;
+      r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+        VALUES ('legacy-active', ?, ?, 2, 'legacyactiveword', '2026-09-17T00:00:00.000Z')`)
+        .run(prompt.id, branchId);
+      // An old CLI append rebuilds FTS while leaving the v15 companion untouched.
+      r.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(prompt.id);
+      r.db.prepare(`INSERT INTO search_index
+        (prompt_id, version_id, title, description, tags, notes, content)
+        VALUES (?, NULL, 'Legacy active', '', '', '', '')`).run(prompt.id);
+      r.db.prepare(`INSERT INTO search_index
+        (prompt_id, version_id, title, description, tags, notes, content)
+        SELECT prompt_id, id, '', '', '', '', content FROM versions
+        WHERE prompt_id = ? AND status = 'active' ORDER BY number`).run(prompt.id);
+      expect(r.db.prepare("SELECT rowid FROM search_index_rows WHERE version_id = 'legacy-active'").get())
+        .toBeUndefined();
+      r.engine.refineDirty();
+      const payload = r.db.prepare("SELECT * FROM versions WHERE id = 'legacy-active'").get() as Record<string, unknown>;
+      const timestamp = Date.now() + 100_000;
+      r.engine.applyRemote([
+        fixedOp("remote", 1, "versions", "legacy-active", { ...payload, status: "rejected" }, timestamp),
+        fixedOp("remote", 2, "versions", "legacy-active", {
+          ...payload, status: "rejected", content: "secondrejectedword",
+        }, timestamp + 1),
+      ]);
+      expect(r.lib.getVersion("legacy-active")?.status).toBe("rejected");
+      expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-active'").all()).toEqual([]);
+      expectSearchMappingsConsistent(r);
+    } finally {
+      r.db.close();
+    }
+  });
+
   it("incremental FTS hard-delete leaves no remote search rows or mappings", () => {
     const a = rig();
     const b = rig();
@@ -438,6 +572,91 @@ describe("sync engine", () => {
         a.db.close();
         b.db.close();
       }
+    },
+  );
+
+  it.each((["created", "appended"] as const).flatMap((legacyWrite) =>
+    (["metadata", "amend", "delete version", "hard delete"] as const)
+      .map((mutation) => ({ legacyWrite, mutation }))))(
+    "recovers missing legacy mappings from $legacyWrite prompt before remote $mutation",
+    ({ legacyWrite, mutation }) => {
+        const r = rig();
+        try {
+          const untouched = r.lib.createPrompt({ title: "Untouched", content: "untouchedword" });
+          const untouchedRows = searchRows(r, untouched.id);
+          const timestamp = "2026-09-17T00:00:00.000Z";
+          let promptId: string;
+          let branchId: string;
+          if (legacyWrite === "created") {
+            promptId = "legacy-prompt";
+            branchId = "legacy-branch";
+            // Model an old CLI creation without invoking any v15 index helper.
+            r.db.prepare("INSERT INTO prompts (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+              .run(promptId, "Legacy prompt", timestamp, timestamp);
+            r.db.prepare("INSERT INTO branches (id, prompt_id, name, created_at) VALUES (?, ?, 'main', ?)")
+              .run(branchId, promptId, timestamp);
+            r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+              VALUES ('legacy-original', ?, ?, 1, 'originalword', ?)`)
+              .run(promptId, branchId, timestamp);
+            r.db.prepare("UPDATE prompts SET current_version_id = 'legacy-original' WHERE id = ?").run(promptId);
+          } else {
+            const prompt = r.lib.createPrompt({ title: "Legacy prompt", content: "originalword" });
+            promptId = prompt.id;
+            branchId = r.lib.listBranches(prompt.id)[0]!.id;
+          }
+          r.db.prepare(`INSERT INTO versions (id, prompt_id, branch_id, number, content, created_at)
+            VALUES ('legacy-appended', ?, ?, 2, 'legacyappendword', ?)`)
+            .run(promptId, branchId, timestamp);
+          r.db.transaction(() => {
+            r.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(promptId);
+            r.db.prepare(`INSERT INTO search_index
+              (prompt_id, version_id, title, description, tags, notes, content)
+              VALUES (?, NULL, 'Legacy prompt', '', '', '', '')`).run(promptId);
+            r.db.prepare(`INSERT INTO search_index
+              (prompt_id, version_id, title, description, tags, notes, content)
+              SELECT prompt_id, id, '', '', '', '', content FROM versions
+              WHERE prompt_id = ? AND status = 'active' ORDER BY number`).run(promptId);
+          })();
+          expect(r.db.prepare("SELECT 1 FROM search_index_rows WHERE version_id = 'legacy-appended'").get())
+            .toBeUndefined();
+          if (legacyWrite === "appended") {
+            const metadata = r.db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? AND version_id IS NULL")
+              .get(promptId);
+            expect(r.db.prepare("SELECT rowid FROM search_index WHERE prompt_id = ? AND version_id IS NULL").get(promptId))
+              .toEqual(metadata);
+          }
+          r.engine.refineDirty();
+          const op = mutation === "metadata"
+            ? fixedOp("remote", 1, "prompts", promptId, {
+                ...r.db.prepare("SELECT * FROM prompts WHERE id = ?").get(promptId) as Record<string, unknown>,
+                title: "Remote title",
+              }, Date.now() + 100_000)
+            : mutation === "amend"
+              ? fixedOp("remote", 1, "versions", "legacy-appended", {
+                  ...r.db.prepare("SELECT * FROM versions WHERE id = 'legacy-appended'").get() as Record<string, unknown>,
+                  content: "amendedword",
+                }, Date.now() + 100_000)
+              : fixedOp("remote", 1, mutation === "hard delete" ? "prompts" : "versions",
+                  mutation === "hard delete" ? promptId : "legacy-appended", null, Date.now() + 100_000, "delete");
+          expect(() => r.engine.applyRemote([op]), `${legacyWrite}: ${mutation}`).not.toThrow();
+          expect(searchRows(r, untouched.id), `${legacyWrite}: ${mutation}`).toEqual(untouchedRows);
+          if (mutation === "hard delete") {
+            expect(searchRows(r, promptId)).toEqual([]);
+          } else if (mutation === "delete version") {
+            expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-appended'").all())
+              .toEqual([]);
+          } else {
+            expect(r.db.prepare("SELECT content FROM search_index WHERE version_id = 'legacy-appended'").all())
+              .toEqual([{ content: mutation === "amend" ? "amendedword" : "legacyappendword" }]);
+            if (mutation === "metadata") {
+              expect(r.db.prepare("SELECT title FROM search_index WHERE prompt_id = ? AND version_id IS NULL").all(promptId))
+                .toEqual([{ title: "Remote title" }]);
+            }
+          }
+          expectSearchMappingsConsistent(r);
+        } finally {
+          r.db.close();
+        }
     },
   );
 

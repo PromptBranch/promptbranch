@@ -32,7 +32,7 @@ let server: http.Server;
 let portalBase: string;
 let publishRequests = 0;
 let lastPublished: Record<string, unknown> | null = null;
-let publishMode: "success" | "rate-limit" | "http-500" | "malformed" | "stale-parent" = "success";
+let publishMode: "success" | "rate-limit" | "http-500" | "malformed" | "oversized" | "stale-parent" = "success";
 
 const importedSnapshot = {
   formatVersion: 1,
@@ -89,6 +89,11 @@ beforeAll(async () => {
         if (publishMode === "malformed") {
           res.writeHead(201, { "content-type": "application/json" });
           res.end(JSON.stringify({ id: "invalid" }));
+          return;
+        }
+        if (publishMode === "oversized") {
+          res.writeHead(201, { "content-type": "application/json" });
+          res.end("x".repeat(64 * 1024 + 1));
           return;
         }
         if (publishMode === "stale-parent" && lastPublished?.["parentId"]) {
@@ -254,6 +259,16 @@ describe("promptbranch publish", () => {
     expect(result.stderr).toMatch(message);
     expect(result.stderr).not.toMatch(/\n\s+at\s/);
     expect(withLibrary((lib) => lib.listSharedSnapshots())).toHaveLength(before);
+  });
+
+  it("reports an oversized portal response without calling the snapshot too large", async () => {
+    publishMode = "oversized";
+
+    const result = await run(["publish", "Code review", "--portal", portalBase]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/portal response.*too large/i);
+    expect(result.stderr).not.toMatch(/^Snapshot is too large/im);
   });
 
   it("retries a stale parent once without lineage", async () => {

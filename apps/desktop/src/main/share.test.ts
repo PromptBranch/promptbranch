@@ -220,6 +220,22 @@ describe("publishShare", () => {
     expect(lib.listSharedSnapshots()).toEqual([]);
   });
 
+  it("describes an oversized portal response without blaming the local snapshot", async () => {
+    const { lib, prompt } = setup();
+    const publishImpl: ShareServiceDeps["publishImpl"] = async () => ({
+      ok: false,
+      error: { kind: "response-too-large", actualBytes: 65_537, maxBytes: 65_536 },
+    });
+
+    await expect(
+      publishShare(makeDeps(lib, { publishImpl }), {
+        promptId: prompt.id,
+        includeHistory: false,
+      }),
+    ).rejects.toThrow(/portal response.*too large/i);
+    expect(lib.listSharedSnapshots()).toEqual([]);
+  });
+
   it("links a re-publish to the previous share via parentId", async () => {
     const { lib, prompt } = setup();
     const seenParents: Array<string | undefined> = [];

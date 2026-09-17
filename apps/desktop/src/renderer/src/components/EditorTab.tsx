@@ -474,13 +474,13 @@ export const EditorTab = memo(function EditorTab({
   const editor = (
     <CodeMirror
       value={content}
-      onChange={(value) => {
+      onChange={(value: string) => {
         draftClearRequestedRef.current = false;
         localEditGenerationRef.current += 1;
         contentRef.current = value;
         setContent(value);
       }}
-      onCreateEditor={(view) => {
+      onCreateEditor={(view: EditorView) => {
         viewRef.current = view;
       }}
       extensions={[markdown({ base: markdownLanguage }), ...(wordWrap ? [EditorView.lineWrapping] : [])]}

@@ -1,9 +1,80 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { openDatabase, openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
 
 let db: Database;
 let lib: PromptLibrary;
+
+function waitForOutput(
+  child: ReturnType<typeof spawn>,
+  expected: string,
+  timeoutMs: number,
+): Promise<void> {
+  const stdout = child.stdout;
+  if (!stdout) throw new Error("Child stdout is unavailable");
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for child output ${JSON.stringify(expected)}: ${output}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString();
+      if (output.split("\n").includes(expected)) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      reject(new Error(`Child exited with code ${code} before writing ${JSON.stringify(expected)}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      stdout.off("data", onData);
+      child.off("exit", onExit);
+    };
+    stdout.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+function waitForSuccessfulExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
+  const stderr = child.stderr;
+  if (!stderr) throw new Error("Child stderr is unavailable");
+  return new Promise((resolve, reject) => {
+    let errorOutput = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for child exit: ${errorOutput}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      errorOutput += chunk.toString();
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      if (code === 0) resolve();
+      else reject(new Error(`Child exited with code ${code}: ${errorOutput}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      stderr.off("data", onData);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    stderr.on("data", onData);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
 
 beforeEach(() => {
   db = openMemoryDatabase();
@@ -463,6 +534,83 @@ describe("versions", () => {
     expect(v3.parent_version_id).toBe(v2.id);
     expect(lib.getPrompt(prompt.id)!.current_version_id).toBe(v3.id);
     expect(lib.getBranchHead(main.id)!.id).toBe(v3.id);
+  });
+
+  it("waits for a concurrent writer before creating a version from a fresh snapshot", async () => {
+    const scratchDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "promptbranch-version-lock-"));
+    const databasePath = path.join(scratchDirectory, "library.db");
+    const diskDatabase = openDatabase(databasePath).db;
+    const diskLibrary = new PromptLibrary(diskDatabase);
+    const prompt = diskLibrary.createPrompt({ title: "Concurrent", content: "v1" });
+    const main = diskLibrary.listBranches(prompt.id)[0]!;
+    const helper = spawn(
+      process.execPath,
+      [
+        path.join(import.meta.dirname, "fixtures", "hold-write-lock.mjs"),
+        databasePath,
+        prompt.id,
+        main.id,
+        prompt.current_version_id!,
+        "500",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const helperExit = waitForSuccessfulExit(helper, 2_500);
+
+    try {
+      await waitForOutput(helper, "locked", 2_000);
+      const startedAt = performance.now();
+      let saved: ReturnType<PromptLibrary["createVersion"]> | undefined;
+      let createError: unknown;
+      try {
+        saved = diskLibrary.createVersion({
+          promptId: prompt.id,
+          branchId: main.id,
+          content: "v3 after concurrent writer",
+        });
+      } catch (error) {
+        createError = error;
+      }
+      const elapsedMs = performance.now() - startedAt;
+      await helperExit;
+
+      if (createError) {
+        expect(createError).toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) });
+        expect(diskLibrary.listVersions(prompt.id).map(({ id, number }) => ({ id, number })))
+          .toEqual([
+            { id: prompt.current_version_id, number: 1 },
+            { id: "concurrent-writer-version", number: 2 },
+          ]);
+        expect(diskLibrary.getPrompt(prompt.id)?.current_version_id)
+          .toBe("concurrent-writer-version");
+        throw createError;
+      }
+
+      expect(elapsedMs).toBeGreaterThanOrEqual(100);
+      expect(saved).toMatchObject({
+        number: 3,
+        parent_version_id: "concurrent-writer-version",
+        content: "v3 after concurrent writer",
+      });
+      expect(diskLibrary.listVersions(prompt.id).map(({ id, number, parent_version_id }) => ({
+        id,
+        number,
+        parent_version_id,
+      }))).toEqual([
+        { id: prompt.current_version_id, number: 1, parent_version_id: null },
+        {
+          id: "concurrent-writer-version",
+          number: 2,
+          parent_version_id: prompt.current_version_id,
+        },
+        { id: saved!.id, number: 3, parent_version_id: "concurrent-writer-version" },
+      ]);
+      expect(diskLibrary.getPrompt(prompt.id)?.current_version_id).toBe(saved!.id);
+    } finally {
+      if (helper.exitCode === null) helper.kill();
+      diskDatabase.close();
+      fs.rmSync(scratchDirectory, { recursive: true, force: true });
+    }
   });
 
   it("appends from an explicit historical base without changing the preferred version", () => {

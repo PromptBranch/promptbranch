@@ -595,7 +595,7 @@ export class PromptLibrary {
       }
       this.reindexPrompt(input.promptId);
       return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
-    })();
+    }).immediate();
   }
 
   getVersion(versionId: string): VersionRow | null {

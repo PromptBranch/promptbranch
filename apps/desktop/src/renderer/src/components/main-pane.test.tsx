@@ -169,7 +169,9 @@ function HistoricalVersionControl({ versionId }: { versionId: string }) {
 }
 
 describe("MainPane live run progress", () => {
-  async function overlappingRuns() {
+  async function overlappingRuns(
+    beforeSwitch?: (user: ReturnType<typeof userEvent.setup>, input: AiRunInput) => Promise<void>,
+  ) {
     const user = userEvent.setup();
     const pending: { input: AiRunInput; resolve: (group: AiRunGroupDto) => void; reject: (error: Error) => void }[] = [];
     bridge.ai.run.mockImplementation((input) => new Promise<AiRunGroupDto>((resolve, reject) => {
@@ -178,6 +180,7 @@ describe("MainPane live run progress", () => {
     const view = renderApp(<MainPane prompt={prompt} />);
     await startRun(user);
     await waitFor(() => expect(pending).toHaveLength(1));
+    await beforeSwitch?.(user, pending[0]!.input);
     view.rerender(<MainPane prompt={{ ...prompt, id: "prompt-2", title: "Farewell" }} />);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await startRun(user);
@@ -233,6 +236,42 @@ describe("MainPane live run progress", () => {
     expect(await screen.findByText('Run finished for "Greeting" — open it from Results')).toBeInTheDocument();
     expect(screen.queryByText(/Run finished for "Farewell"/)).toBeNull();
   });
+
+  it.each(["already-finished", "error"] as const)(
+    "keeps B cancelling when A's cancellation returns %s late", async (outcome) => {
+      const cancellations: {
+        resolve: (result: { cancelled: boolean }) => void;
+        reject: (error: Error) => void;
+      }[] = [];
+      bridge.ai.runCancel.mockImplementation(() => new Promise((resolve, reject) => {
+        cancellations.push({ resolve, reject });
+      }));
+      const { user, second } = await overlappingRuns(async (user, input) => {
+        progress(input, "group-a", "queued");
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+      });
+      progress(second.input, "group-b", "queued");
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(bridge.ai.runCancel.mock.calls).toEqual([
+        [{ runGroupId: "group-a" }], [{ runGroupId: "group-b" }],
+      ]);
+      expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+
+      await act(async () => {
+        if (outcome === "already-finished") cancellations[0]!.resolve({ cancelled: false });
+        else cancellations[0]!.reject(new Error("A cancellation failed"));
+      });
+      expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+
+      // B's own terminal callback must still release its indicator.
+      await act(async () => {
+        if (outcome === "already-finished") cancellations[1]!.resolve({ cancelled: false });
+        else cancellations[1]!.reject(new Error("B cancellation failed"));
+      });
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    },
+  );
 
   it("drops stale variable keys before dialog submission, persistence and invocation", async () => {
     const user = userEvent.setup();

@@ -373,16 +373,25 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   }, [prompt.id, resetRunModels]);
 
   const cancelRun = useAppMutation(
-    (runGroupId: string) => window.promptBuilder.ai.runCancel({ runGroupId }),
+    ({ runGroupId }: { requestId: string; runGroupId: string }) =>
+      window.promptBuilder.ai.runCancel({ runGroupId }),
     {
       toast: (result) => (result.cancelled ? "Run cancelled" : "Run already finished"),
       // Both failure and "already finished" must release the Cancelling… state.
-      onSuccess: (result) => {
+      onSuccess: (result, input) => {
         if (!result.cancelled) {
-          setLive((current) => (current ? { ...current, cancelling: false } : current));
+          setLive((current) =>
+            current?.requestId === input.requestId && current.group.runGroupId === input.runGroupId
+              ? { ...current, cancelling: false }
+              : current,
+          );
         }
       },
-      onError: () => setLive((current) => (current ? { ...current, cancelling: false } : current)),
+      onError: (_error, input) => setLive((current) =>
+        current?.requestId === input.requestId && current.group.runGroupId === input.runGroupId
+          ? { ...current, cancelling: false }
+          : current,
+      ),
     },
   );
 
@@ -1029,10 +1038,10 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         live={live !== null && !live.dismissed}
         cancelling={live?.cancelling ?? false}
         onCancel={() => {
-          const runGroupId = live?.group.runGroupId;
-          if (!runGroupId) return;
+          if (!live || !live.group.runGroupId) return;
+          const { requestId, group: { runGroupId } } = live;
           setLive((current) => (current ? { ...current, cancelling: true } : current));
-          cancelRun.mutate(runGroupId);
+          cancelRun.mutate({ requestId, runGroupId });
         }}
         onRerun={(refs) => startRun(refs, true)}
         onChangeModels={() => {

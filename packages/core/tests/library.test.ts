@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { performance } from "node:perf_hooks";
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, openMemoryDatabase, PromptLibrary, type Database } from "../src/index.js";
 
@@ -74,6 +73,11 @@ function waitForSuccessfulExit(child: ReturnType<typeof spawn>, timeoutMs: numbe
     child.once("error", onError);
     child.once("exit", onExit);
   });
+}
+
+function observeExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
 beforeEach(() => {
@@ -539,6 +543,7 @@ describe("versions", () => {
   it("waits for a concurrent writer before creating a version from a fresh snapshot", async () => {
     const scratchDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "promptbranch-version-lock-"));
     const databasePath = path.join(scratchDirectory, "library.db");
+    const releasePath = path.join(scratchDirectory, "release.command");
     const diskDatabase = openDatabase(databasePath).db;
     const diskLibrary = new PromptLibrary(diskDatabase);
     const prompt = diskLibrary.createPrompt({ title: "Concurrent", content: "v1" });
@@ -551,15 +556,67 @@ describe("versions", () => {
         prompt.id,
         main.id,
         prompt.current_version_id!,
-        "500",
+        releasePath,
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     const helperExit = waitForSuccessfulExit(helper, 2_500);
+    const helperClosed = observeExit(helper);
+    let helperReleased: Promise<void> | null = null;
 
     try {
       await waitForOutput(helper, "locked", 2_000);
-      const startedAt = performance.now();
+      helperReleased = waitForOutput(helper, "released", 2_500);
+      let transactionMode: "deferred" | "immediate" | null = null;
+      let releaseSent = false;
+      const releaseWriter = (): void => {
+        if (releaseSent) return;
+        releaseSent = true;
+        fs.writeFileSync(releasePath, "release\n", { flag: "wx" });
+      };
+      const originalTransaction = diskDatabase.transaction.bind(diskDatabase);
+      diskDatabase.transaction = ((fn) => {
+        const transaction = originalTransaction(fn);
+        const wrapped = (...args: unknown[]) => {
+          transactionMode = "deferred";
+          return Reflect.apply(transaction, transaction, args);
+        };
+        Object.defineProperties(wrapped, {
+          default: { value: wrapped },
+          deferred: { value: wrapped },
+          immediate: {
+            value: (...args: unknown[]) => {
+              transactionMode = "immediate";
+              releaseWriter();
+              return Reflect.apply(transaction.immediate, transaction, args);
+            },
+          },
+          exclusive: {
+            value: (...args: unknown[]) => Reflect.apply(transaction.exclusive, transaction, args),
+          },
+        });
+        return wrapped;
+      }) as Database["transaction"];
+      const originalPrepare = diskDatabase.prepare.bind(diskDatabase);
+      diskDatabase.prepare = ((source) => {
+        const statement = originalPrepare(source);
+        if (
+          typeof source !== "string" ||
+          !source.includes("SELECT * FROM versions WHERE branch_id = ?")
+        ) {
+          return statement;
+        }
+        return new Proxy(statement, {
+          get(target, property, receiver) {
+            if (property !== "get") return Reflect.get(target, property, receiver);
+            return (...args: unknown[]) => {
+              const row = Reflect.apply(target.get, target, args);
+              if (transactionMode === "deferred") releaseWriter();
+              return row;
+            };
+          },
+        });
+      }) as Database["prepare"];
       let saved: ReturnType<PromptLibrary["createVersion"]> | undefined;
       let createError: unknown;
       try {
@@ -571,10 +628,13 @@ describe("versions", () => {
       } catch (error) {
         createError = error;
       }
-      const elapsedMs = performance.now() - startedAt;
+      if (createError && transactionMode === null) throw createError;
+      expect(fs.readFileSync(releasePath, "utf8")).toBe("release\n");
+      await helperReleased;
       await helperExit;
 
       if (createError) {
+        expect(transactionMode).toBe("deferred");
         expect(createError).toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) });
         expect(diskLibrary.listVersions(prompt.id).map(({ id, number }) => ({ id, number })))
           .toEqual([
@@ -586,7 +646,7 @@ describe("versions", () => {
         throw createError;
       }
 
-      expect(elapsedMs).toBeGreaterThanOrEqual(100);
+      expect(transactionMode).toBe("immediate");
       expect(saved).toMatchObject({
         number: 3,
         parent_version_id: "concurrent-writer-version",
@@ -607,7 +667,14 @@ describe("versions", () => {
       ]);
       expect(diskLibrary.getPrompt(prompt.id)?.current_version_id).toBe(saved!.id);
     } finally {
-      if (helper.exitCode === null) helper.kill();
+      if (helper.exitCode === null) {
+        if (!fs.existsSync(releasePath)) fs.writeFileSync(releasePath, "release\n");
+      }
+      await helperExit.catch(() => {
+        if (helper.exitCode === null) helper.kill();
+      });
+      await helperReleased?.catch(() => undefined);
+      await helperClosed;
       diskDatabase.close();
       fs.rmSync(scratchDirectory, { recursive: true, force: true });
     }

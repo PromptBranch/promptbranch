@@ -1,18 +1,16 @@
 import Database from "better-sqlite3";
+import fs from "node:fs";
 
-const [databasePath, promptId, branchId, parentVersionId, holdMillisecondsText] =
-  process.argv.slice(2);
-const holdMilliseconds = Number(holdMillisecondsText);
+const [databasePath, promptId, branchId, parentVersionId, releasePath] = process.argv.slice(2);
 
 if (
   !databasePath ||
   !promptId ||
   !branchId ||
   !parentVersionId ||
-  !Number.isInteger(holdMilliseconds) ||
-  holdMilliseconds < 1
+  !releasePath
 ) {
-  throw new Error("Expected database path, prompt, branch, parent version, and lock duration");
+  throw new Error("Expected database path, prompt, branch, parent version, and release path");
 }
 
 const concurrentVersionId = "concurrent-writer-version";
@@ -33,16 +31,21 @@ try {
   ).run(concurrentVersionId, createdAt, promptId);
   process.stdout.write("locked\n");
 
-  setTimeout(() => {
+  const release = () => {
+    if (!fs.existsSync(releasePath)) return;
+    if (fs.readFileSync(releasePath, "utf8").trim() !== "release") return;
+    fs.unwatchFile(releasePath);
     try {
       db.exec("COMMIT");
-      process.stdout.write("released\n");
       db.close();
+      process.stdout.write("released\n", () => process.exit(0));
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-      process.exitCode = 1;
+      process.exit(1);
     }
-  }, holdMilliseconds);
+  };
+  fs.watchFile(releasePath, { interval: 10 }, release);
+  release();
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   db.close();

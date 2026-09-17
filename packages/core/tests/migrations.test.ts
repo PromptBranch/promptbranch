@@ -143,6 +143,40 @@ describe("migrations", () => {
     migrated.db.close();
   });
 
+  it.each([13, 14, 15])(
+    "repairs a missing draft base column when the database is already marked v%i",
+    (markedVersion) => {
+      const dbPath = tmpDbPath();
+      const seeded = physicalDatabase(dbPath, 12).db;
+      const prompt = seedLegacyPrompt(seeded, {
+        id: `drifted-draft-${markedVersion}`,
+        title: "Drifted draft",
+        content: "saved",
+      });
+      seeded.prepare("UPDATE prompts SET draft_content = 'legacy draft' WHERE id = ?").run(prompt.id);
+      // Simulate a prior binary that advanced the version marker without
+      // physically adding the version-13 draft-base column.
+      seeded.pragma(`user_version = ${markedVersion}`);
+      expect((seeded.pragma("table_info(prompts)") as Array<{ name: string }>).map((c) => c.name))
+        .not.toContain("draft_base_version_id");
+      seeded.close();
+
+      const migrated = openDatabase(dbPath);
+      try {
+        expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
+        expect(
+          migrated.db
+            .prepare("SELECT draft_content, draft_base_version_id FROM prompts WHERE id = ?")
+            .get(prompt.id),
+        ).toEqual({ draft_content: "legacy draft", draft_base_version_id: null });
+        const library = new PromptLibrary(migrated.db);
+        expect(() => library.setDraft(prompt.id, "updated draft", prompt.current_version_id)).not.toThrow();
+      } finally {
+        migrated.db.close();
+      }
+    },
+  );
+
   it("migration 14 adds lookup indexes without changing v13 rows or immutable sync state", () => {
     const dbPath = tmpDbPath();
     const seeded = physicalDatabase(dbPath, 13).db;
@@ -209,7 +243,7 @@ describe("migrations", () => {
 
     const migrated = openDatabase(dbPath);
     try {
-      expect(migrated.db.pragma("user_version", { simple: true })).toBe(15);
+      expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
       expect(migrated.backupPath).not.toBeNull();
       expect(migrated.db.prepare("SELECT * FROM search_index_rows").all()).toEqual([]);
       const columns = migrated.db.pragma("table_info(search_index_rows)") as Array<{
@@ -258,7 +292,7 @@ describe("migrations", () => {
 
       const migrated = openDatabase(dbPath);
       try {
-        expect(migrated.db.pragma("user_version", { simple: true })).toBe(15);
+        expect(migrated.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
         expect(migrated.backupPath).not.toBeNull();
         expect(migrated.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual([
           { rowid: 7, prompt_id: "stellar", version_id: null },
@@ -292,7 +326,7 @@ describe("migrations", () => {
       const reopened = openDatabase(dbPath);
       try {
         expect(reopened.backupPath).toBeNull();
-        expect(reopened.db.pragma("user_version", { simple: true })).toBe(15);
+        expect(reopened.db.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
         expect(reopened.db.prepare("SELECT * FROM search_index_rows ORDER BY rowid").all()).toEqual(
           reopened.db.prepare("SELECT rowid, prompt_id, version_id FROM search_index ORDER BY rowid").all(),
         );

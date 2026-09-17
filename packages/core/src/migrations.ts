@@ -200,6 +200,20 @@ INSERT INTO search_index_rows (rowid, prompt_id, version_id)
 SELECT rowid, prompt_id, version_id FROM search_index;
 `,
   },
+  // A pre-v16 binary could advance user_version past v13 without running its
+  // repair callback, leaving the draft-base column absent. Keep this forward
+  // repair idempotent so those databases become usable without manual edits.
+  {
+    version: 16,
+    name: "repair-version-bound-prompt-drafts",
+    sql: "",
+    repair: (db) => {
+      const columns = db.pragma("table_info(prompts)") as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "draft_base_version_id")) {
+        db.exec("ALTER TABLE prompts ADD COLUMN draft_base_version_id TEXT");
+      }
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;

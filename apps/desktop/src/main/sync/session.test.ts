@@ -83,11 +83,12 @@ function sessionPair(a: Rig, b: Rig, byteBudget?: number): [SyncSession, SyncSes
 }
 
 describe("sync session", () => {
-  it("fails the session immediately when a peer uses an incompatible protocol", () => {
+  it("fails an incompatible hello without mutating remote sync state", () => {
     const local = rig();
     const [socket] = streamPair();
     socket.on("error", () => undefined);
     const log = vi.fn();
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
     const session = new SyncSession(socket, {
       engine: local.engine,
       deviceName: "Current device",
@@ -101,11 +102,84 @@ describe("sync session", () => {
       name: "Old device",
       cursors: {},
     });
+    session.handleMessageFrame({
+      t: "ops",
+      ops: [{
+        source: "old-device",
+        seq: 1,
+        opId: "old-device-1",
+        table: "prompts",
+        recordId: "remote-prompt",
+        kind: "delete",
+        payload: null,
+        hlc: "0000000000001000:000000:old-device",
+        createdAt: "2026-09-12T00:00:00.000Z",
+      }],
+      more: false,
+    });
 
     expect(session.currentState).toBe("error");
     expect(socket.destroyed).toBe(true);
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/protocol version 1/i));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(/received protocol 1, schema missing; expected protocol 4, schema 13/i),
+    );
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_ops").get()).toEqual({ n: 0 });
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_heads").get()).toEqual({ n: 0 });
+    expect(local.db.prepare("SELECT COUNT(*) AS n FROM sync_cursors").get()).toEqual({ n: 0 });
     local.db.close();
+  });
+
+  it("fails closed when ops arrive before a compatible hello", () => {
+    const local = rig();
+    const [socket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+
+    session.handleMessageFrame({ t: "ops", ops: [], more: false });
+
+    expect(session.currentState).toBe("error");
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    local.db.close();
+  });
+
+  it("ignores later frames in a chunk after an incompatible hello closes the session", async () => {
+    const local = rig();
+    const remote = rig();
+    const prompt = remote.lib.createPrompt({ title: "Must not apply", content: "remote" });
+    remote.engine.refineDirty();
+    const { ops } = remote.engine.opsSince({}, 1_000_000);
+    const [socket, peerSocket] = streamPair();
+    socket.on("error", () => undefined);
+    const applyRemote = vi.spyOn(local.engine, "applyRemote");
+    const session = new SyncSession(socket, {
+      engine: local.engine,
+      deviceName: "Current device",
+    });
+    attachSession(socket, session);
+
+    peerSocket.write(Buffer.concat([
+      encodeFrame({
+        t: "hello",
+        v: 3,
+        deviceId: "v0.5.0-device",
+        name: "PromptBranch 0.5.0",
+        cursors: {},
+      }),
+      encodeFrame({ t: "ops", ops, more: false }),
+    ]));
+
+    await vi.waitFor(() => expect(session.currentState).toBe("error"));
+    expect(socket.destroyed).toBe(true);
+    expect(applyRemote).not.toHaveBeenCalled();
+    expect(local.lib.getPrompt(prompt.id)).toBeNull();
+    local.db.close();
+    remote.db.close();
   });
 
   it("converges both directions over an in-memory stream pair", async () => {

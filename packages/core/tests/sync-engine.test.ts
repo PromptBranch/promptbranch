@@ -82,6 +82,56 @@ function normalizedExport(r: Rig) {
 }
 
 describe("sync engine", () => {
+  it("relays and applies stored schema-12 prompt ops with legacy-null draft bases", () => {
+    const origin = rig();
+    const relay = rig();
+    const receiver = rig();
+    const payload = {
+      id: "v0.5.0-prompt",
+      title: "Legacy draft",
+      description: null,
+      icon: null,
+      draft_content: "draft created before schema 13",
+      current_version_id: null,
+      is_starred: 0,
+      created_at: "2026-09-12T00:00:00.000Z",
+      updated_at: "2026-09-12T00:00:00.000Z",
+      deleted_at: null,
+    };
+    origin.db.prepare(
+      `INSERT INTO sync_ops
+       (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "v0.5.0-device",
+      1,
+      "v0.5.0-device-1-prompts-v0.5.0-prompt-upsert",
+      "prompts",
+      payload.id,
+      "upsert",
+      JSON.stringify(payload),
+      formatHlc({ millis: 1_000, counter: 0 }),
+      "2026-09-12T00:00:00.000Z",
+    );
+
+    const historical = origin.engine.opsSince({}, 1_000_000).ops;
+    expect(historical).toHaveLength(1);
+    expect(historical[0]?.payload).not.toHaveProperty("draft_base_version_id");
+    expect(relay.engine.applyRemote(historical).applied).toBe(1);
+    expect(relay.lib.getPrompt(payload.id)).toMatchObject({
+      draft_content: payload.draft_content,
+      draft_base_version_id: null,
+    });
+
+    const relayed = relay.engine.opsSince({}, 1_000_000).ops;
+    expect(relayed[0]?.payload).toEqual(payload);
+    expect(receiver.engine.applyRemote(relayed).applied).toBe(1);
+    expect(receiver.lib.getPrompt(payload.id)).toMatchObject({
+      draft_content: payload.draft_content,
+      draft_base_version_id: null,
+    });
+  });
+
   it("gives each device a stable distinct id", () => {
     const a = rig();
     const b = rig();

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Peer wire protocol, version 3. Every message is a length-prefixed JSON
+ * Peer wire protocol, version 4. Every message is a length-prefixed JSON
  * frame (see frames.ts). Anti-entropy is hello-driven: either side may send
  * `hello` at any time (on connect, or as a "pull me" notification after new
  * local ops); the receiver answers with `ops` batches and a final `flush`.
@@ -9,9 +9,15 @@ import { z } from "zod";
  * locally against the server certificate, then introduces itself.
  */
 
-// v3 makes version tombstones terminal and derives empty-branch cleanup from
-// them. Mixing v2 and v3 peers could otherwise resurrect or over-delete data.
-export const PROTOCOL_VERSION = 3;
+// v4 requires an exact synced-payload schema match before pairing or applying
+// operations. Historical operations retain their original payload shape.
+export const PROTOCOL_VERSION = 4;
+export const SYNC_SCHEMA_VERSION = 13;
+
+export interface SyncCompatibility {
+  v: 4;
+  schemaVersion: 13;
+}
 
 const cursorsSchema = z.record(z.string(), z.number().int().min(0));
 
@@ -30,6 +36,7 @@ const opSchema = z.object({
 const helloSchema = z.object({
   t: z.literal("hello"),
   v: z.literal(PROTOCOL_VERSION),
+  schemaVersion: z.literal(SYNC_SCHEMA_VERSION),
   deviceId: z.string().min(1),
   name: z.string().min(1).max(100),
   cursors: cursorsSchema,
@@ -50,18 +57,21 @@ const pairIntroduceSchema = z.object({
   // stripped an unknown `v` field and would otherwise accept and pin one side.
   t: z.literal("pair-introduce-v2"),
   v: z.literal(PROTOCOL_VERSION),
+  schemaVersion: z.literal(SYNC_SCHEMA_VERSION),
   name: z.string().min(1).max(100),
 });
 
 const pairConfirmedSchema = z.object({
   t: z.literal("pair-confirmed-v2"),
   v: z.literal(PROTOCOL_VERSION),
+  schemaVersion: z.literal(SYNC_SCHEMA_VERSION),
   name: z.string().min(1).max(100),
 });
 
 const pairRejectedSchema = z.object({
   t: z.literal("pair-rejected-v2"),
   v: z.literal(PROTOCOL_VERSION),
+  schemaVersion: z.literal(SYNC_SCHEMA_VERSION),
 });
 
 const pingSchema = z.object({ t: z.literal("ping") });
@@ -81,24 +91,40 @@ const messageSchema = z.discriminatedUnion("t", [
 
 export type WireMessage = z.infer<typeof messageSchema>;
 
+const COMPATIBILITY_MESSAGES = new Set([
+  "hello",
+  "pair-introduce",
+  "pair-confirmed",
+  "pair-rejected",
+  "pair-introduce-v2",
+  "pair-confirmed-v2",
+  "pair-rejected-v2",
+]);
+
+function compatibilityValue(value: object, key: "v" | "schemaVersion"): string {
+  return key in value ? String((value as Record<string, unknown>)[key]) : "missing";
+}
+
+function incompatibleCompatibility(value: object): Error {
+  return new Error(
+    "Incompatible sync compatibility: " +
+      `received protocol ${compatibilityValue(value, "v")}, ` +
+      `schema ${compatibilityValue(value, "schemaVersion")}; ` +
+      `expected protocol ${PROTOCOL_VERSION}, schema ${SYNC_SCHEMA_VERSION}`,
+  );
+}
+
 /** Parses one frame; returns null for anything not in the protocol. */
 export function parseMessage(value: unknown): WireMessage | null {
   if (typeof value === "object" && value !== null && "t" in value) {
     const { t } = value as { t?: unknown };
     if (
-      (t === "hello" ||
-        t === "pair-introduce" ||
-        t === "pair-confirmed" ||
-        t === "pair-rejected" ||
-        t === "pair-introduce-v2" ||
-        t === "pair-confirmed-v2" ||
-        t === "pair-rejected-v2") &&
-      (!("v" in value) || (value as { v?: unknown }).v !== PROTOCOL_VERSION)
+      typeof t === "string" &&
+      COMPATIBILITY_MESSAGES.has(t) &&
+      ((value as { v?: unknown }).v !== PROTOCOL_VERSION ||
+        (value as { schemaVersion?: unknown }).schemaVersion !== SYNC_SCHEMA_VERSION)
     ) {
-      const received = "v" in value ? String((value as { v?: unknown }).v) : "missing";
-      throw new Error(
-        `Incompatible sync protocol version ${received}; expected ${PROTOCOL_VERSION}`,
-      );
+      throw incompatibleCompatibility(value);
     }
   }
   const result = messageSchema.safeParse(value);

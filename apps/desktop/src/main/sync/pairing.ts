@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import { encodeFrame } from "./frames.js";
-import { parseMessage, PROTOCOL_VERSION } from "./messages.js";
+import { parseMessage, PROTOCOL_VERSION, SYNC_SCHEMA_VERSION } from "./messages.js";
 
 /**
  * Pairing handshake over an established TLS connection. The connection owner
@@ -33,6 +33,7 @@ export class PairingInitiator {
       encodeFrame({
         t: "pair-introduce-v2",
         v: PROTOCOL_VERSION,
+        schemaVersion: SYNC_SCHEMA_VERSION,
         name: this.deps.deviceName,
       }),
     );

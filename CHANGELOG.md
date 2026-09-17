@@ -4,6 +4,20 @@ Notable user-facing changes to PromptBranch are documented here. GitHub
 Releases contain platform downloads, checksums, and release-specific validation
 notes.
 
+## [Unreleased]
+
+### Fixed
+
+- Reject incompatible device-to-device sync payload schemas before pairing or
+  applying remote changes. Protocol 4 requires sync schema 13, so every paired
+  desktop or mobile device must be upgraded before sync can resume.
+
+### Release requirements
+
+- A mobile release must implement protocol 4 and sync schema 13 and pass a
+  physical desktop-to-mobile interoperability test before mobile sync
+  compatibility is considered release-ready.
+
 ## [0.6.0] - 2026-09-16
 
 ### Added

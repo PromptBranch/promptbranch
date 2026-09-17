@@ -10,8 +10,9 @@ import { openMemoryDatabase, PromptLibrary, SyncEngine } from "@promptbranch/cor
 import { createBonjourDiscovery, type DiscoveredPeer, type Discovery } from "./discovery.js";
 import { encodeFrame } from "./frames.js";
 import { derivePairingCode, loadOrCreateIdentity, type DeviceIdentity } from "./identity.js";
-import { PROTOCOL_VERSION } from "./messages.js";
 import { PeerService, type PeerServiceDeps } from "./peers-service.js";
+
+const CURRENT_COMPATIBILITY = { v: 4, schemaVersion: 13 } as const;
 
 const dirs: string[] = [];
 const services: PeerService[] = [];
@@ -135,6 +136,19 @@ function controlledTlsSocket(fingerprint: string): {
   };
 }
 
+function injectCompatibleHello(
+  controlled: ReturnType<typeof controlledTlsSocket>,
+  name = "Remote",
+): void {
+  controlled.inject(encodeFrame({
+    t: "hello",
+    ...CURRENT_COMPATIBILITY,
+    deviceId: "remote-test-device",
+    name,
+    cursors: {},
+  }));
+}
+
 interface ControlledLivenessRig {
   local: ServiceRig;
   remoteIdentity: DeviceIdentity;
@@ -175,6 +189,7 @@ async function controlledLivenessRig(
     ),
   ).toEqual({ ok: true });
   if (options.steady !== false) {
+    injectCompatibleHello(sockets[0]!);
     sockets[0]!.inject(encodeFrame({ t: "flush" }));
     expect(local.service.status().peers[0]?.state).toBe("steady");
   }
@@ -208,6 +223,23 @@ function remotePromptFrame(): { promptId: string; frame: Buffer } {
 }
 
 describe("peer service over real TLS (loopback)", () => {
+  it("rejects a schema-12 pairing introduction before asking for confirmation", async () => {
+    const remoteIdentity = await loadOrCreateIdentity(tempDir());
+    const local = await rig("Local");
+    const port = await start(local);
+    local.service.beginPairing();
+    const remote = await connectWithIdentity(port, remoteIdentity);
+
+    remote.write(encodeFrame({
+      t: "pair-introduce-v2",
+      v: 3,
+      name: "PromptBranch 0.5.0",
+    }));
+
+    await vi.waitFor(() => expect(remote.destroyed).toBe(true));
+    expect(local.confirm.state.decisions).toEqual([]);
+    expect(local.engine.getSyncPeer(remoteIdentity.fingerprint)).toBeNull();
+  });
   it("fully closes a live session before stop returns", async () => {
     const remoteIdentity = await loadOrCreateIdentity(tempDir());
     const controlled = controlledTlsSocket(remoteIdentity.fingerprint);
@@ -605,11 +637,19 @@ describe("peer service over real TLS (loopback)", () => {
     let second: tls.TLSSocket | null = null;
 
     try {
-      first.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "First owner" }));
+      first.write(encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "First owner",
+      }));
       await vi.waitFor(() => expect(requests).toHaveLength(1));
 
       second = await connectWithIdentity(port, remoteIdentity);
-      second.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Duplicate" }));
+      second.write(encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "Duplicate",
+      }));
       await vi.waitFor(() => expect(second?.destroyed).toBe(true));
       expect(requests).toEqual([
         { fingerprint: remoteIdentity.fingerprint, name: "First owner" },
@@ -644,7 +684,11 @@ describe("peer service over real TLS (loopback)", () => {
     local.service.beginPairing();
     const remote = await connectWithIdentity(port, remoteIdentity);
 
-    remote.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
+    remote.write(encodeFrame({
+      t: "pair-introduce-v2",
+      ...CURRENT_COMPATIBILITY,
+      name: "Remote",
+    }));
     await vi.waitFor(() => expect(signal).toBeDefined());
     remote.destroy();
     await once(remote, "close");
@@ -674,7 +718,11 @@ describe("peer service over real TLS (loopback)", () => {
       local.service.beginPairing();
       const remote = await connectWithIdentity(port, remoteIdentity);
 
-      remote.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
+      remote.write(encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "Remote",
+      }));
       await vi.waitFor(() => expect(signal).toBeDefined());
       if (action === "cancel") local.service.cancelPairing();
       else await local.service.stop();
@@ -1242,6 +1290,7 @@ describe("peer service over real TLS (loopback)", () => {
         derivePairingCode(fingerprint),
       ),
     ).toEqual({ ok: true });
+    injectCompatibleHello(sockets[0]!);
     sockets[0]!.inject(encodeFrame({ t: "flush" }));
 
     await local.service.stop();
@@ -1261,6 +1310,7 @@ describe("peer service over real TLS (loopback)", () => {
     });
     sockets[1]!.establish();
     await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("syncing"));
+    injectCompatibleHello(sockets[1]!);
     sockets[1]!.inject(encodeFrame({ t: "flush" }));
     expect(local.service.status().peers[0]?.state).toBe("steady");
 
@@ -1272,6 +1322,7 @@ describe("peer service over real TLS (loopback)", () => {
       "candidate-a.example.test",
     ]);
     await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("syncing"));
+    injectCompatibleHello(sockets[2]!);
     sockets[2]!.inject(encodeFrame({ t: "flush" }));
     expect(local.service.status().peers[0]?.state).toBe("steady");
     expect(local.engine.getSyncPeer(fingerprint)?.address).toBe("vpn.example.test:52100");
@@ -1299,6 +1350,7 @@ describe("peer service over real TLS (loopback)", () => {
 
     expect(await local.service.pairWithCode("vpn-one.example.test", 52_100, code))
       .toEqual({ ok: true });
+    injectCompatibleHello(sockets[0]!);
     sockets[0]!.inject(encodeFrame({ t: "flush" }));
     expect(local.service.status().peers[0]?.state).toBe("steady");
 
@@ -1312,6 +1364,7 @@ describe("peer service over real TLS (loopback)", () => {
     });
     await vi.waitFor(() => expect(sockets).toHaveLength(2));
     await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("syncing"));
+    injectCompatibleHello(sockets[1]!);
     sockets[1]!.inject(encodeFrame({ t: "flush" }));
     expect(local.service.status().peers[0]?.state).toBe("steady");
 
@@ -1326,6 +1379,7 @@ describe("peer service over real TLS (loopback)", () => {
     await local.service.start();
     await vi.waitFor(() => expect(sockets).toHaveLength(3));
     await vi.waitFor(() => expect(local.service.status().peers[0]?.state).toBe("syncing"));
+    injectCompatibleHello(sockets[2]!);
     sockets[2]!.inject(encodeFrame({ t: "flush" }));
     sockets[1]!.inject(encodeFrame({ t: "flush" }));
 
@@ -1854,7 +1908,11 @@ describe("peer service over real TLS (loopback)", () => {
       const remoteIdentity = await loadOrCreateIdentity(tempDir());
       local.service.beginPairing();
       remoteSocket = await connectWithIdentity(port, remoteIdentity);
-      remoteSocket.write(encodeFrame({ t: "pair-introduce-v2", v: PROTOCOL_VERSION, name: "Remote" }));
+      remoteSocket.write(encodeFrame({
+        t: "pair-introduce-v2",
+        ...CURRENT_COMPATIBILITY,
+        name: "Remote",
+      }));
       await confirmationStarted;
 
       await advanceLiveClock(clock, 50, 10);
@@ -2016,6 +2074,7 @@ describe("peer service over real TLS (loopback)", () => {
       clock.value += 1_000;
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.waitFor(() => expect(sockets).toHaveLength(4));
+      injectCompatibleHello(sockets[3]!);
       sockets[3]!.inject(encodeFrame({ t: "flush" }));
       expect(local.service.status().peers[0]?.state).toBe("steady");
       expect(local.service.status().peers[0]?.unhealthy).toBe(false);

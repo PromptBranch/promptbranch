@@ -62,6 +62,40 @@ function manyVersions() {
 }
 
 describe("incremental search maintenance", () => {
+  it.each(["version", "prompt"])(
+    "reconciles a sparse legacy rewrite when allocating a new %s row",
+    (operation) => {
+      const prompt = lib.createPrompt({ title: "Sparse owner", content: "firstcontent" });
+      const branch = lib.listBranches(prompt.id)[0]!;
+      const removed = lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "removed" });
+      const current = lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "lastcontent" });
+      lib.deleteVersion(removed.id);
+      expect(searchRows().map((row) => row.rowid)).toEqual([1, 2, 4]);
+      const legacyRows = searchRows();
+      db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(prompt.id);
+      for (const row of legacyRows) {
+        db.prepare(`INSERT INTO search_index
+          (prompt_id, version_id, title, description, tags, notes, content)
+          VALUES (?, ?, ?, '', '', '', ?)`)
+          .run(prompt.id, row.version_id, row.version_id === null ? "Sparse owner" : "", row.content);
+      }
+      expect(searchRows().map((row) => row.rowid)).toEqual([1, 2, 3]);
+      expect(db.prepare("SELECT rowid FROM search_index_rows ORDER BY rowid").all())
+        .toEqual([{ rowid: 1 }, { rowid: 2 }, { rowid: 4 }]);
+      const before = searchRows();
+      if (operation === "version") {
+        const saved = lib.createVersion({ promptId: prompt.id, branchId: branch.id, content: "newcontent" });
+        expect(lib.search("newcontent").map((hit) => hit.versionId)).toEqual([saved.id]);
+      } else {
+        const added = lib.createPrompt({ title: "Another owner", content: "othercontent" });
+        expect(lib.search("othercontent").map((hit) => hit.promptId)).toEqual([added.id]);
+        expect(searchRows().filter((row) => row.prompt_id === prompt.id)).toEqual(before);
+      }
+      expect(lib.search("lastcontent").map((hit) => hit.versionId)).toEqual([current.id]);
+      expectConsistentSearch();
+    },
+  );
+
   it.each(["metadata", "version", "new version", "hard delete"])(
     "repairs a legacy FTS rewrite before a new-client %s mutation",
     (operation) => {

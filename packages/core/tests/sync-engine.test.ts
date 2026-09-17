@@ -380,6 +380,67 @@ describe("sync engine", () => {
     }
   });
 
+  it.each(["version", "prompt"] as const)(
+    "recovers sparse legacy FTS mappings before a remote new %s allocates an occupied mapping rowid",
+    (kind) => {
+      const a = rig();
+      const b = rig();
+      try {
+        const untouched = a.lib.createPrompt({ title: "Untouched", content: "untouchedword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const untouchedRows = searchRows(b, untouched.id);
+        const prompt = a.lib.createPrompt({ title: "Legacy owner", content: "originalword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const branchId = a.lib.listBranches(prompt.id)[0]!.id;
+        const removed = a.lib.createVersion({ promptId: prompt.id, branchId, content: "removedword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        const surviving = a.lib.createVersion({ promptId: prompt.id, branchId, content: "survivingword" });
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+        a.lib.deleteVersion(removed.id);
+        a.engine.refineDirty();
+        drain(a.engine, b.engine);
+
+        const beforeRewrite = searchRows(b, prompt.id);
+        expect(beforeRewrite.map((row) => row.rowid)).toEqual([3, 4, 6]);
+        // Released shared-DB clients rebuild only FTS, unaware of the v15 map.
+        // The metadata row keeps its rowid while the last version fills the gap.
+        b.db.transaction(() => {
+          b.db.prepare("DELETE FROM search_index WHERE prompt_id = ?").run(prompt.id);
+          const insert = b.db.prepare(`INSERT INTO search_index
+            (prompt_id, version_id, title, description, tags, notes, content)
+            VALUES (?, ?, ?, '', ?, ?, ?)`);
+          for (const row of beforeRewrite) {
+            insert.run(prompt.id, row.version_id, row.version_id === null ? prompt.title : "",
+              row.tags, row.notes, row.content);
+          }
+        })();
+        expect(searchRows(b, prompt.id).map((row) => row.rowid)).toEqual([3, 4, 5]);
+        expect(b.db.prepare("SELECT rowid FROM search_index_rows WHERE prompt_id = ? ORDER BY rowid")
+          .all(prompt.id)).toEqual([{ rowid: 3 }, { rowid: 4 }, { rowid: 6 }]);
+
+        const incomingVersion = kind === "version"
+          ? a.lib.createVersion({ promptId: prompt.id, branchId, content: "incomingword" }).id
+          : a.lib.createPrompt({ title: "Incoming prompt", content: "incomingword" }).current_version_id!;
+        a.engine.refineDirty();
+        const { ops } = a.engine.opsSince(b.engine.haveVector());
+        expect(() => b.engine.applyRemote(ops)).not.toThrow();
+        expect(searchRows(b, untouched.id)).toEqual(untouchedRows);
+        expect(b.db.prepare("SELECT content FROM search_index WHERE version_id = ?").get(surviving.id))
+          .toEqual({ content: "survivingword" });
+        expect(b.db.prepare("SELECT content FROM search_index WHERE version_id = ?").get(incomingVersion))
+          .toEqual({ content: "incomingword" });
+        expectSearchMappingsConsistent(b);
+      } finally {
+        a.db.close();
+        b.db.close();
+      }
+    },
+  );
+
   it.each(["tags", "collections"] as const)("uses the bound natural-name index for %s", (table) => {
     const r = rig();
     const observed = observeHistoryQueries(r);

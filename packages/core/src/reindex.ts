@@ -57,6 +57,29 @@ function discardPromptSearchIndex(db: BetterSqlite3.Database, promptId: string):
   }
 }
 
+// A legacy full rewrite can compact FTS rowids while leaving the metadata
+// anchor unchanged. On allocation collision, reconstruct only affected owners'
+// mappings from actual FTS rows, including the just-inserted row. FTS stays
+// unchanged during this pass, so each displaced owner needs processing once.
+function reconcileAllocatedRowMappings(db: BetterSqlite3.Database, promptIds: string[]): void {
+  const owners = new Set(promptIds);
+  const readRows = db.prepare("SELECT rowid, prompt_id, version_id FROM search_index WHERE prompt_id = ?");
+  const readOwner = db.prepare("SELECT prompt_id FROM search_index_rows WHERE rowid = ?");
+  const clearOwner = db.prepare("DELETE FROM search_index_rows WHERE prompt_id = ?");
+  const mapRow = db.prepare(`INSERT INTO search_index_rows (rowid, prompt_id, version_id)
+    VALUES (?, ?, ?) ON CONFLICT(rowid) DO UPDATE
+    SET prompt_id = excluded.prompt_id, version_id = excluded.version_id`);
+  for (const promptId of owners) {
+    const rows = readRows.all(promptId) as MappedSearchRow[];
+    for (const row of rows) {
+      const displaced = readOwner.get(row.rowid) as { prompt_id: string } | undefined;
+      if (displaced && displaced.prompt_id !== promptId) owners.add(displaced.prompt_id);
+    }
+    clearOwner.run(promptId);
+    for (const row of rows) mapRow.run(row.rowid, row.prompt_id, row.version_id);
+  }
+}
+
 function writeRow(
   db: BetterSqlite3.Database,
   table: string,
@@ -83,6 +106,12 @@ function writeRow(
     (prompt_id, version_id, title, description, tags, notes, content)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(promptId, versionId, title, description, tags, notes, content);
   if (table === "search_index_rows") {
+    const previous = db.prepare("SELECT prompt_id FROM search_index_rows WHERE rowid = ?")
+      .get(inserted.lastInsertRowid) as { prompt_id: string } | undefined;
+    if (previous) {
+      reconcileAllocatedRowMappings(db, [previous.prompt_id, promptId]);
+      return;
+    }
     db.prepare("INSERT INTO search_index_rows (rowid, prompt_id, version_id) VALUES (?, ?, ?)")
       .run(inserted.lastInsertRowid, promptId, versionId);
   }

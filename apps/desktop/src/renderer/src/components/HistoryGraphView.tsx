@@ -310,6 +310,7 @@ export function HistoryGraphView({
           edges={edges}
           nodeTypes={historyNodeTypes}
           className="pb-history-flow"
+          proOptions={{ hideAttribution: true }}
           fitView
           fitViewOptions={{ padding: 0.18, minZoom: 0.45, maxZoom: 1.15 }}
           minZoom={0.35}

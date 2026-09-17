@@ -212,7 +212,7 @@ it("wires labeled zoom and fit controls and disables node editing", async () => 
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-nodes-draggable", "false");
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-nodes-connectable", "false");
   expect(screen.getByTestId("react-flow")).toHaveAttribute("data-pan-on-drag", "true");
-  expect(screen.getByTestId("react-flow")).toHaveAttribute("data-hide-attribution", "false");
+  expect(screen.getByTestId("react-flow")).toHaveAttribute("data-hide-attribution", "true");
 
   await user.click(screen.getByRole("button", { name: "Zoom in" }));
   await user.click(screen.getByRole("button", { name: "Zoom out" }));

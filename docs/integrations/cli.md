@@ -182,16 +182,34 @@ promptbranch publish <name-or-id> \
   [--full-history] \
   [--description "..."] \
   [--portal <portal_url>] \
+  [--preview | --yes] \
   [--json]
 ```
 
-#### Example
+Run `--preview` first to print the exact payload and secret-scan findings. It
+does not publish, make a portal request, create a shared-snapshot record, or
+save a delete token.
+
+In a terminal, `publish` displays the review and asks `Publish this snapshot?
+[y/N]`. Only `y` or `yes` publishes; every other response cancels. For a
+non-interactive command, use `--yes` only after the caller has reviewed the
+payload and findings. It records deliberate non-interactive caller intent; it
+does not make an unrestricted shell agent safe. `--json` changes output
+formatting only and never authorizes publishing by itself.
+
+High-severity findings always block publishing. Medium-severity findings are
+shown and require the terminal decision or a deliberate `--yes` decision.
+
+#### Examples
 ```bash
-promptbranch publish "sql-injection-audit" --full-history
-# Output:
-# Published "sql-injection-audit": https://promptbranch.app/p/V1StGXR8_Z5jdHi6B-myT
-# Delete token (shown once, also stored locally): 4F7a9b...
+promptbranch publish "security-audit" --preview
+promptbranch publish "security-audit" --full-history
+promptbranch publish "security-audit" --full-history --yes --json
 ```
+
+Use the desktop Share dialog for the fully visual human workflow. MCP
+intentionally has no publish tool, so it remains the safer surface for agents
+that must not publish.
 
 ---
 

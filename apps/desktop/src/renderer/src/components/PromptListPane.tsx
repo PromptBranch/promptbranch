@@ -416,6 +416,17 @@ export function PromptListPane({
     }
   };
 
+  const copyPromptName = async (prompt: PromptSummary) => {
+    setContextMenu(null);
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(prompt.title);
+      toast("Prompt name copied");
+    } catch {
+      toast("Unable to copy prompt name", "error");
+    }
+  };
+
   const loadDuplicateSource = async (
     summary: PromptSummary,
     useSource: (target: DuplicateSourceTarget) => void,
@@ -604,7 +615,7 @@ export function PromptListPane({
             left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 264)),
             top: Math.max(
               8,
-              Math.min(contextMenu.y, window.innerHeight - (view.kind === "trash" ? 88 : 304)),
+              Math.min(contextMenu.y, window.innerHeight - (view.kind === "trash" ? 124 : 340)),
             ),
           }}
         >
@@ -618,6 +629,11 @@ export function PromptListPane({
                   restore.mutate(contextMenu.prompt.id);
                   setContextMenu(null);
                 }}
+              />
+              <PromptMenuItem
+                icon={<Copy size={13} />}
+                label="Copy prompt name"
+                onClick={() => void copyPromptName(contextMenu.prompt)}
               />
               <div className="my-1 h-px bg-line" />
               <PromptMenuItem
@@ -643,6 +659,11 @@ export function PromptListPane({
                   });
                   setContextMenu(null);
                 }}
+              />
+              <PromptMenuItem
+                icon={<Copy size={13} />}
+                label="Copy prompt name"
+                onClick={() => void copyPromptName(contextMenu.prompt)}
               />
               <PromptMenuItem
                 icon={<Pencil size={13} />}

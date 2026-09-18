@@ -39,6 +39,7 @@ Usage:
   promptbranch report-run --prompt <name-or-id> [--version-id id | --version n] [--tool t] [--model m] [--outcome 1-5] [--summary "..."]
   promptbranch add-note --prompt <name-or-id> --body "..." [--version-id id]
   promptbranch suggest --prompt <name-or-id> (--file path | --content "...") [--rationale "..."] [--base-version-id id | --base-version n]
+    The caller supplies the complete rewritten content; suggest does not generate text.
   promptbranch suggestions
   promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>] [--preview | --yes]
   promptbranch import <url-or-id> [--portal <base-url>]
@@ -375,7 +376,12 @@ async function main(argv: string[]): Promise<void> {
     case "suggest": {
       const { values } = parseArgs({ args: rest, options: SUGGEST_OPTS, strict: true });
       const prompt = resolvePrompt(lib, required(values.prompt, "prompt"));
-      if ((values.file !== undefined) === (values.content !== undefined)) {
+      if (values.file === undefined && values.content === undefined) {
+        throw new CliError(
+          "suggest requires --file or --content with the complete rewritten prompt; it does not generate text.",
+        );
+      }
+      if (values.file !== undefined && values.content !== undefined) {
         throw new CliError("suggest requires exactly one of --file or --content");
       }
       let newContent: string;

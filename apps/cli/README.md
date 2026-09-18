@@ -56,8 +56,9 @@ harnesses:
 
 - `list`, `search`, and `get` browse the local prompt library.
 - `report-run` records the tool, model, outcome rating (1–5), and summary.
-- `suggest` proposes a variation as **pending**; a human approves it in the
-  desktop app before it can become current.
+- `suggest` submits caller-provided rewritten content as a **pending**
+  variation; it does not generate text. A human approves it in the desktop
+  app before it can become current.
 - `suggestions` lists the pending review queue.
 
 Prompt references resolve by id or title (exact, case-insensitive, or unique

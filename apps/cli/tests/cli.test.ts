@@ -249,6 +249,20 @@ describe("promptbranch cli", () => {
     afterDb.close();
   });
 
+  it("explains that suggest stores caller-provided content without writing a suggestion", () => {
+    const { db: beforeDb } = openDatabase(dbPath);
+    const before = new PromptLibrary(beforeDb).listSuggestions().length;
+    beforeDb.close();
+
+    const result = run(["suggest", "--prompt", "Code review"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/does not generate text/i);
+
+    const { db: afterDb } = openDatabase(dbPath);
+    expect(new PromptLibrary(afterDb).listSuggestions()).toHaveLength(before);
+    afterDb.close();
+  });
+
   it("fails cleanly with non-zero exit on unknown prompt and unknown command", () => {
     const missing = run(["get", "no-such-prompt"]);
     expect(missing.status).toBe(1);
@@ -263,5 +277,6 @@ describe("promptbranch cli", () => {
     const result = run(["help"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("promptbranch suggest");
+    expect(result.stdout).toMatch(/does not generate text/i);
   });
 });

@@ -144,9 +144,13 @@ promptbranch add-note --prompt <name-or-id> --body "..." [--version-id <id>] [--
 ---
 
 ### 6. `promptbranch suggest`
-Proposes an improved variation of a prompt. The suggestion is created as **`pending`** awaiting human approval in the desktop app.
+Submits caller-provided rewritten content as a variation of a prompt. It does
+not generate text: write the complete revision yourself or have an agent create
+it first. The suggestion is created as **`pending`** awaiting human approval in
+the desktop app.
 
-Supply exactly one content source: `--file` or `--content`.
+Supply exactly one content source: `--file` or `--content`. For a multi-line
+revision, use `--file`.
 
 ```bash
 promptbranch suggest --prompt <name-or-id> \
@@ -159,7 +163,7 @@ promptbranch suggest --prompt <name-or-id> \
 #### Example
 ```bash
 promptbranch suggest --prompt "sql-injection-audit" \
-  --file ./improved-prompt.md \
+  --file ./sql-injection-audit-revision.md \
   --rationale "Refined instructions to reduce false positives"
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/cli",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "license": "MIT",
   "type": "module",
   "description": "Local-first CLI for versioning, searching, evaluating, and sharing AI prompts in shell pipelines and coding-agent workflows.",
@@ -44,7 +44,8 @@
   },
   "scripts": {
     "build": "node ../../scripts/clean-package-output.mjs && tsc -p tsconfig.json --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
-    "prepack": "pnpm build",
+    "prepack": "node ../../scripts/require-pnpm-publish.mjs && pnpm build",
+    "prepublishOnly": "node ../../scripts/require-pnpm-publish.mjs",
     "test": "pnpm build && vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

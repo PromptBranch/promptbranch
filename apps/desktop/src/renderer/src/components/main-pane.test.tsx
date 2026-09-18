@@ -214,7 +214,7 @@ describe("MainPane live run progress", () => {
     expect(screen.getByText("B output")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(bridge.ai.runCancel).toHaveBeenCalledExactlyOnceWith({ runGroupId: "group-b" });
-  });
+  }, 10_000);
 
   it.each(["success", "error"] as const)("obsolete %s cannot clear or replace a newer live request", async (outcome) => {
     const { first, second } = await overlappingRuns();

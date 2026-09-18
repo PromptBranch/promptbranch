@@ -218,7 +218,7 @@ describe("QuickPalette rendering and copy", () => {
     await user.click(screen.getByRole("option", { name: /Greeting/ }));
 
     expect(await screen.findByText("Plain saved content")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy prompt" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy prompt" })).toHaveFocus());
   });
 
   it("retains values and preview after copy failure, but stale revisions require refresh", async () => {

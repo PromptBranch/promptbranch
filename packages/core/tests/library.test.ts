@@ -583,13 +583,16 @@ describe("versions", () => {
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-    const helperExit = waitForSuccessfulExit(helper, 2_500);
+    // SQLite waits up to 3 seconds for a writer. The synchronous wait blocks
+    // this process's event loop, so allow the helper's release output to be
+    // delivered after that contention window rather than racing the timeout.
+    const helperExit = waitForSuccessfulExit(helper, 5_000);
     const helperClosed = observeExit(helper);
     let helperReleased: Promise<void> | null = null;
 
     try {
-      await waitForOutput(helper, "locked", 2_000);
-      helperReleased = waitForOutput(helper, "released", 2_500);
+      await waitForOutput(helper, "locked", 5_000);
+      helperReleased = waitForOutput(helper, "released", 5_000);
       let transactionMode: "deferred" | "immediate" | null = null;
       let releaseSent = false;
       const releaseWriter = (): void => {
@@ -701,7 +704,7 @@ describe("versions", () => {
       diskDatabase.close();
       fs.rmSync(scratchDirectory, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it("appends from an explicit historical base without changing the preferred version", () => {
     const prompt = lib.createPrompt({ title: "P", content: "v1" });

@@ -6,6 +6,16 @@ notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the public MCP and CLI packages installable from npm by requiring pnpm's
+  workspace-aware publication path.
+
+### Packages
+
+- `@promptbranch/cli` 0.2.7
+- `@promptbranch/mcp` 0.2.9
+
 ## [0.7.0] - 2026-09-17
 
 ### Fixed

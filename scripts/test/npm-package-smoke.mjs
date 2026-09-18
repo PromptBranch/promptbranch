@@ -146,6 +146,20 @@ try {
   );
   packageManager("npm", ["install", "--no-audit", "--no-fund"], { cwd: consumerDir });
 
+  for (const packageName of Object.keys(tarballs)) {
+    const installedManifest = JSON.parse(
+      fs.readFileSync(path.join(consumerDir, "node_modules", packageName, "package.json"), "utf8"),
+    );
+    for (const dependencyKind of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+      for (const [dependencyName, dependencyRange] of Object.entries(installedManifest[dependencyKind] ?? {})) {
+        assert(
+          typeof dependencyRange !== "string" || !dependencyRange.startsWith("workspace:"),
+          `${packageName} contains an unpublished workspace ${dependencyKind} entry ${dependencyName}: ${dependencyRange}`,
+        );
+      }
+    }
+  }
+
   const require = createRequire(path.join(consumerDir, "package.json"));
   const sqliteManifestPath = require.resolve("better-sqlite3/package.json");
   const sqliteRoot = path.dirname(sqliteManifestPath);

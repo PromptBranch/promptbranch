@@ -1,6 +1,6 @@
 {
   "name": "@promptbranch/mcp",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "mcpName": "io.github.PromptBranch/promptbranch",
   "license": "MIT",
   "type": "module",
@@ -46,7 +46,8 @@
   },
   "scripts": {
     "build": "node ../../scripts/clean-package-output.mjs && tsc -p tsconfig.json --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
-    "prepack": "pnpm build",
+    "prepack": "node ../../scripts/require-pnpm-publish.mjs && pnpm build",
+    "prepublishOnly": "node ../../scripts/require-pnpm-publish.mjs",
     "test": "pnpm build && vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

@@ -163,6 +163,10 @@ Quality gates and CI (`.github/workflows/`):
 - GitHub Actions never creates branches, publishes npm packages, builds
   installers, creates tags, or creates GitHub Releases. Releases are manual;
   follow `docs-internal/RELEASING.md`.
+- Public workspace entry points (`apps/cli` and `packages/mcp`) must be
+  published with pnpm. Their `workspace:*` dependencies are rewritten only by
+  pnpm's pack/publish path; source-directory `npm pack`/`npm publish` is
+  guarded and must not be used.
 
 ## Commit message convention
 

@@ -144,9 +144,13 @@ promptbranch add-note --prompt <name-or-id> --body "..." [--version-id <id>] [--
 ---
 
 ### 6. `promptbranch suggest`
-Proposes an improved variation of a prompt. The suggestion is created as **`pending`** awaiting human approval in the desktop app.
+Submits caller-provided rewritten content as a variation of a prompt. It does
+not generate text: write the complete revision yourself or have an agent create
+it first. The suggestion is created as **`pending`** awaiting human approval in
+the desktop app.
 
-Supply exactly one content source: `--file` or `--content`.
+Supply exactly one content source: `--file` or `--content`. For a multi-line
+revision, use `--file`.
 
 ```bash
 promptbranch suggest --prompt <name-or-id> \
@@ -159,7 +163,7 @@ promptbranch suggest --prompt <name-or-id> \
 #### Example
 ```bash
 promptbranch suggest --prompt "sql-injection-audit" \
-  --file ./improved-prompt.md \
+  --file ./sql-injection-audit-revision.md \
   --rationale "Refined instructions to reduce false positives"
 ```
 
@@ -182,16 +186,34 @@ promptbranch publish <name-or-id> \
   [--full-history] \
   [--description "..."] \
   [--portal <portal_url>] \
+  [--preview | --yes] \
   [--json]
 ```
 
-#### Example
+Run `--preview` first to print the exact payload and secret-scan findings. It
+does not publish, make a portal request, create a shared-snapshot record, or
+save a delete token.
+
+In a terminal, `publish` displays the review and asks `Publish this snapshot?
+[y/N]`. Only `y` or `yes` publishes; every other response cancels. For a
+non-interactive command, use `--yes` only after the caller has reviewed the
+payload and findings. It records deliberate non-interactive caller intent; it
+does not make an unrestricted shell agent safe. `--json` changes output
+formatting only and never authorizes publishing by itself.
+
+High-severity findings always block publishing. Medium-severity findings are
+shown and require the terminal decision or a deliberate `--yes` decision.
+
+#### Examples
 ```bash
-promptbranch publish "sql-injection-audit" --full-history
-# Output:
-# Published "sql-injection-audit": https://promptbranch.app/p/V1StGXR8_Z5jdHi6B-myT
-# Delete token (shown once, also stored locally): 4F7a9b...
+promptbranch publish "security-audit" --preview
+promptbranch publish "security-audit" --full-history
+promptbranch publish "security-audit" --full-history --yes --json
 ```
+
+Use the desktop Share dialog for the fully visual human workflow. MCP
+intentionally has no publish tool, so it remains the safer surface for agents
+that must not publish.
 
 ---
 

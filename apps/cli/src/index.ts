@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import packageJson from "../package.json" with { type: "json" };
+import { runConfirmedPublish } from "./publish-confirmation.js";
 import {
   openDatabase,
   PromptLibrary,
@@ -37,8 +39,9 @@ Usage:
   promptbranch report-run --prompt <name-or-id> [--version-id id | --version n] [--tool t] [--model m] [--outcome 1-5] [--summary "..."]
   promptbranch add-note --prompt <name-or-id> --body "..." [--version-id id]
   promptbranch suggest --prompt <name-or-id> (--file path | --content "...") [--rationale "..."] [--base-version-id id | --base-version n]
+    The caller supplies the complete rewritten content; suggest does not generate text.
   promptbranch suggestions
-  promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>]
+  promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>] [--preview | --yes]
   promptbranch import <url-or-id> [--portal <base-url>]
   promptbranch db-path
 
@@ -110,6 +113,55 @@ function out(json: boolean, data: unknown, human: () => void): void {
   }
 }
 
+function isInteractivePublishTerminal(): boolean {
+  return process.stdin.isTTY === true && process.stderr.isTTY === true;
+}
+
+async function askForPublishConfirmation(): Promise<string> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await readline.question("Publish this snapshot? [y/N] ");
+  } finally {
+    readline.close();
+  }
+}
+
+function writeSecretScanFindings(
+  write: (message: string) => void,
+  findings: ReturnType<typeof scanForSecrets>,
+): void {
+  if (findings.length === 0) {
+    write("Secret scan findings: none.\n");
+    return;
+  }
+  write("Secret scan findings:\n");
+  for (const finding of findings) {
+    write(`  line ${finding.line}: ${finding.severity} ${finding.rule} — ${finding.match}\n`);
+  }
+}
+
+function writePublishReview(base: string, payload: unknown, findings: ReturnType<typeof scanForSecrets>): void {
+  process.stderr.write(`Reviewing publish to ${base}\n`);
+  process.stderr.write("Any holder of the resulting link can view this snapshot.\n");
+  process.stderr.write(`${JSON.stringify(payload, null, 2)}\n`);
+  writeSecretScanFindings((message) => process.stderr.write(message), findings);
+}
+
+function writePublishPreview(
+  title: string,
+  blocked: boolean,
+  base: string,
+  payload: unknown,
+  findings: ReturnType<typeof scanForSecrets>,
+): void {
+  process.stdout.write(
+    blocked ? `Preview blocked for "${title}" by high-severity findings.\n` : `Preview for "${title}".\n`,
+  );
+  process.stdout.write(`Destination: ${base}\n`);
+  process.stdout.write(`Payload:\n${JSON.stringify(payload, null, 2)}\n`);
+  writeSecretScanFindings((message) => process.stdout.write(message), findings);
+}
+
 function parseIntFlag(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
   const n = Number(value);
@@ -169,6 +221,8 @@ const PUBLISH_OPTS = {
   "full-history": { type: "boolean" },
   description: { type: "string" },
   portal: { type: "string" },
+  preview: { type: "boolean" },
+  yes: { type: "boolean" },
   json: { type: "boolean" },
 } as const;
 
@@ -322,7 +376,12 @@ async function main(argv: string[]): Promise<void> {
     case "suggest": {
       const { values } = parseArgs({ args: rest, options: SUGGEST_OPTS, strict: true });
       const prompt = resolvePrompt(lib, required(values.prompt, "prompt"));
-      if ((values.file !== undefined) === (values.content !== undefined)) {
+      if (values.file === undefined && values.content === undefined) {
+        throw new CliError(
+          "suggest requires --file or --content with the complete rewritten prompt; it does not generate text.",
+        );
+      }
+      if (values.file !== undefined && values.content !== undefined) {
         throw new CliError("suggest requires exactly one of --file or --content");
       }
       let newContent: string;
@@ -379,9 +438,14 @@ async function main(argv: string[]): Promise<void> {
 
     case "publish": {
       const { values, positionals } = parseArgs({ args: rest, options: PUBLISH_OPTS, strict: true, allowPositionals: true });
+      const previewOnly = values.preview ?? false;
+      const yes = values.yes ?? false;
+      if (previewOnly && yes) throw new CliError("--preview and --yes cannot be used together");
       const ref = positionals[0];
       if (!ref) {
-        throw new CliError('Usage: promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>]');
+        throw new CliError(
+          'Usage: promptbranch publish <name-or-id> [--full-history] [--description "..."] [--portal <base-url>] [--preview | --yes]',
+        );
       }
       const prompt = resolvePrompt(lib, ref);
       const current = resolveVersion(lib, prompt.id);
@@ -405,6 +469,21 @@ async function main(argv: string[]): Promise<void> {
       // Scan the exact payload (same JSON shape the portal receives).
       const findings = scanForSecrets(JSON.stringify(payload, null, 2));
       const high = findings.filter((f) => f.severity === "high");
+      const preview = {
+        ok: high.length === 0,
+        preview: true,
+        blocked: high.length > 0,
+        portalBaseUrl: base,
+        payload,
+        findings,
+      };
+      if (previewOnly) {
+        out(values.json ?? false, preview, () => {
+          writePublishPreview(prompt.title, high.length > 0, base, payload, findings);
+        });
+        if (high.length > 0) process.exitCode = 1;
+        return;
+      }
       if (high.length > 0) {
         if (values.json) {
           process.stdout.write(JSON.stringify({ ok: false, blocked: true, findings }, null, 2) + "\n");
@@ -414,37 +493,60 @@ async function main(argv: string[]): Promise<void> {
             process.stderr.write(`  line ${f.line}: ${f.rule} — ${f.match}\n`);
           }
         }
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
-      if (!values.json && findings.length > 0) {
-        process.stderr.write(`Warning: ${findings.length} medium-severity finding(s); publishing anyway.\n`);
+      if (yes && findings.length > 0) {
+        process.stderr.write(
+          `Warning: ${findings.length} medium-severity finding(s); proceeding because --yes was supplied.\n`,
+        );
+      } else if (!yes) {
+        writePublishReview(base, payload, findings);
       }
-      const result0 = await publishSnapshot(base, payload);
-      // Stale lineage (portal reset or parent purged): retry once unlinked.
-      // Any other 400 just fails again — dropping parentId can't fix it.
-      const result =
-        !result0.ok && result0.error.kind === "http" && result0.error.status === 400 && payload.parentId
-          ? await publishSnapshot(base, (({ parentId: _dropped, ...rest }) => rest)(payload))
-          : result0;
-      if (!result.ok) throw new CliError(describeShareError(result.error));
-      lib.recordSharedSnapshot({
-        snapshotId: result.value.id,
-        promptId: prompt.id,
-        portalBaseUrl: base,
-        url: result.value.url,
-        deleteToken: result.value.deleteToken,
-        fullHistory: includeHistory,
-        publishedAt: payload.publishedAt,
+      const approval = await runConfirmedPublish({
+        yes,
+        interactive: isInteractivePublishTerminal(),
+        ask: askForPublishConfirmation,
+        publish: async () => {
+          const result0 = await publishSnapshot(base, payload);
+          // Stale lineage (portal reset or parent purged): retry once unlinked.
+          // Any other 400 just fails again — dropping parentId can't fix it.
+          const result =
+            !result0.ok && result0.error.kind === "http" && result0.error.status === 400 && payload.parentId
+              ? await publishSnapshot(base, (({ parentId: _dropped, ...rest }) => rest)(payload))
+              : result0;
+          if (!result.ok) throw new CliError(describeShareError(result.error));
+          lib.recordSharedSnapshot({
+            snapshotId: result.value.id,
+            promptId: prompt.id,
+            portalBaseUrl: base,
+            url: result.value.url,
+            deleteToken: result.value.deleteToken,
+            fullHistory: includeHistory,
+            publishedAt: payload.publishedAt,
+          });
+          return result.value;
+        },
       });
+      if (approval.status === "requires-yes") {
+        throw new CliError(
+          "Publishing requires an interactive terminal. Use --preview to review the payload or re-run with --yes.",
+        );
+      }
+      if (approval.status === "declined") {
+        process.stderr.write("Publishing cancelled.\n");
+        process.exitCode = 1;
+        return;
+      }
       out(values.json ?? false, {
         ok: true,
-        id: result.value.id,
-        url: result.value.url,
-        deleteToken: result.value.deleteToken,
+        id: approval.value.id,
+        url: approval.value.url,
+        deleteToken: approval.value.deleteToken,
         findings,
       }, () => {
-        process.stdout.write(`Published "${prompt.title}": ${result.value.url}\n`);
-        process.stdout.write(`Delete token (shown once, also stored locally): ${result.value.deleteToken}\n`);
+        process.stdout.write(`Published "${prompt.title}": ${approval.value.url}\n`);
+        process.stdout.write(`Delete token (shown once, also stored locally): ${approval.value.deleteToken}\n`);
       });
       return;
     }

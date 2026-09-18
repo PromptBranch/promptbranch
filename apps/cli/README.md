@@ -56,8 +56,9 @@ harnesses:
 
 - `list`, `search`, and `get` browse the local prompt library.
 - `report-run` records the tool, model, outcome rating (1–5), and summary.
-- `suggest` proposes a variation as **pending**; a human approves it in the
-  desktop app before it can become current.
+- `suggest` submits caller-provided rewritten content as a **pending**
+  variation; it does not generate text. A human approves it in the desktop
+  app before it can become current.
 - `suggestions` lists the pending review queue.
 
 Prompt references resolve by id or title (exact, case-insensitive, or unique
@@ -66,18 +67,31 @@ for all commands and options.
 
 ## Sharing from the terminal
 
-Sharing is a human-only action; the MCP server has no equivalent publish or
-import tool.
+Sharing is a human-only action. Run `publish --preview` first to inspect the
+exact payload and secret-scan findings without publishing, making a request,
+or saving a share or delete token. A normal terminal publish then displays the
+review and asks `Publish this snapshot? [y/N]`; only `y` or `yes` publishes,
+and every other answer cancels.
 
 ```sh
+promptbranch publish "security-audit" --preview
 promptbranch publish "security-audit" --full-history
+promptbranch publish "security-audit" --full-history --yes --json
 promptbranch import https://promptbranch.app/p/<id>
 ```
 
-Before publishing, PromptBranch scans the snapshot for secrets. Imports create
-a new local prompt with its tags and provenance note; they do not recreate the
-remote version history. Use `--portal <base-url>` to override the sharing
-portal for one command.
+For a non-interactive command, pass `--yes` only after the caller's own review.
+It records deliberate non-interactive caller intent; it does not make an
+unrestricted shell agent safe. `--json` changes only the output format and
+never authorizes publishing on its own. High-severity findings always block;
+medium-severity findings are shown and need the terminal confirmation or a
+deliberate `--yes` decision.
+
+The desktop Share dialog is the fully visual human workflow. MCP intentionally
+has no publish tool, so it remains the safer surface for agents that must not
+publish. Imports create a new local prompt with its tags and provenance note;
+they do not recreate the remote version history. Use `--portal <base-url>` to
+override the sharing portal for one command.
 
 ## Environment
 

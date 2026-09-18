@@ -59,6 +59,29 @@ function run(args: string[]): Promise<{ stdout: string; stderr: string; status: 
   });
 }
 
+function runWithTerminal(
+  args: string[],
+  answer: string,
+  terminal: { stdin: boolean; stderr: boolean },
+): Promise<{ stdout: string; stderr: string; status: number }> {
+  const bootstrap = `Object.defineProperty(process.stdin, "isTTY", { value: ${terminal.stdin} });\nObject.defineProperty(process.stderr, "isTTY", { value: ${terminal.stderr} });`;
+  const preload = `data:text/javascript,${encodeURIComponent(bootstrap)}`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [`--import=${preload}`, CLI, ...args], {
+      env: { ...process.env, PROMPTBRANCH_DB: dbPath },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ stdout, stderr, status: code ?? 1 }));
+    child.stdin.end(answer);
+  });
+}
+
 function withLibrary<T>(fn: (lib: PromptLibrary) => T): T {
   const { db } = openDatabase(dbPath);
   try {
@@ -66,6 +89,18 @@ function withLibrary<T>(fn: (lib: PromptLibrary) => T): T {
   } finally {
     db.close();
   }
+}
+
+function publishState(): { requests: number; snapshots: number } {
+  return {
+    requests: publishRequests,
+    snapshots: withLibrary((lib) => lib.listSharedSnapshots()).length,
+  };
+}
+
+function expectNoPublishSideEffects(before: { requests: number; snapshots: number }): void {
+  expect(publishRequests).toBe(before.requests);
+  expect(withLibrary((lib) => lib.listSharedSnapshots())).toHaveLength(before.snapshots);
 }
 
 beforeAll(async () => {
@@ -177,7 +212,7 @@ afterAll(async () => {
 
 describe("promptbranch publish", () => {
   it("publishes the current version, prints URL + token, records the share", async () => {
-    const result = await run(["publish", "Code review", "--portal", portalBase, "--json"]);
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--yes", "--json"]);
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed).toMatchObject({
@@ -207,7 +242,15 @@ describe("promptbranch publish", () => {
   });
 
   it("--full-history sends the oldest-first branch history", async () => {
-    const result = await run(["publish", "Code review", "--full-history", "--portal", portalBase, "--json"]);
+    const result = await run([
+      "publish",
+      "Code review",
+      "--full-history",
+      "--portal",
+      portalBase,
+      "--yes",
+      "--json",
+    ]);
     expect(result.status).toBe(0);
     expect(lastPublished?.["history"]).toEqual([
       { version: 1, content: "Review this diff.", changeNote: "first" },
@@ -216,12 +259,12 @@ describe("promptbranch publish", () => {
   });
 
   it("blocks on high-severity findings before any request, exit 1", async () => {
-    const before = publishRequests;
+    const before = publishState();
     const result = await run(["publish", "Leaky", "--portal", portalBase]);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/blocked/i);
     expect(result.stderr).toMatch(/openai-api-key/);
-    expect(publishRequests).toBe(before);
+    expectNoPublishSideEffects(before);
 
     const json = await run(["publish", "Leaky", "--portal", portalBase, "--json"]);
     expect(json.status).toBe(1);
@@ -230,21 +273,150 @@ describe("promptbranch publish", () => {
     expect(parsed.findings.some((f: { rule: string }) => f.rule === "openai-api-key")).toBe(true);
   });
 
+  it("blocks high-severity findings even with --yes", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Leaky", "--portal", portalBase, "--yes", "--json"]);
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, blocked: true });
+    expectNoPublishSideEffects(before);
+  });
+
+  it("previews the exact current snapshot without publishing or recording it", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--preview", "--json"]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      preview: true,
+      blocked: false,
+      portalBaseUrl: portalBase,
+      payload: {
+        content: "Review this diff carefully.",
+        tags: ["review"],
+        appVersion: `promptbranch-cli/${CLI_PACKAGE_VERSION}`,
+      },
+      findings: [],
+    });
+    expectNoPublishSideEffects(before);
+  });
+
+  it("prints the destination and exact payload for a human preview without side effects", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--preview"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`Preview for "Code review".`);
+    expect(result.stdout).toContain(`Destination: ${portalBase}`);
+    expect(result.stdout).toContain('"content": "Review this diff carefully."');
+    expect(result.stdout).toContain('"tags": [\n    "review"\n  ]');
+    expect(result.stdout).toContain("Secret scan findings: none.");
+    expectNoPublishSideEffects(before);
+  });
+
+  it("requires --preview or --yes in the default non-TTY mode", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Publishing requires an interactive terminal. Use --preview to review the payload or re-run with --yes.",
+    );
+    expectNoPublishSideEffects(before);
+  });
+
+  it("reviews and cancels a declined interactive publish without side effects", async () => {
+    const before = publishState();
+    const result = await runWithTerminal(["publish", "Code review", "--portal", portalBase, "--json"], "no\n", {
+      stdin: true,
+      stderr: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`Reviewing publish to ${portalBase}`);
+    expect(result.stderr).toContain("Any holder of the resulting link can view this snapshot.");
+    expect(result.stderr).toContain("Publish this snapshot? [y/N] ");
+    expect(result.stderr).toContain("Publishing cancelled.");
+    expectNoPublishSideEffects(before);
+  });
+
+  it("requires both stdin and stderr to be TTYs before prompting", async () => {
+    const before = publishState();
+    const result = await runWithTerminal(["publish", "Code review", "--portal", portalBase], "no\n", {
+      stdin: true,
+      stderr: false,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Publishing requires an interactive terminal");
+    expect(result.stderr).not.toContain("Publish this snapshot? [y/N] ");
+    expectNoPublishSideEffects(before);
+  });
+
+  it("returns a blocked preview for high-severity findings without side effects", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Leaky", "--portal", portalBase, "--preview", "--json"]);
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      preview: true,
+      blocked: true,
+      portalBaseUrl: portalBase,
+      payload: { content: `key: sk-${"a".repeat(30)}` },
+    });
+    expectNoPublishSideEffects(before);
+  });
+
+  it("prints the blocked preview payload and scanner diagnostics for a human", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Leaky", "--portal", portalBase, "--preview"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('Preview blocked for "Leaky" by high-severity findings.');
+    expect(result.stdout).toContain(`Destination: ${portalBase}`);
+    expect(result.stdout).toContain(`"content": "key: sk-${"a".repeat(30)}"`);
+    expect(result.stdout).toContain("Secret scan findings:");
+    expect(result.stdout).toMatch(/high openai-api-key/);
+    expect(result.stdout).toContain(`sk-${"a".repeat(30)}`);
+    expectNoPublishSideEffects(before);
+  });
+
+  it("rejects --preview with --yes before any request", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--preview", "--yes"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--preview.*--yes|--yes.*--preview/);
+    expectNoPublishSideEffects(before);
+  });
+
   it("rejects a non-http(s) --portal URL before any request", async () => {
-    const before = publishRequests;
+    const before = publishState();
     const result = await run(["publish", "Code review", "--portal", "ftp://portal.example.com"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/http\(s\)/);
-    expect(publishRequests).toBe(before);
+    expectNoPublishSideEffects(before);
   });
 
-  it("warns for medium findings but still publishes", async () => {
-    const before = publishRequests;
+  it("does not publish medium findings by default in non-TTY mode", async () => {
+    const before = publishState();
     const result = await run(["publish", "Internal URL", "--portal", portalBase]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Publishing requires an interactive terminal");
+    expectNoPublishSideEffects(before);
+  });
+
+  it("warns for medium findings and publishes with --yes", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Internal URL", "--portal", portalBase, "--yes"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toMatch(/Warning: 1 medium-severity finding/);
     expect(result.stdout).toContain("Published");
-    expect(publishRequests).toBe(before + 1);
+    expect(publishRequests).toBe(before.requests + 1);
+    expect(withLibrary((lib) => lib.listSharedSnapshots())).toHaveLength(before.snapshots + 1);
   });
 
   it.each([
@@ -253,18 +425,18 @@ describe("promptbranch publish", () => {
     ["malformed", /unexpected response/i],
   ] as const)("reports %s portal failures without recording a share", async (mode, message) => {
     publishMode = mode;
-    const before = withLibrary((lib) => lib.listSharedSnapshots()).length;
-    const result = await run(["publish", "Code review", "--portal", portalBase]);
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--yes"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(message);
     expect(result.stderr).not.toMatch(/\n\s+at\s/);
-    expect(withLibrary((lib) => lib.listSharedSnapshots())).toHaveLength(before);
+    expect(withLibrary((lib) => lib.listSharedSnapshots())).toHaveLength(before.snapshots);
   });
 
   it("reports an oversized portal response without calling the snapshot too large", async () => {
     publishMode = "oversized";
 
-    const result = await run(["publish", "Code review", "--portal", portalBase]);
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--yes"]);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/portal response.*too large/i);
@@ -274,7 +446,7 @@ describe("promptbranch publish", () => {
   it("retries a stale parent once without lineage", async () => {
     publishMode = "stale-parent";
     const before = publishRequests;
-    const result = await run(["publish", "Code review", "--portal", portalBase, "--json"]);
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--yes", "--json"]);
     expect(result.status).toBe(0);
     expect(publishRequests).toBe(before + 2);
     expect(lastPublished).not.toHaveProperty("parentId");

@@ -59,6 +59,29 @@ function run(args: string[]): Promise<{ stdout: string; stderr: string; status: 
   });
 }
 
+function runWithTerminal(
+  args: string[],
+  answer: string,
+  terminal: { stdin: boolean; stderr: boolean },
+): Promise<{ stdout: string; stderr: string; status: number }> {
+  const bootstrap = `Object.defineProperty(process.stdin, "isTTY", { value: ${terminal.stdin} });\nObject.defineProperty(process.stderr, "isTTY", { value: ${terminal.stderr} });`;
+  const preload = `data:text/javascript,${encodeURIComponent(bootstrap)}`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [`--import=${preload}`, CLI, ...args], {
+      env: { ...process.env, PROMPTBRANCH_DB: dbPath },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ stdout, stderr, status: code ?? 1 }));
+    child.stdin.end(answer);
+  });
+}
+
 function withLibrary<T>(fn: (lib: PromptLibrary) => T): T {
   const { db } = openDatabase(dbPath);
   try {
@@ -250,6 +273,15 @@ describe("promptbranch publish", () => {
     expect(parsed.findings.some((f: { rule: string }) => f.rule === "openai-api-key")).toBe(true);
   });
 
+  it("blocks high-severity findings even with --yes", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Leaky", "--portal", portalBase, "--yes", "--json"]);
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, blocked: true });
+    expectNoPublishSideEffects(before);
+  });
+
   it("previews the exact current snapshot without publishing or recording it", async () => {
     const before = publishState();
     const result = await run(["publish", "Code review", "--portal", portalBase, "--preview", "--json"]);
@@ -278,6 +310,35 @@ describe("promptbranch publish", () => {
     expect(result.stderr).toContain(
       "Publishing requires an interactive terminal. Use --preview to review the payload or re-run with --yes.",
     );
+    expectNoPublishSideEffects(before);
+  });
+
+  it("reviews and cancels a declined interactive publish without side effects", async () => {
+    const before = publishState();
+    const result = await runWithTerminal(["publish", "Code review", "--portal", portalBase, "--json"], "no\n", {
+      stdin: true,
+      stderr: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`Reviewing publish to ${portalBase}`);
+    expect(result.stderr).toContain("Any holder of the resulting link can view this snapshot.");
+    expect(result.stderr).toContain("Publish this snapshot? [y/N] ");
+    expect(result.stderr).toContain("Publishing cancelled.");
+    expectNoPublishSideEffects(before);
+  });
+
+  it("requires both stdin and stderr to be TTYs before prompting", async () => {
+    const before = publishState();
+    const result = await runWithTerminal(["publish", "Code review", "--portal", portalBase], "no\n", {
+      stdin: true,
+      stderr: false,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Publishing requires an interactive terminal");
+    expect(result.stderr).not.toContain("Publish this snapshot? [y/N] ");
     expectNoPublishSideEffects(before);
   });
 

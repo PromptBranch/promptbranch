@@ -2,7 +2,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppView } from "../state/app-state";
 import { useAppState } from "../state/app-state";
 import type { PromptDetail, PromptSummary, VersionContentDto } from "../../../shared/ipc.js";
@@ -92,6 +92,14 @@ async function openPromptMenu(user: ReturnType<typeof userEvent.setup>, title = 
 }
 
 let bridge: MockBridge;
+const originalClipboard = navigator.clipboard;
+
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+});
 
 beforeEach(() => {
   bridge = installMockBridge();
@@ -108,6 +116,23 @@ beforeEach(() => {
 });
 
 describe("PromptListPane context menu", () => {
+  it("copies the right-clicked prompt name", async () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    renderApp(<PaneInView view={{ kind: "library" }} />);
+
+    const menu = await openPromptMenu(user);
+    await user.click(menu.getByRole("menuitem", { name: "Copy prompt name" }));
+
+    expect(clipboardWriteText).toHaveBeenCalledWith(beta.title);
+    expect(screen.queryByRole("menu", { name: `${beta.title} actions` })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("Prompt name copied");
+  });
+
   it("applies an action to the right-clicked prompt", async () => {
     const user = userEvent.setup();
     renderApp(<PaneInView view={{ kind: "library" }} />);

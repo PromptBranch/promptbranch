@@ -302,6 +302,19 @@ describe("promptbranch publish", () => {
     expectNoPublishSideEffects(before);
   });
 
+  it("prints the destination and exact payload for a human preview without side effects", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Code review", "--portal", portalBase, "--preview"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`Preview for "Code review".`);
+    expect(result.stdout).toContain(`Destination: ${portalBase}`);
+    expect(result.stdout).toContain('"content": "Review this diff carefully."');
+    expect(result.stdout).toContain('"tags": [\n    "review"\n  ]');
+    expect(result.stdout).toContain("Secret scan findings: none.");
+    expectNoPublishSideEffects(before);
+  });
+
   it("requires --preview or --yes in the default non-TTY mode", async () => {
     const before = publishState();
     const result = await run(["publish", "Code review", "--portal", portalBase]);
@@ -354,6 +367,20 @@ describe("promptbranch publish", () => {
       portalBaseUrl: portalBase,
       payload: { content: `key: sk-${"a".repeat(30)}` },
     });
+    expectNoPublishSideEffects(before);
+  });
+
+  it("prints the blocked preview payload and scanner diagnostics for a human", async () => {
+    const before = publishState();
+    const result = await run(["publish", "Leaky", "--portal", portalBase, "--preview"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('Preview blocked for "Leaky" by high-severity findings.');
+    expect(result.stdout).toContain(`Destination: ${portalBase}`);
+    expect(result.stdout).toContain(`"content": "key: sk-${"a".repeat(30)}"`);
+    expect(result.stdout).toContain("Secret scan findings:");
+    expect(result.stdout).toMatch(/high openai-api-key/);
+    expect(result.stdout).toContain(`sk-${"a".repeat(30)}`);
     expectNoPublishSideEffects(before);
   });
 

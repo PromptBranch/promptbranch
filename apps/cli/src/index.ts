@@ -125,18 +125,40 @@ async function askForPublishConfirmation(): Promise<string> {
   }
 }
 
+function writeSecretScanFindings(
+  write: (message: string) => void,
+  findings: ReturnType<typeof scanForSecrets>,
+): void {
+  if (findings.length === 0) {
+    write("Secret scan findings: none.\n");
+    return;
+  }
+  write("Secret scan findings:\n");
+  for (const finding of findings) {
+    write(`  line ${finding.line}: ${finding.severity} ${finding.rule} — ${finding.match}\n`);
+  }
+}
+
 function writePublishReview(base: string, payload: unknown, findings: ReturnType<typeof scanForSecrets>): void {
   process.stderr.write(`Reviewing publish to ${base}\n`);
   process.stderr.write("Any holder of the resulting link can view this snapshot.\n");
   process.stderr.write(`${JSON.stringify(payload, null, 2)}\n`);
-  if (findings.length === 0) {
-    process.stderr.write("Secret scan findings: none.\n");
-    return;
-  }
-  process.stderr.write("Secret scan findings:\n");
-  for (const finding of findings) {
-    process.stderr.write(`  line ${finding.line}: ${finding.severity} ${finding.rule} — ${finding.match}\n`);
-  }
+  writeSecretScanFindings((message) => process.stderr.write(message), findings);
+}
+
+function writePublishPreview(
+  title: string,
+  blocked: boolean,
+  base: string,
+  payload: unknown,
+  findings: ReturnType<typeof scanForSecrets>,
+): void {
+  process.stdout.write(
+    blocked ? `Preview blocked for "${title}" by high-severity findings.\n` : `Preview for "${title}".\n`,
+  );
+  process.stdout.write(`Destination: ${base}\n`);
+  process.stdout.write(`Payload:\n${JSON.stringify(payload, null, 2)}\n`);
+  writeSecretScanFindings((message) => process.stdout.write(message), findings);
 }
 
 function parseIntFlag(value: string | undefined, name: string): number | undefined {
@@ -451,11 +473,7 @@ async function main(argv: string[]): Promise<void> {
       };
       if (previewOnly) {
         out(values.json ?? false, preview, () => {
-          process.stdout.write(
-            high.length > 0
-              ? `Preview blocked for "${prompt.title}" by high-severity findings.\n`
-              : `Preview for "${prompt.title}".\n`,
-          );
+          writePublishPreview(prompt.title, high.length > 0, base, payload, findings);
         });
         if (high.length > 0) process.exitCode = 1;
         return;

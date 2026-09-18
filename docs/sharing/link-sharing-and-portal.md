@@ -20,12 +20,27 @@ intentional choice. Remove anything you would not want the recipient to see.
 ## Publish from the CLI
 
 ```sh
-promptbranch publish "my prompt"
-promptbranch publish "my prompt" --full-history
+promptbranch publish "security-audit" --preview
+promptbranch publish "security-audit" --full-history
+promptbranch publish "security-audit" --full-history --yes --json
 ```
 
-The CLI prints the shared URL and delete token. PromptBranch also saves the
-token locally so you can revoke the share later. See the
+Start with `--preview`: it prints the exact payload and secret-scan findings
+without publishing, making a request, or saving a share or delete token. A
+plain terminal publish shows the review and asks `Publish this snapshot?
+[y/N]`; only `y` or `yes` publishes, and any other response cancels.
+
+For a non-interactive command, use `--yes` only after the caller's own review.
+It records deliberate non-interactive caller intent, but does not make an
+unrestricted shell agent safe. `--json` only changes output formatting; it
+does not authorize a publish. High-severity findings always block. Medium-
+severity findings are shown and require the terminal confirmation or a
+deliberate `--yes` decision.
+
+The desktop Share dialog remains the fully visual human workflow. MCP
+intentionally has no publish tool, making it the safer surface for agents that
+must not publish. After publishing, the CLI prints the shared URL and delete
+token and saves the token locally so you can revoke the share later. See the
 [CLI guide](../integrations/cli.md) for all options.
 
 ## Manage or revoke a share

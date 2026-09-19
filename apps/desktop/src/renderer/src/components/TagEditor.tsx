@@ -3,11 +3,13 @@ import * as Popover from "@radix-ui/react-popover";
 import { Plus, Search } from "lucide-react";
 import type { PromptDetail, TagDto } from "../../../shared/ipc.js";
 import { useAppMutation, useTags } from "../hooks/use-data";
+import { useAppState } from "../state/app-state";
 import { colorForName, TagChip } from "./ui";
 
 /** Inline tag chips + "+ Add tag" popover (existing tags, create-new). */
 export function TagEditor({ prompt, compact }: { prompt: PromptDetail; compact?: boolean }) {
   const { data: allTags } = useTags();
+  const { filterByTag } = useAppState();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -45,6 +47,7 @@ export function TagEditor({ prompt, compact }: { prompt: PromptDetail; compact?:
           key={tag.id}
           name={tag.name}
           color={tag.color ?? colorForName(tag.name)}
+          onClick={() => filterByTag(tag.id)}
           onRemove={() => removeTag.mutate(tag.id)}
         />
       ))}

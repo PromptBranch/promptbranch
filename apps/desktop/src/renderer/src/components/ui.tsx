@@ -111,13 +111,41 @@ export function TagChip({
   name,
   color,
   onRemove,
+  onClick,
 }: {
   name: string;
   color: string | null;
   onRemove?: () => void;
+  onClick?: () => void;
 }) {
   return (
-    <span className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-raised px-2 py-0.5 text-[11px] text-ink-dim">
+    <span
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-label={onClick ? `Filter by tag ${name}` : undefined}
+      onClick={
+        onClick
+          ? (event) => {
+              event.stopPropagation();
+              onClick();
+            }
+          : undefined
+      }
+      onKeyDown={
+        onClick
+          ? (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              onClick();
+            }
+          : undefined
+      }
+      className={cx(
+        "group inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-raised px-2 py-0.5 text-[11px] text-ink-dim",
+        onClick && "cursor-pointer transition-colors hover:border-accent/60 hover:text-ink",
+      )}
+    >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color ?? "#6b7280" }} />
       <span className="max-w-40 truncate">{name}</span>
       {onRemove && (

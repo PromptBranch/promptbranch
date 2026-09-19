@@ -37,6 +37,7 @@ interface AppStateValue {
   setSort: (sort: SortKey) => void;
   filters: ListFilters;
   setFilters: (filters: ListFilters) => void;
+  filterByTag: (tagId: string) => void;
   listSearch: string;
   setListSearch: (value: string) => void;
   paletteOpen: boolean;
@@ -92,6 +93,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setNewPromptOpenState(true);
   }, []);
 
+  const filterByTag = useCallback((tagId: string) => {
+    setView({ kind: "library" });
+    setSelectedPromptId(null);
+    setViewingVersionId(null);
+    setListSearch("");
+    setFilters((current) => ({
+      ...current,
+      tagIds: current.tagIds.includes(tagId)
+        ? current.tagIds.filter((id) => id !== tagId)
+        : [tagId],
+    }));
+  }, []);
+
   const setNewPromptOpen = useCallback((open: boolean) => {
     setNewPromptOpenState(open);
     if (!open) setNewPromptCollection(null);
@@ -109,6 +123,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setSort,
       filters,
       setFilters,
+      filterByTag,
       listSearch,
       setListSearch,
       paletteOpen,
@@ -128,7 +143,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       manageModelsOpen,
       setManageModelsOpen,
     }),
-    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, newPromptCollection, openNewPrompt, setNewPromptOpen, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
+    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, newPromptCollection, openNewPrompt, setNewPromptOpen, filterByTag, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

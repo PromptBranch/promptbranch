@@ -218,7 +218,7 @@ function PromptCard({
   prompt: PromptSummary;
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
-  const { selectedPromptId, selectPrompt } = useAppState();
+  const { selectedPromptId, selectPrompt, filterByTag } = useAppState();
   const setStarred = useAppMutation(
     (starred: boolean) => window.promptBuilder.prompts.setStarred(prompt.id, starred),
     { quiet: true },
@@ -266,7 +266,12 @@ function PromptCard({
           {prompt.tags.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {prompt.tags.slice(0, 4).map((tag) => (
-                <TagChip key={tag.id} name={tag.name} color={tag.color ?? colorForName(tag.name)} />
+                <TagChip
+                  key={tag.id}
+                  name={tag.name}
+                  color={tag.color ?? colorForName(tag.name)}
+                  onClick={() => filterByTag(tag.id)}
+                />
               ))}
               {prompt.tags.length > 4 && (
                 <span className="text-[10px] text-ink-faint">+{prompt.tags.length - 4}</span>

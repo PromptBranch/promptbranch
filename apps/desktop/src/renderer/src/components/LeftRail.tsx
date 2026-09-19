@@ -94,7 +94,7 @@ export function LeftRail({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, setView, selectPrompt, openSettings, openNewPrompt } = useAppState();
+  const { view, setView, selectPrompt, openSettings, openNewPrompt, filterByTag, filters } = useAppState();
   const { data: tags } = useTags();
   const { data: collections } = useCollections();
   const { data: appInfo } = useAppInfo();
@@ -272,9 +272,17 @@ export function LeftRail({
         </div>
         <div className="space-y-0.5">
           {visibleTags.map((tag) => (
-            <div
+            <button
               key={tag.id}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] text-ink-dim"
+              type="button"
+              aria-pressed={view.kind === "library" && filters.tagIds.includes(tag.id)}
+              onClick={() => filterByTag(tag.id)}
+              className={cx(
+                "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] transition-colors",
+                view.kind === "library" && filters.tagIds.includes(tag.id)
+                  ? "bg-accent-soft font-medium text-accent"
+                  : "text-ink-dim hover:bg-hover hover:text-ink",
+              )}
             >
               <span
                 className="h-2 w-2 shrink-0 rounded-full"
@@ -282,7 +290,7 @@ export function LeftRail({
               />
               <span className="min-w-0 flex-1 truncate">{tag.name}</span>
               <span className="text-[11px] tabular-nums text-ink-faint">{tag.usageCount}</span>
-            </div>
+            </button>
           ))}
           {(tags ?? []).length > TAG_PREVIEW_COUNT && (
             <button

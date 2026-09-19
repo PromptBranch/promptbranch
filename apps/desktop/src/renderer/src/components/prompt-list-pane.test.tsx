@@ -10,6 +10,13 @@ import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
 import { PromptListPane } from "./PromptListPane";
 
+const securityTag = {
+  id: "tag-security",
+  name: "security",
+  color: "#3b82f6",
+  usageCount: 1,
+};
+
 const alpha: PromptSummary = {
   id: "prompt-a",
   title: "Alpha",
@@ -83,6 +90,15 @@ function PaneInView({
     setViewingVersionId(viewingVersionId ?? null);
   }, [selectPrompt, selectedPromptId, setViewingVersionId, viewingVersionId]);
   return <PromptListPane />;
+}
+
+function FilterStateProbe() {
+  const { view, filters } = useAppState();
+  return (
+    <output data-testid="filter-state">
+      {JSON.stringify({ view, filters })}
+    </output>
+  );
 }
 
 async function openPromptMenu(user: ReturnType<typeof userEvent.setup>, title = "Beta") {
@@ -363,5 +379,29 @@ describe("PromptListPane context menu", () => {
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
     expect(bridge.prompts.hardDelete).toHaveBeenCalledWith(beta.id);
+  });
+});
+
+describe("PromptListPane tag filtering", () => {
+  it("opens the library filtered to a prompt tag when its chip is clicked", async () => {
+    const taggedAlpha = { ...alpha, tags: [securityTag] };
+    bridge.prompts.list.mockImplementation(async (query) =>
+      query?.tagIds?.includes(securityTag.id) ? [taggedAlpha] : [taggedAlpha, beta],
+    );
+    const user = userEvent.setup();
+
+    renderApp(
+      <>
+        <PaneInView view={{ kind: "library" }} />
+        <FilterStateProbe />
+      </>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Filter by tag security" }));
+
+    await waitFor(() => expect(screen.queryByText("Beta")).not.toBeInTheDocument());
+    expect(screen.getByTestId("filter-state")).toHaveTextContent(
+      JSON.stringify({ view: { kind: "library" }, filters: { tagIds: [securityTag.id], starredOnly: false } }),
+    );
   });
 });

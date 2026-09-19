@@ -16,6 +16,17 @@ notes.
 - `@promptbranch/cli` 0.2.7
 - `@promptbranch/mcp` 0.2.9
 
+## [0.7.1] - 2026-09-19
+
+### Added
+
+- Add **Copy prompt name** to the prompt context menu, including the Trash
+  view, so the selected prompt title can be copied without opening it.
+
+### Packages
+
+- `@promptbranch/desktop` 0.7.1
+
 ## [0.7.0] - 2026-09-17
 
 ### Fixed
@@ -126,6 +137,7 @@ notes.
   persistence, and hard-delete convergence.
 - Harden share-size validation, secret scanning, and import boundaries.
 
+[0.7.1]: https://github.com/PromptBranch/promptbranch/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/PromptBranch/promptbranch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PromptBranch/promptbranch/compare/v0.5.0...v0.6.0
 [0.3.1]: https://github.com/PromptBranch/promptbranch/compare/v0.3.0...v0.3.1

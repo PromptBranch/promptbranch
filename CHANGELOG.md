@@ -16,6 +16,22 @@ notes.
 - `@promptbranch/cli` 0.2.7
 - `@promptbranch/mcp` 0.2.9
 
+## [0.7.2] - 2026-09-19
+
+### Added
+
+- Make tags clickable from the left rail, prompt cards, and prompt details to
+  filter the Library to related prompts.
+- Allow clicking the active tag again to clear the tag filter.
+
+### Changed
+
+- Align left-rail tag labels to the left for consistent navigation styling.
+
+### Packages
+
+- `@promptbranch/desktop` 0.7.2
+
 ## [0.7.1] - 2026-09-19
 
 ### Added
@@ -137,6 +153,7 @@ notes.
   persistence, and hard-delete convergence.
 - Harden share-size validation, secret scanning, and import boundaries.
 
+[0.7.2]: https://github.com/PromptBranch/promptbranch/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/PromptBranch/promptbranch/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/PromptBranch/promptbranch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PromptBranch/promptbranch/compare/v0.5.0...v0.6.0

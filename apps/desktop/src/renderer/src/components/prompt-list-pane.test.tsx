@@ -186,7 +186,12 @@ describe("PromptListPane context menu", () => {
     const menu = await openPromptMenu(user);
     await user.click(menu.getByRole("menuitem", { name: "Move to collection…" }));
     const dialog = await screen.findByRole("dialog", { name: "Move to collection" });
-    await user.click(within(dialog).getByRole("checkbox", { name: "Work" }));
+    const work = within(dialog).getByRole("checkbox", { name: "Work" });
+    await user.click(work);
+    expect(work).toBeChecked();
+    expect(bridge.collections.addPrompt).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(bridge.collections.addPrompt).toHaveBeenCalledWith("collection-1", beta.id),

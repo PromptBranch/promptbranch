@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import type { PromptDetail } from "../../../shared/ipc.js";
 import { useAppMutation, useCollections } from "../hooks/use-data";
+import { DialogShell } from "./dialogs";
 
 export function MoveToCollectionDialog({
   prompt,
@@ -11,65 +13,111 @@ export function MoveToCollectionDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { data: collections } = useCollections();
-  const toggle = useAppMutation(
-    async ({ collectionId, member }: { collectionId: string; member: boolean }) => {
-      if (member) await window.promptBuilder.collections.removePrompt(collectionId, prompt.id);
-      else await window.promptBuilder.collections.addPrompt(collectionId, prompt.id);
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>(prompt.collectionIds);
+  const wasOpen = useRef(false);
+  const previousPromptId = useRef(prompt.id);
+  const updateMemberships = useAppMutation(
+    async ({ add, remove }: { add: string[]; remove: string[] }) => {
+      await Promise.all([
+        ...add.map((collectionId) =>
+          window.promptBuilder.collections.addPrompt(collectionId, prompt.id),
+        ),
+        ...remove.map((collectionId) =>
+          window.promptBuilder.collections.removePrompt(collectionId, prompt.id),
+        ),
+      ]);
     },
     { quiet: true },
   );
 
-  if (!open) return null;
+  useEffect(() => {
+    if (open && (!wasOpen.current || previousPromptId.current !== prompt.id)) {
+      setSelectedCollectionIds(prompt.collectionIds);
+    }
+    wasOpen.current = open;
+    previousPromptId.current = prompt.id;
+  }, [open, prompt.id, prompt.collectionIds]);
+
+  const save = async () => {
+    const current = new Set(prompt.collectionIds);
+    const selected = new Set(selectedCollectionIds);
+    const add = selectedCollectionIds.filter((id) => !current.has(id));
+    const remove = prompt.collectionIds.filter((id) => !selected.has(id));
+
+    if (add.length === 0 && remove.length === 0) {
+      onOpenChange(false);
+      return;
+    }
+
+    try {
+      await updateMemberships.mutateAsync({ add, remove });
+      onOpenChange(false);
+    } catch {
+      // Keep the draft open so the user can retry after the mutation error toast.
+    }
+  };
+
   return (
-    <div
-      className="pb-overlay fixed inset-0 z-40 flex items-center justify-center bg-black/60"
-      onClick={() => onOpenChange(false)}
+    <DialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Move to collection"
+      width="max-w-sm"
     >
-      <div
-        className="max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-sm overflow-y-auto rounded-xl border border-line-strong bg-panel p-5 shadow-2xl"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-label="Move to collection"
-      >
-        <h2 className="mb-3 text-sm font-semibold text-ink">Collections</h2>
-        <div className="max-h-64 space-y-0.5 overflow-y-auto">
-          {(collections ?? []).length === 0 && (
-            <p className="text-[12px] text-ink-faint">
-              No collections yet — create one from the left rail.
-            </p>
-          )}
-          {(collections ?? []).map((collection) => {
-            const member = prompt.collectionIds.includes(collection.id);
-            return (
-              <label
-                key={collection.id}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-ink-dim hover:bg-hover"
-              >
-                <input
-                  type="checkbox"
-                  aria-label={collection.name}
-                  checked={member}
-                  onChange={() => toggle.mutate({ collectionId: collection.id, member })}
-                  className="accent-accent"
-                />
-                {collection.name}
-                <span className="ml-auto text-[11px] tabular-nums text-ink-faint">
-                  {collection.promptCount}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="rounded-md border border-line px-3 py-1.5 text-[13px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
-          >
-            Done
-          </button>
-        </div>
+      <div className="max-h-64 space-y-0.5 overflow-y-auto">
+        {(collections ?? []).length === 0 && (
+          <p className="text-[12px] text-ink-faint">
+            No collections yet — create one from the left rail.
+          </p>
+        )}
+        {(collections ?? []).map((collection) => {
+          const member = selectedCollectionIds.includes(collection.id);
+          return (
+            <label
+              key={collection.id}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-ink-dim hover:bg-hover"
+            >
+              <input
+                type="checkbox"
+                aria-label={collection.name}
+                checked={member}
+                disabled={updateMemberships.isPending}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  setSelectedCollectionIds((current) => {
+                    if (checked) {
+                      return current.includes(collection.id) ? current : [...current, collection.id];
+                    }
+                    return current.filter((id) => id !== collection.id);
+                  });
+                }}
+                className="accent-accent"
+              />
+              {collection.name}
+              <span className="ml-auto text-[11px] tabular-nums text-ink-faint">
+                {collection.promptCount}
+              </span>
+            </label>
+          );
+        })}
       </div>
-    </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          className="rounded-md border border-line px-3 py-1.5 text-[13px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={updateMemberships.isPending}
+          className="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Save
+        </button>
+      </div>
+    </DialogShell>
   );
 }

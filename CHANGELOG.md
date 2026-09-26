@@ -16,6 +16,17 @@ notes.
 - `@promptbranch/cli` 0.2.7
 - `@promptbranch/mcp` 0.2.9
 
+## [0.7.3] - 2026-09-26
+
+### Fixed
+
+- Keep collection membership edits staged until Save is selected, and leave
+  them available to retry if saving fails.
+
+### Packages
+
+- `@promptbranch/desktop` 0.7.3
+
 ## [0.7.2] - 2026-09-19
 
 ### Added

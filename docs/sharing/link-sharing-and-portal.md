@@ -69,3 +69,48 @@ promptbranch import https://promptbranch.app/p/<id>
 An import creates a new local prompt with the shared content, description,
 tags, and a note identifying its source. A shared history remains viewable in
 the browser; it is not recreated as a local version history.
+
+## Embed a shared prompt on a website
+
+On a published prompt page, choose **Copy embed code**. The desktop app also
+offers this action after publishing and for active shares in **Shares**. Add
+the copied HTML where the prompt should appear. It creates a portal-styled
+prompt window directly in the page using Shadow DOM; it does not use an iframe.
+
+The code has this form. Use the exact snippet copied for your share:
+
+```html
+<div data-promptbranch-embed="https://promptbranch.app/p/V1StGXR8_Z5jdHi6B-myT"></div>
+<script defer src="https://promptbranch.app/embed.js"></script>
+```
+
+Include the script once per portal origin, even when the page has multiple
+embeds. For a self-hosted portal, the share URL and script must use that
+portal's origin. The embed supports **Rendered**, **Source**, and **Copy**
+controls, plus **Open in PromptBranch** and **View full prompt** links. The
+open action asks the desktop app to preview the shared snapshot before import.
+
+The default theme follows the visitor's system appearance. To choose a theme
+for an embed, add `data-promptbranch-theme="light"` or
+`data-promptbranch-theme="dark"` to its `<div>`; `auto` follows the system
+setting. If your site sets a Content Security Policy, allow the portal origin
+in `script-src`, `style-src`, and `connect-src`. Keep the rest of your existing
+policy directives.
+
+## Link to a public Markdown prompt
+
+A website can link directly to a public Markdown file to offer an import into
+PromptBranch. Percent-encode the complete HTTPS file URL as the `url` parameter:
+
+```html
+<a href="promptbranch://import-markdown?url=https%3A%2F%2Fexample.com%2Fprompts%2Freview.md">
+  Open in PromptBranch
+</a>
+```
+
+The link opens a review dialog. PromptBranch does not fetch the file until the
+user selects **Fetch Markdown**. The user can review the literal Markdown and
+edit its title; **Import as new prompt** then creates a separate local prompt
+and records the source URLs in a note. The file must be reachable over public
+HTTPS without a sign-in or private-network access. Importing does not publish
+the prompt or change the source website.

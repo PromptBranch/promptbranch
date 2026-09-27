@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import { Copy, ExternalLink, FolderX, Link2, Search, Trash2 } from "lucide-react";
+import { Code2, Copy, ExternalLink, FolderX, Link2, Search, Trash2 } from "lucide-react";
 import type { SharedSnapshotDto } from "../../../shared/ipc.js";
 import { useAppMutation, useShares } from "../hooks/use-data";
 import { cx, relativeTime } from "../lib/time";
+import { buildEmbedSnippet } from "../lib/embed-snippet.js";
 import { useToast } from "../lib/toast";
 import { useAppState } from "../state/app-state";
 import { ConfirmDialog } from "./dialogs";
@@ -41,6 +42,13 @@ function ShareRow({
   const copy = () => {
     void navigator.clipboard.writeText(share.url).then(
       () => toast("Link copied"),
+      () => toast("Copy failed"),
+    );
+  };
+
+  const copyEmbedCode = () => {
+    void navigator.clipboard.writeText(buildEmbedSnippet(share.url)).then(
+      () => toast("Embed code copied"),
       () => toast("Copy failed"),
     );
   };
@@ -101,6 +109,17 @@ function ShareRow({
         <button type="button" aria-label={`Copy link to ${share.promptTitle}`} onClick={copy} className={iconButtonClass}>
           <Copy size={12} />
         </button>
+        {!revoked && (
+          <button
+            type="button"
+            aria-label={`Copy embed code for ${share.promptTitle}`}
+            title="Copy embed code"
+            onClick={copyEmbedCode}
+            className={iconButtonClass}
+          >
+            <Code2 size={12} />
+          </button>
+        )}
         <button
           type="button"
           aria-label={`Open ${share.promptTitle} in browser`}

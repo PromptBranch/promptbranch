@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   PromptDetail,
   SharePreviewResult,
@@ -48,11 +48,18 @@ const publishResult: SharePublishResult = {
 };
 
 let bridge: MockBridge;
+let clipboardWrite: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   bridge = installMockBridge();
   bridge.share.preview.mockResolvedValue(cleanPreview);
   bridge.share.publish.mockResolvedValue(publishResult);
+  clipboardWrite = vi.fn().mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: undefined });
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: undefined });
 });
 
 function renderDialog(content = "Say hi.") {
@@ -62,6 +69,8 @@ function renderDialog(content = "Say hi.") {
 describe("ShareDialog", () => {
   it("shows the exact payload preview and the success screen after publishing", async () => {
     const user = userEvent.setup();
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
     renderDialog();
     // Payload JSON is shown verbatim before anything is sent.
     expect(await screen.findByText(/"title": "Greeting"/)).toBeInTheDocument();
@@ -73,6 +82,14 @@ describe("ShareDialog", () => {
       content: "Say hi.",
     });
     expect(await screen.findByText(publishResult.url)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy embed code" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy embed code" }));
+    await waitFor(() =>
+      expect(clipboardWrite).toHaveBeenCalledWith(
+        `<div data-promptbranch-embed="${publishResult.url}"></div>\n` +
+          `<script defer src="https://promptbranch.app/embed.js"></script>`,
+      ),
+    );
     // The delete token stays in the main process; the dialog only notes it.
     expect(screen.getByText(/delete token is stored locally/i)).toBeInTheDocument();
   });

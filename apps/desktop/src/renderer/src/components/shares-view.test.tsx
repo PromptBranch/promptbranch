@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SharedSnapshotDto } from "../../../shared/ipc.js";
 import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { renderApp } from "../test/render";
@@ -43,13 +43,40 @@ function seed(...shares: SharedSnapshotDto[]) {
 }
 
 let bridge: MockBridge;
+let clipboardWrite: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   bridge = installMockBridge();
   bridge.share.list.mockResolvedValue([]);
+  clipboardWrite = vi.fn().mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: undefined });
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: undefined });
 });
 
 describe("SharesView", () => {
+  it("offers embed code for active shares only", async () => {
+    seed(activeShare, revokedShare);
+    const user = userEvent.setup();
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    renderApp(<SharesView />);
+    await screen.findByText("Greeting");
+
+    const activeButton = screen.getByRole("button", { name: "Copy embed code for Greeting" });
+    expect(activeButton).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy embed code for Old prompt" })).not.toBeInTheDocument();
+    await user.click(activeButton);
+    await waitFor(() =>
+      expect(clipboardWrite).toHaveBeenCalledWith(
+        `<div data-promptbranch-embed="${activeShare.url}"></div>\n` +
+          `<script defer src="https://promptbranch.app/embed.js"></script>`,
+      ),
+    );
+  });
+
   it("lists shares with status badges, host and relative publish date", async () => {
     seed(activeShare, revokedShare, fullHistoryShare);
     renderApp(<SharesView />);

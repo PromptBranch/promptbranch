@@ -4,6 +4,7 @@ import { Copy, Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
 import type { PromptDetail, SharePublishResult } from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
 import { userErrorMessage } from "../lib/errors";
+import { buildEmbedSnippet } from "../lib/embed-snippet.js";
 import { useToast } from "../lib/toast";
 import { DialogShell } from "./dialogs";
 
@@ -93,6 +94,15 @@ export function ShareDialog({
               type="button"
               aria-label="Copy link"
               onClick={() => copy(result.url, "Link")}
+              className={copyButtonClass}
+            >
+              <Copy size={12} />
+            </button>
+            <button
+              type="button"
+              aria-label="Copy embed code"
+              title="Copy embed code"
+              onClick={() => copy(buildEmbedSnippet(result.url), "Embed code")}
               className={copyButtonClass}
             >
               <Copy size={12} />

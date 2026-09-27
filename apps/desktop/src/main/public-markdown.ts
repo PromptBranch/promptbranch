@@ -118,7 +118,7 @@ const productionDeps: MarkdownFetchDeps = {
 };
 
 function validatePublicUrl(rawUrl: string): URL {
-  if (!rawUrl || rawUrl !== rawUrl.trim()) {
+  if (!rawUrl || rawUrl.length > 2_000 || rawUrl !== rawUrl.trim()) {
     throw new MarkdownFetchError("Enter a public HTTPS Markdown URL.");
   }
 

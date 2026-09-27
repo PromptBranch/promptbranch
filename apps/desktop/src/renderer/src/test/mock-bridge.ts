@@ -239,6 +239,9 @@ export function createMockBridge(): MockBridge {
       }),
     },
     markdown: {
+      preview: vi.fn(notStubbed),
+      confirm: vi.fn(notStubbed),
+      discard: vi.fn(async () => {}),
       onOpenImport: vi.fn((callback: (url: string) => void) => {
         markdownImportListeners.add(callback);
         return () => {

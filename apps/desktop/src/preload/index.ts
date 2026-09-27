@@ -129,6 +129,9 @@ const api: PromptBuilderApi = {
     },
   },
   markdown: {
+    preview: (url) => invoke(IPC_CHANNELS.markdownPreview, { url }),
+    confirm: (input) => invoke(IPC_CHANNELS.markdownConfirm, input),
+    discard: (previewId) => invoke(IPC_CHANNELS.markdownDiscard, { previewId }),
     onOpenImport: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, url: unknown) => {
         callback(url as string);

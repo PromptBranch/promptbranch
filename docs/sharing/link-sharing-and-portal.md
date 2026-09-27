@@ -72,10 +72,11 @@ the browser; it is not recreated as a local version history.
 
 ## Embed a shared prompt on a website
 
-On a published prompt page, choose **Copy embed code**. The desktop app also
-offers this action after publishing and for active shares in **Shares**. Add
-the copied HTML where the prompt should appear. It creates a portal-styled
-prompt window directly in the page using Shadow DOM; it does not use an iframe.
+On a published prompt page, choose **Auto**, **Light**, or **Dark** and select
+**Copy embed code**. The desktop app offers the same theme choice after
+publishing and for active shares in **Shares**. Add the copied HTML where the
+prompt should appear. It creates a portal-styled prompt window directly in the
+page using Shadow DOM; it does not use an iframe.
 
 The code has this form. Use the exact snippet copied for your share:
 
@@ -86,28 +87,37 @@ The code has this form. Use the exact snippet copied for your share:
 
 Include the script once per portal origin, even when the page has multiple
 embeds. The share URL and script URL must use the same portal origin as the
-share. The embed supports **Rendered**, **Source**, and **Copy** controls, plus
-**Open in PromptBranch** and **View full prompt** links. The open action asks
-the desktop app to preview the shared snapshot before import.
+share. The prompt title appears in the embed window's title bar. The embed
+supports **Rendered**, **Source**, and **Copy** controls, plus an **Open in
+PromptBranch** button with an icon and a **View full prompt** link. The open
+action asks the desktop app to preview the shared snapshot before import.
 
 The portal's JavaScript runs on your page and can access its DOM. Add embed
 code only from a portal you trust.
 
-The default theme follows the visitor's system appearance. To choose a theme
-for an embed, add `data-promptbranch-theme="light"` or
-`data-promptbranch-theme="dark"` to its `<div>`; `auto` follows the system
-setting. If your site sets a Content Security Policy, allow the portal origin
-in `script-src`, `style-src`, and `connect-src`. Keep the rest of your existing
+**Auto** follows the visitor's system appearance. **Light** and **Dark** set a
+fixed appearance. The copied code adds
+`data-promptbranch-theme="light"` or `data-promptbranch-theme="dark"` to the
+embed `<div>` when either fixed theme is selected; Auto omits the attribute.
+If your site sets a Content Security Policy, allow the portal origin in
+`script-src`, `style-src`, and `connect-src`. Keep the rest of your existing
 policy directives.
 
 ## Link to a public Markdown prompt
 
 A website can link directly to a public Markdown file to offer an import into
-PromptBranch. Percent-encode the complete HTTPS file URL as the `url` parameter:
+PromptBranch. Copy and customize this HTML example with your file's public
+HTTPS URL, percent-encoding the complete URL as the `url` parameter:
 
 ```html
-<a href="promptbranch://import-markdown?url=https%3A%2F%2Fexample.com%2Fprompts%2Freview.md">
-  Open in PromptBranch
+<a
+  href="promptbranch://import-markdown?url=https%3A%2F%2Fexample.com%2Fprompts%2Freview.md"
+  style="display:inline-flex;align-items:center;gap:.5rem;padding:.7rem 1rem;border-radius:.6rem;background:#315ee8;color:#fff;font:600 14px/1.2 system-ui,-apple-system,sans-serif;text-decoration:none"
+>
+  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 17 17 7M7 7h10v10" />
+  </svg>
+  <span>Open in PromptBranch</span>
 </a>
 ```
 

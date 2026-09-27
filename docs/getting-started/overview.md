@@ -18,8 +18,8 @@ interface you prefer without copying prompts between tools.
   for you to approve in the desktop app.
 - Share immutable prompt snapshots with revocable links or embed active shares
   on a website.
-- Open a public HTTPS Markdown URL in the desktop app, review it, and import it
-  as a new local prompt.
+- Use a website's **Open in PromptBranch** link for a public HTTPS Markdown
+  file, review it in the desktop app, and import it as a new local prompt.
 - Keep your library in sync between your own desktop devices on a local
   network or VPN.
 

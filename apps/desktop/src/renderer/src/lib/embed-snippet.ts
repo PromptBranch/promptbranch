@@ -1,5 +1,7 @@
 const SNAPSHOT_PATH = /^\/p\/[A-Za-z0-9_-]{21}$/;
 
+export type EmbedTheme = "auto" | "light" | "dark";
+
 function escapeAttribute(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -10,7 +12,7 @@ function escapeAttribute(value: string): string {
 }
 
 /** Build the same-origin HTML snippet for a canonical PromptBranch share URL. */
-export function buildEmbedSnippet(snapshotUrl: string): string {
+export function buildEmbedSnippet(snapshotUrl: string, theme: EmbedTheme = "auto"): string {
   let url: URL;
   try {
     url = new URL(snapshotUrl);
@@ -29,8 +31,9 @@ export function buildEmbedSnippet(snapshotUrl: string): string {
     throw new TypeError("Expected a canonical PromptBranch snapshot URL without credentials or extra parameters");
   }
 
+  const themeAttribute = theme === "auto" ? "" : ` data-promptbranch-theme="${theme}"`;
   return (
-    `<div data-promptbranch-embed="${escapeAttribute(url.href)}"></div>\n` +
+    `<div data-promptbranch-embed="${escapeAttribute(url.href)}"${themeAttribute}></div>\n` +
     `<script defer src="${escapeAttribute(url.origin)}/embed.js"></script>`
   );
 }

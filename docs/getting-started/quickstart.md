@@ -115,9 +115,12 @@ unchanged.
 Anyone with the link can view the snapshot in a clean web viewer, inspect version diffs, or open an import preview in their own PromptBranch library via `promptbranch://import?url=`. The recipient reviews the snapshot and explicitly confirms the import.
 
 To place the snapshot directly on another website, copy the embed code from
-the published prompt page or the desktop Share and Shares views. For importing
-a public raw Markdown file, use the **Link to a public Markdown prompt** steps
-in the [sharing guide](../sharing/link-sharing-and-portal.md).
+the published prompt page or the desktop Share and Shares views. Choose Auto,
+Light, or Dark; Auto follows the visitor's system appearance. The embed window
+shows the prompt title and an **Open in PromptBranch** button. For importing a
+public raw Markdown file, use the **Link to a public Markdown prompt** steps
+and HTML button example to copy and customize in the
+[sharing guide](../sharing/link-sharing-and-portal.md).
 
 ---
 

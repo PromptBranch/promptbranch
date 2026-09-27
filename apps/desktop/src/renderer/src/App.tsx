@@ -4,6 +4,7 @@ import { AboutDialog } from "./components/AboutDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewPromptDialog } from "./components/dialogs";
 import { HistoryView } from "./components/HistoryView";
+import { ImportMarkdownDialog } from "./components/ImportMarkdownDialog";
 import { ImportSnapshotDialog } from "./components/ImportSnapshotDialog";
 import { LeftRail } from "./components/LeftRail";
 import { MainPane, MainPaneEmpty } from "./components/MainPane";
@@ -208,6 +209,7 @@ export default function App() {
       <CommandPalette />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
       <ImportSnapshotDialog />
+      <ImportMarkdownDialog />
       <SyncPairRequestDialog />
       <SettingsDialog />
       <ManageModelsDialog open={manageModelsOpen} onOpenChange={setManageModelsOpen} />

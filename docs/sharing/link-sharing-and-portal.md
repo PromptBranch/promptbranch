@@ -85,10 +85,13 @@ The code has this form. Use the exact snippet copied for your share:
 ```
 
 Include the script once per portal origin, even when the page has multiple
-embeds. For a self-hosted portal, the share URL and script must use that
-portal's origin. The embed supports **Rendered**, **Source**, and **Copy**
-controls, plus **Open in PromptBranch** and **View full prompt** links. The
-open action asks the desktop app to preview the shared snapshot before import.
+embeds. The share URL and script URL must use the same portal origin as the
+share. The embed supports **Rendered**, **Source**, and **Copy** controls, plus
+**Open in PromptBranch** and **View full prompt** links. The open action asks
+the desktop app to preview the shared snapshot before import.
+
+The portal's JavaScript runs on your page and can access its DOM. Add embed
+code only from a portal you trust.
 
 The default theme follows the visitor's system appearance. To choose a theme
 for an embed, add `data-promptbranch-theme="light"` or

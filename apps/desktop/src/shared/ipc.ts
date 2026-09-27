@@ -1161,6 +1161,10 @@ export interface PromptBuilderApi {
     /** Main → renderer event for promptbranch://import deep links. */
     onOpenImport(callback: (url: string) => void): () => void;
   };
+  markdown: {
+    /** Main → renderer event for promptbranch://import-markdown deep links. */
+    onOpenImport(callback: (url: string) => void): () => void;
+  };
   sync: {
     /** Full sync status snapshot; enabled=false when the feature is off. */
     getStatus(): Promise<SyncStatusDto>;

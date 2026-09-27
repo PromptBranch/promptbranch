@@ -34,6 +34,8 @@ export type MockBridge = Mocked<PromptBuilderApi> & {
   emitRunProgress(event: AiRunProgressEvent): void;
   /** Delivers a promptbranch://import deep link to subscribed listeners. */
   emitOpenImport(url: string): void;
+  /** Delivers a promptbranch://import-markdown deep link to subscribed listeners. */
+  emitOpenMarkdownImport(url: string): void;
   /** Delivers a sync:state-changed event to subscribed listeners. */
   emitSyncState(status: SyncStatusDto): void;
   /** Delivers a sync:pair-request event to subscribed listeners. */
@@ -56,6 +58,7 @@ export function createMockBridge(): MockBridge {
   const quickPaletteClosedListeners = new Set<(sessionId: string) => void>();
   // onOpenImport listeners (promptbranch:// deep links), driven by emitOpenImport.
   const importListeners = new Set<(url: string) => void>();
+  const markdownImportListeners = new Set<(url: string) => void>();
   // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
   const syncStateListeners = new Set<(status: SyncStatusDto) => void>();
   const syncPairListeners = new Set<(event: SyncPairRequestEvent) => void>();
@@ -235,6 +238,14 @@ export function createMockBridge(): MockBridge {
         };
       }),
     },
+    markdown: {
+      onOpenImport: vi.fn((callback: (url: string) => void) => {
+        markdownImportListeners.add(callback);
+        return () => {
+          markdownImportListeners.delete(callback);
+        };
+      }),
+    },
     ai: {
       providers: {
         create: vi.fn(notStubbed),
@@ -371,6 +382,9 @@ export function createMockBridge(): MockBridge {
     },
     emitOpenImport: (url: string) => {
       for (const listener of [...importListeners]) listener(url);
+    },
+    emitOpenMarkdownImport: (url: string) => {
+      for (const listener of [...markdownImportListeners]) listener(url);
     },
     emitSyncState: (status: SyncStatusDto) => {
       for (const listener of [...syncStateListeners]) listener(status);

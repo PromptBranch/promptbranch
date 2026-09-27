@@ -195,7 +195,12 @@ const importDispatcher = createImportDispatcher<BrowserWindow>({
   createWindow: () => {
     if (app.isReady() && !mainWindow) createWindow();
   },
-  send: (window, target) => window.webContents.send(IPC_CHANNELS.shareOpenImport, target),
+  send: (window, intent) => {
+    const channel =
+      intent.kind === "snapshot" ? IPC_CHANNELS.shareOpenImport : IPC_CHANNELS.markdownOpenImport;
+    const target = intent.kind === "snapshot" ? intent.target : intent.url;
+    window.webContents.send(channel, target);
+  },
   focus: (window) => {
     if (window.isMinimized()) window.restore();
     window.focus();
@@ -206,8 +211,8 @@ const importDispatcher = createImportDispatcher<BrowserWindow>({
 // listener must be registered at module load, not inside whenReady.
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  const target = parseImportDeepLink(url);
-  if (target) importDispatcher.dispatch(target);
+  const intent = parseImportDeepLink(url);
+  if (intent) importDispatcher.dispatch(intent);
 });
 
 let db: Database | null = null;
@@ -1204,8 +1209,8 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on("second-instance", (_event, argv) => {
     restoreOrCreateMainWindow(mainWindow, createWindow);
-    const target = deepLinkFromArgv(argv);
-    if (target) importDispatcher.dispatch(target);
+    const intent = deepLinkFromArgv(argv);
+    if (intent) importDispatcher.dispatch(intent);
   });
 
   app.whenReady().then(() => {
@@ -1307,9 +1312,9 @@ if (!gotSingleInstanceLock) {
     app.dock?.setIcon(appIcon);
   }
   // Windows/Linux cold start: the deep link arrives in this instance's argv.
-  const coldStartTarget = deepLinkFromArgv(process.argv);
+  const coldStartIntent = deepLinkFromArgv(process.argv);
   if (!mainWindow) createWindow();
-  if (coldStartTarget) importDispatcher.dispatch(coldStartTarget);
+  if (coldStartIntent) importDispatcher.dispatch(coldStartIntent);
 
   app.on("activate", () => {
     restoreOrCreateMainWindow(mainWindow, createWindow);

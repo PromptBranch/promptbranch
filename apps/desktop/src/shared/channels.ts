@@ -104,6 +104,7 @@ export const IPC_CHANNELS = {
   shareImportPreview: "share:import-preview",
   shareImport: "share:import",
   shareOpenImport: "share:open-import",
+  markdownOpenImport: "markdown:open-import",
   syncGetStatus: "sync:get-status",
   syncSetEnabled: "sync:set-enabled",
   syncSetDeviceName: "sync:set-device-name",

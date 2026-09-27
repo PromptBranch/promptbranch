@@ -1,18 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
+import {
+  createImportDispatcher,
+  deepLinkFromArgv,
+  parseImportDeepLink,
+  type ImportIntent,
+} from "./deep-link.js";
 
 const ID = "V1StGXR8_Z5jdHi6B-myT";
+const SNAPSHOT: ImportIntent = { kind: "snapshot", target: ID };
+const MARKDOWN_URL = "https://example.com/prompts/review.md";
+const MARKDOWN: ImportIntent = { kind: "markdown", url: MARKDOWN_URL };
 
 describe("parseImportDeepLink", () => {
   it("extracts a percent-encoded snapshot URL", () => {
     const inner = `https://promptbranch.app/p/${ID}`;
     expect(
       parseImportDeepLink(`promptbranch://import?url=${encodeURIComponent(inner)}`),
-    ).toBe(inner);
+    ).toEqual({ kind: "snapshot", target: inner });
   });
 
   it("accepts a raw snapshot id as the target", () => {
-    expect(parseImportDeepLink(`promptbranch://import?url=${ID}`)).toBe(ID);
+    expect(parseImportDeepLink(`promptbranch://import?url=${ID}`)).toEqual(SNAPSHOT);
+  });
+
+  it("parses a public Markdown URL import action", () => {
+    expect(
+      parseImportDeepLink(
+        `promptbranch://import-markdown?url=${encodeURIComponent(MARKDOWN_URL)}`,
+      ),
+    ).toEqual(MARKDOWN);
+  });
+
+  it("rejects a Markdown URL that is not HTTPS", () => {
+    expect(
+      parseImportDeepLink(
+        `promptbranch://import-markdown?url=${encodeURIComponent("http://example.com/a.md")}`,
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects missing or duplicate URL parameters", () => {
+    expect(parseImportDeepLink("promptbranch://import-markdown")).toBeNull();
+    expect(
+      parseImportDeepLink(
+        `promptbranch://import-markdown?url=${encodeURIComponent(MARKDOWN_URL)}&url=${encodeURIComponent(MARKDOWN_URL)}`,
+      ),
+    ).toBeNull();
+    expect(parseImportDeepLink(`promptbranch://import?url=${ID}&url=${ID}`)).toBeNull();
+  });
+
+  it("rejects an oversized deep link", () => {
+    expect(
+      parseImportDeepLink(
+        `promptbranch://import-markdown?url=${encodeURIComponent(`https://example.com/${"a".repeat(2000)}.md`)}`,
+      ),
+    ).toBeNull();
   });
 
   it("rejects other schemes, actions and missing params", () => {
@@ -32,7 +74,14 @@ describe("parseImportDeepLink", () => {
 describe("deepLinkFromArgv", () => {
   it("finds a deep link among process args (Windows/Linux)", () => {
     const argv = ["/usr/bin/electron", ".", `promptbranch://import?url=${ID}`];
-    expect(deepLinkFromArgv(argv)).toBe(ID);
+    expect(deepLinkFromArgv(argv)).toEqual(SNAPSHOT);
+    expect(
+      deepLinkFromArgv([
+        "/usr/bin/electron",
+        ".",
+        `promptbranch://import-markdown?url=${encodeURIComponent(MARKDOWN_URL)}`,
+      ]),
+    ).toEqual(MARKDOWN);
   });
 
   it("returns null when no arg is a valid import link", () => {
@@ -44,15 +93,15 @@ describe("deepLinkFromArgv", () => {
 describe("createImportDispatcher", () => {
   function setup(opts: { hasWindow?: boolean; ready?: boolean } = {}) {
     const state = { hasWindow: opts.hasWindow ?? false };
-    const calls = { sent: [] as string[], created: 0, focused: 0 };
+    const calls = { sent: [] as ImportIntent[], created: 0, focused: 0 };
     const dispatcher = createImportDispatcher<string>({
       getWindow: () => (state.hasWindow ? "win" : null),
       createWindow: () => {
         calls.created++;
         state.hasWindow = true;
       },
-      send: (_window, target) => {
-        calls.sent.push(target);
+      send: (_window, intent) => {
+        calls.sent.push(intent);
       },
       focus: () => {
         calls.focused++;
@@ -64,8 +113,8 @@ describe("createImportDispatcher", () => {
 
   it("sends immediately when the window exists and the renderer is ready", () => {
     const { dispatcher, calls } = setup({ hasWindow: true, ready: true });
-    dispatcher.dispatch(ID);
-    expect(calls.sent).toEqual([ID]);
+    dispatcher.dispatch(SNAPSHOT);
+    expect(calls.sent).toEqual([SNAPSHOT]);
     expect(calls.created).toBe(0);
     expect(calls.focused).toBe(1);
     expect(dispatcher.pending()).toBeNull();
@@ -73,25 +122,25 @@ describe("createImportDispatcher", () => {
 
   it("queues and creates a window when none exists (macOS dock-only)", () => {
     const { dispatcher, calls } = setup();
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(SNAPSHOT);
     expect(calls.sent).toEqual([]);
     expect(calls.created).toBe(1);
-    expect(dispatcher.pending()).toBe(ID);
+    expect(dispatcher.pending()).toEqual(SNAPSHOT);
   });
 
   it("queues without creating a window when one exists but is not ready", () => {
     const { dispatcher, calls } = setup({ hasWindow: true });
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(MARKDOWN);
     expect(calls.sent).toEqual([]);
     expect(calls.created).toBe(0);
-    expect(dispatcher.pending()).toBe(ID);
+    expect(dispatcher.pending()).toEqual(MARKDOWN);
   });
 
   it("flushes the queued URL when the renderer signals ready", () => {
     const { dispatcher, calls } = setup();
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(SNAPSHOT);
     dispatcher.rendererReady();
-    expect(calls.sent).toEqual([ID]);
+    expect(calls.sent).toEqual([SNAPSHOT]);
     expect(dispatcher.pending()).toBeNull();
   });
 
@@ -103,19 +152,19 @@ describe("createImportDispatcher", () => {
 
   it("keeps only the latest queued URL (latest wins)", () => {
     const { dispatcher, calls } = setup();
-    dispatcher.dispatch("first");
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(SNAPSHOT);
+    dispatcher.dispatch(MARKDOWN);
     dispatcher.rendererReady();
-    expect(calls.sent).toEqual([ID]);
+    expect(calls.sent).toEqual([MARKDOWN]);
   });
 
   it("never sends to an unready webContents after the window closes", () => {
     const { dispatcher, state, calls } = setup({ hasWindow: true, ready: true });
     state.hasWindow = false;
     dispatcher.windowClosed();
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(SNAPSHOT);
     expect(calls.sent).toEqual([]);
-    expect(dispatcher.pending()).toBe(ID);
+    expect(dispatcher.pending()).toEqual(SNAPSHOT);
     // Windowless again: the dispatcher recreates a window for the queued link.
     expect(calls.created).toBe(1);
   });
@@ -123,9 +172,9 @@ describe("createImportDispatcher", () => {
   it("resets readiness on window close even if the window object lingers", () => {
     const { dispatcher, calls } = setup({ hasWindow: true, ready: true });
     dispatcher.windowClosed();
-    dispatcher.dispatch(ID);
+    dispatcher.dispatch(MARKDOWN);
     expect(calls.sent).toEqual([]);
     expect(calls.created).toBe(0);
-    expect(dispatcher.pending()).toBe(ID);
+    expect(dispatcher.pending()).toEqual(MARKDOWN);
   });
 });

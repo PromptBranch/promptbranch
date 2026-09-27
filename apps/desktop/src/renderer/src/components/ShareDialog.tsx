@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Copy, Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
+import { Code2, Copy, Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
 import type { PromptDetail, SharePublishResult } from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
 import { userErrorMessage } from "../lib/errors";
@@ -105,7 +105,7 @@ export function ShareDialog({
               onClick={() => copy(buildEmbedSnippet(result.url), "Embed code")}
               className={copyButtonClass}
             >
-              <Copy size={12} />
+              <Code2 size={12} />
             </button>
           </div>
           <p className="text-[11px] leading-relaxed text-ink-faint">

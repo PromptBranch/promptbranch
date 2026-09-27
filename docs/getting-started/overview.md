@@ -16,15 +16,19 @@ interface you prefer without copying prompts between tools.
   record ratings and costs.
 - Let coding agents read prompts, report their results, and propose changes
   for you to approve in the desktop app.
-- Share an immutable prompt snapshot with a revocable link.
+- Share immutable prompt snapshots with revocable links or embed active shares
+  on a website.
+- Open a public HTTPS Markdown URL in the desktop app, review it, and import it
+  as a new local prompt.
 - Keep your library in sync between your own desktop devices on a local
   network or VPN.
 
 ## What stays local
 
 Browsing, editing, versioning, and search work without an account or internet
-connection. Model runs, model catalog refreshes, and publishing a share need a
-network connection. API keys remain on the device where you add them.
+connection. Model runs, model catalog refreshes, publishing a share, and
+fetching a public Markdown file need a network connection. API keys remain on
+the device where you add them.
 
 ## Choose a starting point
 
@@ -34,3 +38,4 @@ network connection. API keys remain on the device where you add them.
 - [Learn prompts, versions, variations, and suggestions](core-concepts.md)
 - [Connect a coding agent through MCP](../integrations/mcp-server.md)
 - [Use the CLI in a terminal or script](../integrations/cli.md)
+- [Share, embed, or import prompts](../sharing/link-sharing-and-portal.md)

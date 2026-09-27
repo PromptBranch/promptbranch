@@ -988,6 +988,7 @@ function installAppMenu(): void {
   };
   const openPaletteItem: MenuItemConstructorOptions = {
     label: "Open prompt palette",
+    ...(menuIcons.promptPalette ? { icon: menuIcons.promptPalette } : {}),
     click: () => quickPaletteController?.toggle(),
   };
   const helpMenu: MenuItemConstructorOptions = {

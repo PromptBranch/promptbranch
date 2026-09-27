@@ -136,7 +136,11 @@ import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { logRendererConsoleMessage } from "./logger.js";
 import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
-import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
+import {
+  createMainWindowClosedHandler,
+  restoreOrCreateMainWindow,
+  shouldQuitWhenMainWindowCloses,
+} from "./main-window.js";
 import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
@@ -1168,15 +1172,19 @@ function createWindow(): BrowserWindow {
     },
   });
   mainWindow = window;
-  window.on("closed", () => {
-    const wasMainWindow = mainWindow === window;
-    if (wasMainWindow) {
-      markdownImportService?.discardSender(window.webContents.id);
-      mainWindow = null;
-    }
-    importDispatcher.windowClosed();
-    if (wasMainWindow && shouldQuitWhenMainWindowCloses(process.platform)) app.quit();
-  });
+  window.on(
+    "closed",
+    createMainWindowClosedHandler(window, {
+      getMainWindow: () => mainWindow,
+      onMainWindowClosed: (senderId) => {
+        markdownImportService?.discardSender(senderId);
+        mainWindow = null;
+      },
+      onWindowClosed: () => importDispatcher.windowClosed(),
+      shouldQuit: () => shouldQuitWhenMainWindowCloses(process.platform),
+      quit: () => app.quit(),
+    }),
+  );
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

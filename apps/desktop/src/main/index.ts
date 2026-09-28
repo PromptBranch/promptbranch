@@ -30,6 +30,11 @@ import {
   collectionCreateSchema,
   collectionPromptSchema,
   draftSetSchema,
+  markdownConfirmSchema,
+  markdownDiscardSchema,
+  markdownImportPreviewDtoSchema,
+  markdownImportResultDtoSchema,
+  markdownPreviewSchema,
   noteAddSchema,
   promptCreateSchema,
   promptDuplicateSchema,
@@ -69,6 +74,8 @@ import {
   type FileOpResult,
   type ImportResult,
   type LibraryStats,
+  type MarkdownImportPreviewDto,
+  type MarkdownImportResultDto,
   type PromptDetail,
   type RatingSummaryDto,
   type SharePublishResult,
@@ -120,6 +127,7 @@ import {
   type ShareServiceDeps,
 } from "./share.js";
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
+import { assertAuthorizedMainFrame, MarkdownImportService } from "./markdown-import.js";
 import {
   createDailyBackupScheduler,
   type DailyBackupScheduler,
@@ -128,7 +136,11 @@ import { configureLinuxDisplayBackend } from "./linux-display.js";
 import { loadMenuIcons } from "./menu-icons.js";
 import { logRendererConsoleMessage } from "./logger.js";
 import { createBeforeQuitHandler, createWillQuitHandler } from "./shutdown.js";
-import { restoreOrCreateMainWindow, shouldQuitWhenMainWindowCloses } from "./main-window.js";
+import {
+  createMainWindowClosedHandler,
+  restoreOrCreateMainWindow,
+  shouldQuitWhenMainWindowCloses,
+} from "./main-window.js";
 import { applyQaUserDataOverride } from "./qa-profile.js";
 import { DesktopSync } from "./sync/service.js";
 import { UpdateService } from "./updates.js";
@@ -195,7 +207,12 @@ const importDispatcher = createImportDispatcher<BrowserWindow>({
   createWindow: () => {
     if (app.isReady() && !mainWindow) createWindow();
   },
-  send: (window, target) => window.webContents.send(IPC_CHANNELS.shareOpenImport, target),
+  send: (window, intent) => {
+    const channel =
+      intent.kind === "snapshot" ? IPC_CHANNELS.shareOpenImport : IPC_CHANNELS.markdownOpenImport;
+    const target = intent.kind === "snapshot" ? intent.target : intent.url;
+    window.webContents.send(channel, target);
+  },
   focus: (window) => {
     if (window.isMinimized()) window.restore();
     window.focus();
@@ -206,8 +223,8 @@ const importDispatcher = createImportDispatcher<BrowserWindow>({
 // listener must be registered at module load, not inside whenReady.
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  const target = parseImportDeepLink(url);
-  if (target) importDispatcher.dispatch(target);
+  const intent = parseImportDeepLink(url);
+  if (intent) importDispatcher.dispatch(intent);
 });
 
 let db: Database | null = null;
@@ -216,6 +233,7 @@ let backupsDir: string | null = null;
 let backupScheduler: DailyBackupScheduler | null = null;
 let desktopSync: DesktopSync | null = null;
 let updateService: UpdateService | null = null;
+let markdownImportService: MarkdownImportService | null = null;
 let quickPaletteController: QuickPaletteController | null = null;
 let updateStartupTimer: NodeJS.Timeout | null = null;
 let syncPokeTimer: NodeJS.Timeout | null = null;
@@ -238,6 +256,11 @@ function getDesktopSync(): DesktopSync {
 function getUpdateService(): UpdateService {
   if (!updateService) throw new Error("Update service not initialized");
   return updateService;
+}
+
+function getMarkdownImportService(): MarkdownImportService {
+  if (!markdownImportService) throw new Error("Markdown import service not initialized");
+  return markdownImportService;
 }
 
 const idParam = z.string().trim().min(1).max(200);
@@ -301,6 +324,7 @@ function runBackupNow(): string {
 
 function registerIpcHandlers(): void {
   const lib = getLibrary();
+  markdownImportService = new MarkdownImportService({ lib });
 
   // -------------------------------------------------------------- prompts
   ipcMain.handle(IPC_CHANNELS.promptList, (_e, payload: unknown) => {
@@ -726,6 +750,39 @@ function registerIpcHandlers(): void {
     return result;
   });
 
+  // ------------------------------------------------------ Markdown import
+  ipcMain.handle(
+    IPC_CHANNELS.markdownPreview,
+    async (event, payload: unknown): Promise<MarkdownImportPreviewDto> => {
+      const senderId = assertAuthorizedMainFrame(event, mainWindow);
+      const { url } = markdownPreviewSchema.parse(payload);
+      const preview = await getMarkdownImportService().preview(url, senderId);
+      return markdownImportPreviewDtoSchema.parse({
+        previewId: preview.previewId,
+        sourceUrl: preview.sourceUrl,
+        finalUrl: preview.finalUrl,
+        suggestedTitle: preview.suggestedTitle,
+        content: preview.content,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.markdownConfirm,
+    (event, payload: unknown): MarkdownImportResultDto => {
+      const senderId = assertAuthorizedMainFrame(event, mainWindow);
+      const { previewId, title } = markdownConfirmSchema.parse(payload);
+      const result = getMarkdownImportService().confirm(previewId, title, senderId);
+      return markdownImportResultDtoSchema.parse({ promptId: result.promptId, title: result.title });
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.markdownDiscard, (event, payload: unknown): void => {
+    const senderId = assertAuthorizedMainFrame(event, mainWindow);
+    const { previewId } = markdownDiscardSchema.parse(payload);
+    getMarkdownImportService().discard(previewId, senderId);
+  });
+
   // ------------------------------------------------------------------- sync
   const sync = getDesktopSync();
 
@@ -931,6 +988,7 @@ function installAppMenu(): void {
   };
   const openPaletteItem: MenuItemConstructorOptions = {
     label: "Open prompt palette",
+    ...(menuIcons.promptPalette ? { icon: menuIcons.promptPalette } : {}),
     click: () => quickPaletteController?.toggle(),
   };
   const helpMenu: MenuItemConstructorOptions = {
@@ -1115,12 +1173,19 @@ function createWindow(): BrowserWindow {
     },
   });
   mainWindow = window;
-  window.on("closed", () => {
-    const wasMainWindow = mainWindow === window;
-    if (wasMainWindow) mainWindow = null;
-    importDispatcher.windowClosed();
-    if (wasMainWindow && shouldQuitWhenMainWindowCloses(process.platform)) app.quit();
-  });
+  window.on(
+    "closed",
+    createMainWindowClosedHandler(window, {
+      getMainWindow: () => mainWindow,
+      onMainWindowClosed: (senderId) => {
+        markdownImportService?.discardSender(senderId);
+        mainWindow = null;
+      },
+      onWindowClosed: () => importDispatcher.windowClosed(),
+      shouldQuit: () => shouldQuitWhenMainWindowCloses(process.platform),
+      quit: () => app.quit(),
+    }),
+  );
   // Renderer content never opens new windows; external links go through the
   // app:open-external IPC (system browser) instead.
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1204,8 +1269,8 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on("second-instance", (_event, argv) => {
     restoreOrCreateMainWindow(mainWindow, createWindow);
-    const target = deepLinkFromArgv(argv);
-    if (target) importDispatcher.dispatch(target);
+    const intent = deepLinkFromArgv(argv);
+    if (intent) importDispatcher.dispatch(intent);
   });
 
   app.whenReady().then(() => {
@@ -1307,9 +1372,9 @@ if (!gotSingleInstanceLock) {
     app.dock?.setIcon(appIcon);
   }
   // Windows/Linux cold start: the deep link arrives in this instance's argv.
-  const coldStartTarget = deepLinkFromArgv(process.argv);
+  const coldStartIntent = deepLinkFromArgv(process.argv);
   if (!mainWindow) createWindow();
-  if (coldStartTarget) importDispatcher.dispatch(coldStartTarget);
+  if (coldStartIntent) importDispatcher.dispatch(coldStartIntent);
 
   app.on("activate", () => {
     restoreOrCreateMainWindow(mainWindow, createWindow);

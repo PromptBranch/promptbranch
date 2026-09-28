@@ -16,6 +16,24 @@ notes.
 - `@promptbranch/cli` 0.2.7
 - `@promptbranch/mcp` 0.2.9
 
+## [0.8.0] - 2026-09-28
+
+### Added
+
+- Add copyable HTML embeds for published prompts, with Auto, Light, and Dark
+  themes and an **Open in PromptBranch** action.
+- Import public HTTPS Markdown files into the library from website links after
+  reviewing the fetched content and choosing a title.
+
+### Improved
+
+- Distinguish embed-code copying from link copying, and add an icon to the
+  **Open prompt palette** menu item.
+
+### Packages
+
+- `@promptbranch/desktop` 0.8.0
+
 ## [0.7.3] - 2026-09-26
 
 ### Fixed

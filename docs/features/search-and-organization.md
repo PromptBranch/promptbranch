@@ -49,6 +49,10 @@ Use **Filters** in the library to narrow the list by tag, starred state, or
 minimum rating. Sort prompts by when they were updated or created, by name, or
 by rating. Selecting a collection in the left rail shows its prompts.
 
+For a quick tag filter, click a tag in the left rail, on a prompt card, or in
+the prompt details pane. Click that tag again to remove it from the filter. To
+reset all active filters, open **Filters** and choose **Clear all**.
+
 ## Tags, collections, and stars
 
 - Create a **tag** with the **+** beside Tags, then attach it to related

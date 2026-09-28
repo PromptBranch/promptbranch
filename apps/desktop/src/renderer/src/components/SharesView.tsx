@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
-import { Copy, ExternalLink, FolderX, Link2, Search, Trash2 } from "lucide-react";
+import { Code2, Copy, ExternalLink, FolderX, Link2, Search, Trash2 } from "lucide-react";
 import type { SharedSnapshotDto } from "../../../shared/ipc.js";
 import { useAppMutation, useShares } from "../hooks/use-data";
 import { cx, relativeTime } from "../lib/time";
+import { buildEmbedSnippet, type EmbedTheme } from "../lib/embed-snippet.js";
 import { useToast } from "../lib/toast";
 import { useAppState } from "../state/app-state";
 import { ConfirmDialog } from "./dialogs";
+import { EmbedThemeSelect } from "./EmbedThemeSelect";
 import { EmptyState, Spinner } from "./ui";
 
 type StatusFilter = "all" | "active" | "revoked";
@@ -27,10 +29,12 @@ function portalHost(url: string): string {
 
 function ShareRow({
   share,
+  embedTheme,
   onDelete,
   onRemove,
 }: {
   share: SharedSnapshotDto;
+  embedTheme: EmbedTheme;
   onDelete: (share: SharedSnapshotDto) => void;
   onRemove: (share: SharedSnapshotDto) => void;
 }) {
@@ -41,6 +45,13 @@ function ShareRow({
   const copy = () => {
     void navigator.clipboard.writeText(share.url).then(
       () => toast("Link copied"),
+      () => toast("Copy failed"),
+    );
+  };
+
+  const copyEmbedCode = () => {
+    void navigator.clipboard.writeText(buildEmbedSnippet(share.url, embedTheme)).then(
+      () => toast("Embed code copied"),
       () => toast("Copy failed"),
     );
   };
@@ -101,6 +112,17 @@ function ShareRow({
         <button type="button" aria-label={`Copy link to ${share.promptTitle}`} onClick={copy} className={iconButtonClass}>
           <Copy size={12} />
         </button>
+        {!revoked && (
+          <button
+            type="button"
+            aria-label={`Copy embed code for ${share.promptTitle}`}
+            title="Copy embed code"
+            onClick={copyEmbedCode}
+            className={iconButtonClass}
+          >
+            <Code2 size={12} />
+          </button>
+        )}
         <button
           type="button"
           aria-label={`Open ${share.promptTitle} in browser`}
@@ -149,6 +171,7 @@ export function SharesView() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("recent");
+  const [embedTheme, setEmbedTheme] = useState<EmbedTheme>("auto");
   const [deleteTarget, setDeleteTarget] = useState<SharedSnapshotDto | null>(null);
   const [removeTarget, setRemoveTarget] = useState<SharedSnapshotDto | null>(null);
 
@@ -231,6 +254,7 @@ export function SharesView() {
               <option value="recent">Recently published</option>
               <option value="title">Title</option>
             </select>
+            <EmbedThemeSelect value={embedTheme} onChange={setEmbedTheme} />
           </div>
         </div>
         <div className="mt-2.5 inline-flex items-center gap-0.5 rounded-lg border border-line bg-app p-0.5">
@@ -261,6 +285,7 @@ export function SharesView() {
             <ShareRow
               key={share.snapshotId}
               share={share}
+              embedTheme={embedTheme}
               onDelete={setDeleteTarget}
               onRemove={setRemoveTarget}
             />

@@ -55,6 +55,9 @@ interface AppStateValue {
   /** Snapshot URL/id delivered by a promptbranch://import deep link; non-null opens the import dialog. */
   importUrl: string | null;
   setImportUrl: (url: string | null) => void;
+  /** Public Markdown URL delivered by a promptbranch://import-markdown deep link. */
+  markdownImportUrl: string | null;
+  setMarkdownImportUrl: (url: string | null) => void;
   /** The "Manage models" dialog, opened from the model picker footer or Settings. */
   manageModelsOpen: boolean;
   setManageModelsOpen: (open: boolean) => void;
@@ -76,6 +79,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [importUrl, setImportUrl] = useState<string | null>(null);
+  const [markdownImportUrl, setMarkdownImportUrl] = useState<string | null>(null);
   const [manageModelsOpen, setManageModelsOpen] = useState(false);
 
   const selectPrompt = useCallback((id: string | null) => {
@@ -140,10 +144,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setSettingsOpen,
       importUrl,
       setImportUrl,
+      markdownImportUrl,
+      setMarkdownImportUrl,
       manageModelsOpen,
       setManageModelsOpen,
     }),
-    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, newPromptCollection, openNewPrompt, setNewPromptOpen, filterByTag, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, manageModelsOpen],
+    [view, selectedPromptId, selectPrompt, viewingVersionId, sort, filters, listSearch, paletteOpen, newPromptOpen, newPromptCollection, openNewPrompt, setNewPromptOpen, filterByTag, aboutOpen, settingsOpen, settingsSection, openSettings, importUrl, markdownImportUrl, manageModelsOpen],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

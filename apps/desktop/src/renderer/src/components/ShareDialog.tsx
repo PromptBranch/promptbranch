@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Copy, Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
+import { Code2, Copy, Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
 import type { PromptDetail, SharePublishResult } from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
 import { userErrorMessage } from "../lib/errors";
+import { buildEmbedSnippet, type EmbedTheme } from "../lib/embed-snippet.js";
 import { useToast } from "../lib/toast";
 import { DialogShell } from "./dialogs";
+import { EmbedThemeSelect } from "./EmbedThemeSelect";
 
 const primaryButtonClass =
   "flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40";
@@ -37,12 +39,14 @@ export function ShareDialog({
 }) {
   const [includeHistory, setIncludeHistory] = useState(false);
   const [result, setResult] = useState<SharePublishResult | null>(null);
+  const [embedTheme, setEmbedTheme] = useState<EmbedTheme>("auto");
   const { toast } = useToast();
 
   useEffect(() => {
     if (open) {
       setIncludeHistory(false);
       setResult(null);
+      setEmbedTheme("auto");
     }
   }, [open]);
 
@@ -97,6 +101,19 @@ export function ShareDialog({
             >
               <Copy size={12} />
             </button>
+            <button
+              type="button"
+              aria-label="Copy embed code"
+              title="Copy embed code"
+              onClick={() => copy(buildEmbedSnippet(result.url, embedTheme), "Embed code")}
+              className={copyButtonClass}
+            >
+              <Code2 size={12} />
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-ink-faint">Choose the appearance included in copied embed code.</p>
+            <EmbedThemeSelect value={embedTheme} onChange={setEmbedTheme} />
           </div>
           <p className="text-[11px] leading-relaxed text-ink-faint">
             The delete token is stored locally on this device — you can revoke this share later

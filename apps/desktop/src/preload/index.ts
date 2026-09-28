@@ -128,6 +128,18 @@ const api: PromptBuilderApi = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.shareOpenImport, listener);
     },
   },
+  markdown: {
+    preview: (url) => invoke(IPC_CHANNELS.markdownPreview, { url }),
+    confirm: (input) => invoke(IPC_CHANNELS.markdownConfirm, input),
+    discard: (previewId) => invoke(IPC_CHANNELS.markdownDiscard, { previewId }),
+    onOpenImport: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, url: unknown) => {
+        callback(url as string);
+      };
+      ipcRenderer.on(IPC_CHANNELS.markdownOpenImport, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.markdownOpenImport, listener);
+    },
+  },
   sync: {
     getStatus: () => invoke(IPC_CHANNELS.syncGetStatus),
     setEnabled: (enabled) => invoke(IPC_CHANNELS.syncSetEnabled, { enabled }),

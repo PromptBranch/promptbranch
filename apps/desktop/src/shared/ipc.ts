@@ -299,6 +299,32 @@ export const shareImportPreviewSchema = z.object({ url: z.string().trim().min(1)
 // Import confirm takes the exact previewed SnapshotResponse — validated in the
 // main handler with snapshotResponseSchema from @promptbranch/share.
 
+export const markdownPreviewSchema = z.object({
+  url: z.string().trim().min(1).max(2_000),
+}).strict();
+
+export const markdownConfirmSchema = z.object({
+  previewId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200),
+}).strict();
+
+export const markdownDiscardSchema = z.object({ previewId: z.string().uuid() }).strict();
+
+export const markdownImportPreviewDtoSchema = z.object({
+  previewId: z.string().uuid(),
+  sourceUrl: z.string().min(1).max(2_000),
+  finalUrl: z.string().min(1).max(2_000),
+  suggestedTitle: z.string().min(1).max(200),
+  content: z.string().max(1_048_576),
+}).strict();
+export type MarkdownImportPreviewDto = z.infer<typeof markdownImportPreviewDtoSchema>;
+
+export const markdownImportResultDtoSchema = z.object({
+  promptId: id,
+  title: z.string().min(1).max(200),
+}).strict();
+export type MarkdownImportResultDto = z.infer<typeof markdownImportResultDtoSchema>;
+
 // ---------------------------------------------------------------------------
 // Sync
 
@@ -1159,6 +1185,13 @@ export interface PromptBuilderApi {
     importPreview(url: string): Promise<ShareImportPreview>;
     import(preview: ShareImportPreview): Promise<ShareImportResult>;
     /** Main → renderer event for promptbranch://import deep links. */
+    onOpenImport(callback: (url: string) => void): () => void;
+  };
+  markdown: {
+    preview(url: string): Promise<MarkdownImportPreviewDto>;
+    confirm(input: { previewId: string; title: string }): Promise<MarkdownImportResultDto>;
+    discard(previewId: string): Promise<void>;
+    /** Main → renderer event for promptbranch://import-markdown deep links. */
     onOpenImport(callback: (url: string) => void): () => void;
   };
   sync: {

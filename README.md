@@ -49,8 +49,9 @@ control of your data and approve changes before they are saved.
 
 ### Share and sync on your terms
 
-- 🔗 **Share immutable snapshots** behind unguessable URLs, with pre-publish secret
-  scanning, import deep links, revocable delete tokens, and a dedicated Shares view.
+- 🔗 **Share immutable snapshots** behind unguessable URLs, embed active shares
+  on websites, or review and import public Markdown URLs. Shares include
+  pre-publish secret scanning, revocable links, and a dedicated Shares view.
 - 🔄 **Sync directly between your devices** on the local network. Pair with a short
   verified code; changes are stored locally first and catch up automatically when
   devices can reach one another.
@@ -192,6 +193,17 @@ official portal, <https://promptbranch.app>.
   `promptbranch import`; the snapshot becomes a new local prompt with its
   tags and a provenance note. A shared history remains viewable on the portal;
   it is not recreated as a local version chain.
+- **Website embeds** use copyable HTML for active shares. Choose Auto, Light,
+  or Dark when copying; Auto follows the visitor's system appearance. The
+  prompt appears in Shadow DOM without an iframe, with its title and an
+  **Open in PromptBranch** button. The portal script runs on the host page, so
+  use embed code only from a portal you trust. See the [sharing guide](docs/sharing/link-sharing-and-portal.md)
+  for the HTML snippets and CSP requirements.
+- **Public Markdown links** use `promptbranch://import-markdown?url=`. The
+  desktop app fetches only after the user chooses **Fetch Markdown**, then
+  previews the content before creating a new local prompt. The source must be
+  reachable over public HTTPS. The [sharing guide](docs/sharing/link-sharing-and-portal.md)
+  includes an HTML button example that website owners can copy and customize.
 
 ## Multi-device sync
 

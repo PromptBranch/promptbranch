@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createMainWindowClosedHandler,
   restoreOrCreateMainWindow,
   shouldQuitWhenMainWindowCloses,
   type MainWindowPort,
@@ -41,6 +42,40 @@ describe("main library window lifecycle", () => {
     restoreOrCreateMainWindow(fakeWindow({ destroyed: true }), create);
 
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("discards the sender using its ID captured before WebContents destruction", () => {
+    let destroyed = false;
+    const window = {
+      get webContents() {
+        if (destroyed) throw new Error("Object has been destroyed");
+        return { id: 73 };
+      },
+    };
+    let mainWindow: typeof window | null = window;
+    const discardSender = vi.fn();
+    const clearMainWindow = vi.fn(() => {
+      mainWindow = null;
+    });
+    const windowClosed = vi.fn();
+    const quit = vi.fn();
+    const handleClosed = createMainWindowClosedHandler(window, {
+      getMainWindow: () => mainWindow,
+      onMainWindowClosed: (senderId) => {
+        discardSender(senderId);
+        clearMainWindow();
+      },
+      onWindowClosed: windowClosed,
+      shouldQuit: () => true,
+      quit,
+    });
+
+    destroyed = true;
+    expect(handleClosed).not.toThrow();
+    expect(discardSender).toHaveBeenCalledWith(73);
+    expect(clearMainWindow).toHaveBeenCalledOnce();
+    expect(windowClosed).toHaveBeenCalledOnce();
+    expect(quit).toHaveBeenCalledOnce();
   });
 
   it("preserves Windows and Linux close-to-quit while macOS stays windowless", () => {

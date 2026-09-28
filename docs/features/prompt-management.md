@@ -3,10 +3,10 @@
 PromptBranch lets you make quick edits while keeping reliable versions to
 return to later.
 
-Right-click a prompt in the list for quick access to star, rename, collection,
-duplication, export, and delete actions. In a collection, the menu also removes
-the prompt from that collection. In Trash, it instead offers **Restore** and
-**Delete permanently**.
+Right-click a prompt in the list for quick access to **Copy prompt name**, star,
+rename, collection, duplication, export, and delete actions. In a collection,
+the menu also removes the prompt from that collection. In Trash, it offers
+**Restore**, **Copy prompt name**, and **Delete permanently**.
 
 ## Edit and save a version
 

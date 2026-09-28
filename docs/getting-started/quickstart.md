@@ -112,7 +112,15 @@ unchanged.
 4. Click **Publish**.
 5. PromptBranch uploads the immutable snapshot to `https://promptbranch.app/p/<id>` and shows your unlisted share link. The revocation **delete token** is stored locally — manage and revoke the share any time from the **Shares** view. (When publishing via the CLI, the token is also printed once.)
 
-Anyone with the link can view the snapshot in a clean web viewer, inspect version diffs, or open an import preview in their own PromptBranch library via the `promptbranch://` deep link. The recipient reviews the snapshot and explicitly confirms the import.
+Anyone with the link can view the snapshot in a clean web viewer, inspect version diffs, or open an import preview in their own PromptBranch library via `promptbranch://import?url=`. The recipient reviews the snapshot and explicitly confirms the import.
+
+To place the snapshot directly on another website, copy the embed code from
+the published prompt page or the desktop Share and Shares views. Choose Auto,
+Light, or Dark; Auto follows the visitor's system appearance. The embed window
+shows the prompt title and an **Open in PromptBranch** button. For importing a
+public raw Markdown file, use the **Link to a public Markdown prompt** steps
+and HTML button example to copy and customize in the
+[sharing guide](../sharing/link-sharing-and-portal.md).
 
 ---
 

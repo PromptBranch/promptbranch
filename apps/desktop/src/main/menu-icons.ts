@@ -12,6 +12,7 @@ import { app, nativeImage, type NativeImage } from "electron";
 export interface MenuIcons {
   about?: NativeImage;
   checkUpdates?: NativeImage;
+  promptPalette?: NativeImage;
   settings?: NativeImage;
 }
 
@@ -35,6 +36,7 @@ export function loadMenuIcons(): MenuIcons {
   const icons: MenuIcons = {
     about: load("about"),
     checkUpdates: load("check-updates"),
+    promptPalette: load("prompt-palette"),
     settings: load("settings"),
   };
   console.log(`[main] menu icons loaded from ${dir}`);

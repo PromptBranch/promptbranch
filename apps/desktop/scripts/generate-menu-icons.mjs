@@ -1,6 +1,6 @@
 /**
  * Generates the monochrome template icons for the native app-menu items
- * (About / Check for Updates / Settings) — 16px + @2x 32px PNGs into
+ * (About / Check for Updates / Prompt Palette / Settings) — 16px + @2x 32px PNGs into
  * build/menu-icons/. Runs as part of the `icons` script; electron-builder
  * ships the folder via extraResources and src/main/menu-icons.ts loads it.
  *
@@ -71,6 +71,8 @@ const ICONS = {
     seg(3, 21, 3, 16, 1),
     seg(3, 16, 8, 16, 1),
   ),
+  // lucide-style search: lens ring and handle for opening the prompt chooser
+  "prompt-palette": union(annulus(10, 10, 5.7, 7.6), seg(15.6, 15.6, 20.4, 20.4, 1.2)),
   // lucide-style "settings" gear: ring + 8 teeth − center hole
   settings: subtract(union(annulus(12, 12, 6.9, 8.5), ...gearTeeth), circle(12, 12, 3.4)),
 };

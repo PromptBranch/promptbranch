@@ -4,6 +4,7 @@ import { AboutDialog } from "./components/AboutDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewPromptDialog } from "./components/dialogs";
 import { HistoryView } from "./components/HistoryView";
+import { ImportMarkdownDialog } from "./components/ImportMarkdownDialog";
 import { ImportSnapshotDialog } from "./components/ImportSnapshotDialog";
 import { LeftRail } from "./components/LeftRail";
 import { MainPane, MainPaneEmpty } from "./components/MainPane";
@@ -62,6 +63,7 @@ export default function App() {
     manageModelsOpen,
     setManageModelsOpen,
     setImportUrl,
+    setMarkdownImportUrl,
   } = useAppState();
   const { data: prompt } = usePromptDetail(selectedPromptId);
   const { data: allTags } = useTags();
@@ -77,6 +79,11 @@ export default function App() {
 
   // promptbranch://import?url=… deep links (portal "Open in PromptBranch").
   useEffect(() => window.promptBuilder.share.onOpenImport((url) => setImportUrl(url)), [setImportUrl]);
+  // promptbranch://import-markdown?url=… opens a reviewed public Markdown import.
+  useEffect(
+    () => window.promptBuilder.markdown.onOpenImport((url) => setMarkdownImportUrl(url)),
+    [setMarkdownImportUrl],
+  );
 
   // Editor font size pref → CSS var consumed by .cm-host in index.css.
   useEffect(() => {
@@ -202,6 +209,7 @@ export default function App() {
       <CommandPalette />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
       <ImportSnapshotDialog />
+      <ImportMarkdownDialog />
       <SyncPairRequestDialog />
       <SettingsDialog />
       <ManageModelsDialog open={manageModelsOpen} onOpenChange={setManageModelsOpen} />

@@ -188,7 +188,7 @@
     "@types/react-dom": "19.2.5",
     "@types/semver": "7.8.0",
     "@vitejs/plugin-react": "5.2.0",
-    "electron": "43.4.1",
+    "electron": "43.5.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "6.0.0-beta.1",
     "jsdom": "^30.0.1",

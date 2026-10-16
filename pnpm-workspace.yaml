@@ -8,10 +8,22 @@ allowBuilds:
   esbuild: true
   sharp: false
 overrides:
-  fast-uri: 3.1.6
+  fast-uri: 3.1.8
   hono: 4.13.7
+  http-cache-semantics: 4.3.0
+  ip-address: 10.7.1
   js-yaml: 4.3.2
+  proxy-addr: 2.0.8
   qs: 6.16.0
+  source-map-js: 1.2.2
+  "@ai-sdk/provider-utils@5>undici": 7.29.1
+  "@electron/get@5>undici": 7.29.1
+  "jsdom@30>undici": 8.10.2
+  "minimatch@3>brace-expansion": 1.1.21
+  "minimatch@5>brace-expansion": 2.1.7
+  "minimatch@9>brace-expansion": 2.1.7
+  "minimatch@10>brace-expansion": 5.0.12
+  "node-gyp@12>undici": 6.28.1
 minimumReleaseAgeExclude:
   - '@ai-sdk/anthropic@3.0.112'
   - '@ai-sdk/gateway@3.0.180'

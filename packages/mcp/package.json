@@ -52,7 +52,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@promptbranch/core": "workspace:*",
     "better-sqlite3": "13.0.3",
     "zod": "^3.25.76"
